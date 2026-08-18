@@ -1,0 +1,20 @@
+-- แก้ ownership ของ client_wht_income_types ที่หลุดไปเป็น postgres (แทนที่จะเป็น sitereq_app เหมือน
+-- ทุกตารางอื่นในระบบ) — เกิดจากการรัน migration 0003 ผ่าน `psql -U postgres` ตรงๆ แทนที่จะผ่าน
+-- server/migrations/migrate.js (ซึ่งเชื่อมต่อด้วย sitereq_app ปกติ) บนเครื่องที่ยังไม่มี Node.js
+-- ติดตั้ง — CREATE TABLE/CREATE SEQUENCE ที่รันผ่าน psql -U postgres จะได้ owner เป็น postgres เสมอ
+-- ไม่ว่าไฟล์ migration จะตั้งใจให้ role ไหนเป็นเจ้าของก็ตาม
+--
+-- ผลกระทบก่อนแก้: sitereq_app (role ที่แอปใช้เชื่อมต่อจริง ไม่ใช่ superuser) ไม่มีสิทธิ์แม้แต่ SELECT
+-- ตารางนี้เลย (ไม่มี GRANT ใดๆ ให้) ทำให้ทุก endpoint ที่ query client_wht_income_types (validate
+-- ประเภทเงินได้ตอนสร้างรายการเคลียร์เงินทดรองจ่าย/จ่ายเจ้าหนี้ภายนอก, join ดึงชื่อตอนออก 50 ทวิ) พังด้วย
+-- permission denied ทันทีที่มียอดหัก ณ ที่จ่าย > 0 — พบจริงจากการเขียน
+-- server/tests/advance-clearance.regression.js ไม่ใช่จากการอ่านโค้ด (ดู CLAUDE.md ข้อ 20)
+--
+-- ⚠️ ข้อจำกัดของไฟล์นี้: ALTER TABLE ... OWNER TO ต้องรันโดย "เจ้าของปัจจุบัน" หรือ superuser เท่านั้น
+-- ถ้าตารางนี้หลุดเป็น postgres อีกในอนาคต (เช่น ประวัติศาสตร์ซ้ำรอย รัน migration ผ่าน psql -U postgres
+-- อีกครั้ง) แล้วรันไฟล์นี้ผ่าน migrate.js ปกติ (เชื่อมต่อด้วย sitereq_app ซึ่งไม่ใช่เจ้าของและไม่ใช่
+-- superuser) statement ด้านล่างจะ FAIL ด้วย "must be owner of table" เหมือนกันทุกประการ — ไฟล์นี้แก้ปัญหา
+-- ได้จริงเฉพาะตอนที่ตารางเป็นของ sitereq_app อยู่แล้ว (ทำให้เป็น no-op ที่ปลอดภัย ยืนยันความถูกต้อง) หรือ
+-- ตอนที่ถูกรันผ่าน psql -U postgres เองโดยตรง (เหมือนตอนแก้ครั้งแรก) — เก็บไว้เป็นหลักฐาน/เอกสารของ
+-- ownership ที่ถูกต้องตามที่ตั้งใจไว้ในระบบ ไม่ใช่ automatic fix ที่รับประกันผลได้ทุกกรณี
+ALTER TABLE client_wht_income_types OWNER TO sitereq_app;

@@ -129,3 +129,20 @@
     migration ซ้ำแล้วพัง (ตาราง/constraint ที่มีอยู่แล้วชนกัน) — ใส่ `-1` กำกับด้วยเสมอเพื่อให้ SQL ของ
     migration กับการ INSERT อยู่ใน transaction เดียวกัน (ถ้า migration พังกลางทาง ทั้งก้อน rollback
     รวม INSERT ด้วย ไม่ทิ้ง state ครึ่งๆ กลางๆ ไว้ — เทียบเท่าพฤติกรรมจริงของ `migrate.js`)
+20. **รัน migration ด้วย `psql -U postgres` (แทน `migrate.js` ที่รันผ่าน connection ของแอปเอง) ต้องตรวจ
+    ownership ของ object ใหม่ทุกตัวที่ migration นั้นสร้างทันทีหลังรันเสร็จ แล้ว `ALTER ... OWNER TO`
+    (role ที่แอปใช้เชื่อมต่อจริง เช่น `sitereq_app`) ให้ครบทุกตัวที่หลุด** — เช็คด้วย
+    `SELECT tablename, tableowner FROM pg_tables WHERE schemaname='public' AND tableowner <>
+    'sitereq_app';` (และ query เดียวกันกับ `pg_sequences`/`pg_views`/`pg_proc` ด้วย ไม่ใช่แค่ตาราง)
+    เหตุผล: `CREATE TABLE`/`CREATE SEQUENCE`/ฯลฯ ที่รันผ่าน `psql -U postgres` จะได้ owner เป็น
+    `postgres` เสมอ (ไม่ใช่ role ที่ระบุใน `-U` ของคำสั่งอื่นในสคริปต์ แต่เป็น role ที่ authenticate อยู่
+    ตอนนั้นจริงๆ) แอปเชื่อมต่อจริงด้วย `sitereq_app` (ไม่ใช่ superuser) และไม่มีสิทธิ์ query object ที่
+    owner เป็นคนอื่นเลยถ้าไม่มี GRANT ชัดเจน — statement ที่เป็น `ALTER TABLE`/`ALTER ... ADD COLUMN` บน
+    object ที่มี owner ถูกต้องอยู่แล้ว (สร้างมาจาก `migrate.js` เดิม) ไม่กระทบ owner จึงไม่มีปัญหา มีแค่
+    `CREATE TABLE`/`CREATE SEQUENCE` ใหม่ๆ ในไฟล์เดียวกันเท่านั้นที่เสี่ยงหลุด — พบจริงจากการรีวิว:
+    `client_wht_income_types` (สร้างใน migration 0003 ที่รันผ่าน `psql -U postgres` เพราะตอนนั้นเครื่อง
+    ยังไม่มี Node.js) เป็น table เดียวในทั้งระบบที่ owner เป็น `postgres` ไม่มี GRANT ให้ `sitereq_app`
+    เลย ทำให้ทุก endpoint ที่ query ตารางนี้ (validate ประเภทเงินได้ตอนสร้างรายการเคลียร์เงินทดรองจ่าย,
+    join ดึงชื่อตอนออก 50 ทวิ) พังด้วย `permission denied for table client_wht_income_types` ทันทีที่มี
+    ยอดหัก ณ ที่จ่าย > 0 — บั๊กนี้ตรวจไม่เจอจากการอ่านโค้ดเลย เจอจากการเขียน regression test จริงเท่านั้น
+    (`server/tests/advance-clearance.regression.js`)

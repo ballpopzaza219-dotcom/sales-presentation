@@ -16,7 +16,13 @@
     "test:tender-initial-retention": "node tests/tender-initial-retention.regression.js",
     "test:project-menu-move": "node tests/project-menu-move.regression.js",
     "test:project-detail-fields": "node tests/project-detail-fields.regression.js",
-    "test:permission-flags": "node tests/permission-flags.regression.js"
+    "test:permission-flags": "node tests/permission-flags.regression.js",
+    "test:pr": "node tests/pr.regression.js",
+    "test:petty-cash": "node tests/petty-cash.regression.js",
+    "test:advance": "node tests/advance.regression.js",
+    "test:advance-clearance": "node tests/advance-clearance.regression.js",
+    "test:external-payment": "node tests/external-payment.regression.js",
+    "test:client-ledger": "npm run test:pr && npm run test:petty-cash && npm run test:advance && npm run test:advance-clearance && npm run test:external-payment"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

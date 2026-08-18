@@ -1,0 +1,12 @@
+-- Rollback: คืน ownership กลับเป็น postgres (สถานะเดิมก่อน fix — ผิดเจตนา แต่คงไว้เพื่อให้ down.sql
+-- ย้อนกลับ up.sql ได้จริงตามรูปแบบมาตรฐานของทุก migration ในระบบนี้) ไม่มีเหตุผลทางธุรกิจให้ rollback
+-- จริง เว้นแต่ทดสอบ up→down→up→down ก่อน apply
+--
+-- ⚠️ ทดสอบจริงแล้วพบว่า statement นี้รันผ่าน migrate.js ปกติ (เชื่อมต่อด้วย sitereq_app) ไม่ผ่าน — ได้
+-- error `must be able to SET ROLE "postgres"` ทันที เพราะ sitereq_app เป็นเจ้าของปัจจุบันก็จริง แต่การ
+-- ALTER ... OWNER TO role อื่น ต้องเป็นสมาชิกของ role ปลายทางด้วย (หรือเป็น superuser) — sitereq_app ไม่ได้
+-- เป็นสมาชิกของ postgres role เลย ต้องรันผ่าน psql -U postgres เท่านั้นเหมือน up.sql — ไม่ได้ทดสอบ
+-- up→down→up→down แบบสดบนตารางนี้จริง (เป็นตารางที่ endpoint จริงกำลังใช้งานอยู่ rollback ทดสอบจะทำให้
+-- ฟีเจอร์ 50 ทวิ พังชั่วคราวบน production DB) — ถ้าต้องทดสอบ cycle เต็มรูปแบบ ให้ทำบน DB ทดสอบแยกต่างหาก
+-- ไม่ใช่ DB จริงที่มี endpoint พึ่งพาอยู่
+ALTER TABLE client_wht_income_types OWNER TO postgres;
