@@ -4,7 +4,8 @@
 ทำเครื่องหมาย ⚠️ ไว้ตามรูปแบบเดียวกับ `accounting-review-checklist.md`) — บันทึกไว้กันหายซ้ำ (5 ส่วนนี้
 เคยคุยกันในแชทมาก่อนแล้ว ไม่เคยบันทึกลงไฟล์ จนหายไปตอน DB restore เมื่อ 2026-08-17)
 
-ร่างเมื่อ: 2026-08-18
+ร่างเมื่อ: 2026-08-18 · แก้ไขเพิ่ม: 2026-08-18 (ผู้ใช้ยืนยันแล้ว 3 เรื่อง: บัญชี `1160` แยกจาก `1150`,
+ฐาน WHT = มูลค่างวดเต็ม, บรรทัด `Cr 1160` ที่ขาดไปในผังเดิม — เพิ่มส่วน 6 ตามที่สั่งเพิ่ม)
 
 ---
 
@@ -193,12 +194,12 @@ Dr 2130 เจ้าหนี้ผู้รับเหมาช่วง    15
 | `note` | TEXT DEFAULT '' | |
 | `created_by`, `created_at` | | |
 
-### `client_subcontract_billings` (ใหม่ — ยังไม่เคยเสนอชื่อนี้มาก่อน แต่จำเป็น)
+### `client_subcontract_billings` (ใหม่ — ยังไม่เคยเสนอชื่อนี้มาก่อน แต่จำเป็น) ✅ ผู้ใช้เห็นด้วยกับการรวมตาราง
 
-⚠️ **นี่คือตารางที่ 3 ที่เอกสารเดิมไม่เคยพูดถึง** — ระหว่างร่างพบว่าเงินล่วงหน้า (2.1), งวดงาน (2.2), และ
-การคืน retention ตอนจบโครงการ ล้วนเป็น "เอกสารเบิก/จ่ายเงิน" แบบเดียวกัน มีวงจรสถานะ (draft→submitted→
-approved) เหมือนกัน จึงเสนอรวมเป็นตารางเดียว คล้าย `client_payment_vouchers` ที่รวม petty_cash/
-advance/other ด้วย `voucher_type` แทนที่จะแยก 3 ตาราง — ถ้าไม่เห็นด้วยกับการรวม บอกได้ จะแยกตารางแทน
+ระหว่างร่างพบว่าเงินล่วงหน้า (2.1), งวดงาน (2.2), และการคืน retention ตอนจบโครงการ ล้วนเป็น "เอกสารเบิก/
+จ่ายเงิน" แบบเดียวกัน มีวงจรสถานะ (draft→submitted→approved) เหมือนกัน จึงรวมเป็นตารางเดียว คล้าย
+`client_payment_vouchers` ที่รวม petty_cash/advance/other ด้วย `voucher_type` — รายละเอียด CHECK ที่ผูก
+`billing_type` กับฟิลด์ที่ใช้ได้จริง (ตามที่สั่งเพิ่ม) อยู่ในส่วน 6 ด้านล่าง
 
 | คอลัมน์ | ชนิด | หมายเหตุ |
 |---|---|---|
@@ -209,16 +210,89 @@ advance/other ด้วย `voucher_type` แทนที่จะแยก 3 �
 | `billing_type` | TEXT CHECK (advance/progress/retention_release) | |
 | `billing_date` | DATE | |
 | `gross_amount` | NUMERIC(18,2) NOT NULL | มูลค่างวด/เงินล่วงหน้า/retention ที่คืน แล้วแต่ billing_type |
-| `advance_recovery_amount` | NUMERIC(18,2) DEFAULT 0 | เฉพาะ progress — คำนวณฝั่ง server จาก `advance_percent × gross_amount` แล้ว cap ไม่ให้เกินยอดเงินล่วงหน้าคงค้างจริง (ส่วน 3 ข้อ 1) |
+| `advance_recovery_amount` | NUMERIC(18,2) DEFAULT 0 | เฉพาะ progress — คำนวณฝั่ง server จาก `advance_percent × gross_amount` แล้ว cap ไม่ให้เกินยอดเงินล่วงหน้าคงค้างจริง (ส่วน 3 ข้อ 1, บังคับใน transaction ตามส่วน 6 ข้อ 1) |
 | `retention_amount` | NUMERIC(18,2) DEFAULT 0 | เฉพาะ progress |
 | `has_tax_invoice` | BOOLEAN DEFAULT false | เกท VAT เหมือนโมดูล 1.3/1.4 |
 | `vat_rate`, `vat_amount` | NUMERIC | |
-| `wht_income_type_code`, `wht_rate`, `wht_amount` | | snapshot ตอน approve (freeze เหมือนที่แก้บั๊ก `client_wht_income_types` ไปแล้ว) |
+| `wht_income_type_code`, `wht_rate`, `wht_amount` | | snapshot ตอน approve (freeze เหมือนที่แก้บั๊ก `client_wht_income_types` ไปแล้ว) — เฉพาะ `advance`/`progress` เท่านั้น ดูส่วน 6 ข้อ 3 |
 | `net_payable_amount` | NUMERIC(18,2) | คำนวณฝั่ง server เสมอ ไม่เชื่อ client |
 | `status` | TEXT CHECK (draft/submitted/approved/rejected/cancelled/voided) | |
 | `submitted_by/at`, `approved_by/at`, `rejected_reason` | | composite FK ทุกจุดตามกฎ CLAUDE.md ข้อ 1 |
 | `voided_reason/by/at` | | เผื่ออนาคตต้อง `/void` เหมือนที่ ก.3 ของโมดูล 1.3 ยังค้างอยู่ |
 | `created_by`, `created_at` | | |
+
+### `client_subcontract_retention_release_items` (ใหม่ — ตอบส่วน 6 ข้อ 2)
+
+ตารางลูกของแถว `billing_type='retention_release'` — ระบุว่าการคืน retention ครั้งนี้คืนของงวดไหนบ้าง
+(1 ครั้งคืนได้หลายงวดพร้อมกัน หรือคืนไม่เต็มจำนวนของงวดใดงวดหนึ่งก็ได้ — ให้ยืดหยุ่นเหมือนธุรกิจจริงที่มัก
+คืน retention รวมหลายงวดทีเดียวตอนพ้นระยะประกันผลงาน ไม่ใช่คืนทีละงวด)
+
+| คอลัมน์ | ชนิด | หมายเหตุ |
+|---|---|---|
+| `id` | SERIAL PK | |
+| `company_id` | INTEGER | FK |
+| `retention_release_billing_id` | INTEGER | composite FK → `client_subcontract_billings(company_id, id)` แถวที่ `billing_type='retention_release'` |
+| `source_progress_billing_id` | INTEGER | composite FK → `client_subcontract_billings(company_id, id)` แถวที่ `billing_type='progress'` — งวดที่ถูกคืน retention |
+| `amount` | NUMERIC(18,2) NOT NULL CHECK > 0 | ยอดที่คืนของงวดนั้น (อาจไม่เต็มจำนวน `retention_amount` เดิมของงวดนั้นก็ได้) |
+
+**การกันคืนเกิน**: `SUM(amount)` ต่อ `source_progress_billing_id` ต้องไม่เกิน `retention_amount` ของงวด
+progress นั้น — บังคับใน transaction เดียวกับตอน approve แถว `retention_release` (ล็อกแถว progress
+billing ที่ถูกอ้างถึงทุกแถว `FOR UPDATE` ก่อนคำนวณ SUM ตามกฎ CLAUDE.md ข้อ 7)
+
+---
+
+## ส่วน 6 — ข้อกำหนดเพิ่มเติมสำหรับ `client_subcontract_billings` (ตามที่สั่งเพิ่ม)
+
+### 6.1 กันเบิกเกินสัญญา / กันหักคืนเกินยอดล่วงหน้า / กันคืน retention เกิน
+
+**ทำเป็น CHECK constraint ธรรมดาไม่ได้เลยสักข้อ** — CHECK ผูกกับแถวเดียวเท่านั้น (per-row) แต่ทั้ง 3 กรณี
+นี้ต้องเทียบกับ `SUM(...)` ข้ามหลายแถว จึง**ต้องบังคับในโค้ด application ภายใน transaction เท่านั้น**
+(เหมือนที่ PR เช็ค `qty_remaining` และกองทุนเงินสดย่อยเช็ค balance) — ลำดับการล็อกต้องคงที่ตาม CLAUDE.md
+ข้อ 6: ล็อก `client_subcontract_terms` (header/สัญญา) ก่อนเสมอ แล้วค่อยล็อกแถว
+`client_subcontract_billings` ที่เกี่ยวข้อง (ถ้ามี) — และต้องแยก statement ล็อกกับ statement คำนวณ SUM
+ออกจากกันตามกฎข้อ 7 (ห้ามรวม `FOR UPDATE` กับ correlated subquery ไว้ query เดียวกัน)
+
+| กรณี | เช็คตอนไหน | สูตร |
+|---|---|---|
+| เบิกเกินสัญญา | submit หรือ approve แถว `progress` (เลือกจุดเดียวให้คงที่ ⚠️ แนะนำ approve เพราะ draft/submitted ยังแก้ไขได้อยู่ ไม่ควร lock ค่าเกินจำเป็น) | `SUM(gross_amount) ของ progress ที่ approved ทั้งหมด + gross_amount แถวนี้ ≤ contract_value` |
+| หักคืนล่วงหน้าเกิน | approve แถว `progress` | `advance_recovery_amount แถวนี้ ≤ เงินล่วงหน้าคงค้าง (ส่วน 3 ข้อ 1) ณ เวลานั้น` |
+| คืน retention เกิน | approve แถว `retention_release` | ตรวจทีละแถวใน `client_subcontract_retention_release_items`: `SUM(amount) ของงวดนั้น (รวมครั้งก่อนๆ) + amount ครั้งนี้ ≤ retention_amount ของงวด progress นั้น` |
+
+ทุกการเทียบต้องทำฝั่ง SQL ด้วย `::numeric` แล้วคืน boolean กลับมาตัดสินใจ ไม่แปลงเป็น JS Number ตามกฎ
+CLAUDE.md ข้อ 3 — เหมือนที่ `has_enough`/`is_sufficient` ทำอยู่แล้วในโมดูล PR/เงินสดย่อย
+
+### 6.2 คืน retention ต้องรู้ว่าคืนของงวดไหน
+
+ตอบแล้วในตาราง `client_subcontract_retention_release_items` ด้านบน — เลือกใช้ **ตารางลูก** (ไม่ใช่คืนรวม
+ทั้งสัญญาทีเดียว) เพราะ:
+- แต่ละงวดอาจครบกำหนดคืน retention คนละเวลาจริง (ระยะประกันผลงานมักนับจากวันที่ส่งมอบงวดนั้น ไม่ใช่วันเซ็น
+  สัญญา)
+- ต้องตรวจสอบย้อนหลังได้ว่า "งวดที่ 3 retention คืนไปหรือยัง" แยกจากงวดอื่น — ถ้าคืนรวมทั้งสัญญาทีเดียว
+  จะตอบคำถามนี้ไม่ได้เลยถ้าเคยคืนบางส่วนไปก่อนหน้า
+
+### 6.3 CHECK ผูก `billing_type` กับฟิลด์ที่ใช้ได้จริง
+
+```sql
+CONSTRAINT client_subcontract_billings_type_fields_check CHECK (
+  status = 'draft' OR
+  (billing_type = 'advance' AND advance_recovery_amount = 0 AND retention_amount = 0) OR
+  (billing_type = 'progress') OR
+  (billing_type = 'retention_release' AND advance_recovery_amount = 0 AND retention_amount = 0
+    AND wht_amount = 0 AND vat_amount = 0)
+)
+```
+`status = 'draft' OR ...` ไว้ข้างหน้าเสมอ (แพทเทิร์นเดียวกับ `client_payment_vouchers_payee_type_check`)
+— ตอนกรอกฟอร์มยังไม่เสร็จ (draft) ต้องยอมให้ค่าไม่ครบ/ไม่สอดคล้องกันชั่วคราวได้ บังคับเข้มจริงจังตั้งแต่
+`submitted` เป็นต้นไปเท่านั้น (ชั้น application ต้องปฏิเสธ `/submit` เองด้วยถ้ายังไม่ครบ ไม่พึ่ง DB CHECK
+อย่างเดียวเป็นเกราะสุดท้าย)
+
+### 6.4 เคสไหนออก 50 ทวิบ้าง
+
+| billing_type | ออก 50 ทวิ? | เหตุผล |
+|---|---|---|
+| `advance` | ⚠️ ตามที่ยังไม่confirmed ในส่วน 1 (default = ออก) | เป็นการจ่ายเงินจริงครั้งแรก ถ้ามี WHT ต้องออกใบตามกฎหมาย |
+| `progress` | **ออกแน่นอน** (ไม่ใช่จุดที่ต้องถาม) | เป็นเอกสารหลักที่คำนวณ WHT จริงทุกครั้งที่ `wht_amount>0` |
+| `retention_release` | **ไม่ออก** (ไม่ใช่จุดที่ต้องถาม — เป็นผลจากการยืนยันฐาน WHT ในส่วน 2 แล้ว) | WHT ของงวดนั้นถูกคำนวณและหักไปครบแล้วตอน `progress` (ฐาน WHT = มูลค่างวดเต็ม ไม่ลดด้วย retention) การคืน retention ภายหลังจึงเป็นแค่จ่ายเงินสดที่เคยตั้งภาระภาษีไว้แล้ว ไม่ใช่รายได้ใหม่ที่ต้องหัก WHT ซ้ำ |
 
 ---
 
@@ -230,7 +304,7 @@ advance/other ด้วย `voucher_type` แทนที่จะแยก 3 �
 | `GET/POST/PUT /api/customer/subcontract-terms`, `/:id` | ไม่ต้อง | สัญญา — เปลี่ยนแค่เงื่อนไข ยังไม่เคลื่อนเงิน |
 | `GET/POST/PUT /api/customer/subcontract-billings`, `/:id` | **POST ต้อง** (สร้างเอกสารใหม่ กัน double-click ซ้ำ) | |
 | `POST .../subcontract-billings/:id/submit` | **ต้อง** | ออกเลขที่เอกสารตรงนี้ |
-| `POST .../subcontract-billings/:id/approve` | **ต้อง** | จุดที่โพสต์ journal entry จริง + **ออก 50 ทวิ ที่นี่** (ถ้า `wht_amount>0`, `source_type='subcontractor_payment'` — ค่านี้เตรียมไว้แล้วใน CHECK ของ `client_wht_certificates` ตั้งแต่ migration 0001 ไม่ต้องแก้ constraint เพิ่ม) |
+| `POST .../subcontract-billings/:id/approve` | **ต้อง** | จุดที่โพสต์ journal entry จริง + **ออก 50 ทวิ ที่นี่เฉพาะ `advance`/`progress`** (ดูส่วน 6.4) (ถ้า `wht_amount>0`, `source_type='subcontractor_payment'` — ค่านี้เตรียมไว้แล้วใน CHECK ของ `client_wht_certificates` ตั้งแต่ migration 0001 ไม่ต้องแก้ constraint เพิ่ม) — ถ้าเป็นแถว `retention_release` ต้องตรวจ `client_subcontract_retention_release_items` ตามส่วน 6.1 ในทรานแซกชันเดียวกันด้วย |
 | `POST .../subcontract-billings/:id/reject` | ไม่ต้อง (ตามแพทเทิร์นเดิมของ PR — ไม่เคลื่อนเงิน) | ยังต้องผ่าน `canApprove` เช็คสิทธิ์เหมือนเดิม |
 | `POST .../subcontract-billings/:id/cancel` | **ต้อง** (ตามแพทเทิร์น PR items ที่ cancel เคลื่อน state ที่มีผลทางบัญชี) | |
 | `GET .../subcontract-terms/:id/balance` | ไม่ต้อง (read-only) | คืนยอดคงเหลือทั้ง 3 ตัวจากส่วน 3 |
@@ -245,9 +319,13 @@ advance/other ด้วย `voucher_type` แทนที่จะแยก 3 �
 
 ## สรุปจุดที่ต้องให้ฝ่ายบัญชียืนยันก่อนเขียนโค้ดจริง (เรียงตามความสำคัญ)
 
-- [ ] **WHT ในส่วน 2 คำนวณจากฐานไหน** (มูลค่างวดเต็ม 200,000 หรือหลังหักคืน/retention 160,000) — ผลต่าง
-      1,200 บาทต่องวดตัวอย่าง เอกสารนี้ยึดทางที่ 1 (ฐานเต็ม) เป็น default ไว้ก่อน
-- [ ] มี WHT บนเงินล่วงหน้า (2.1) หรือไม่ — เอกสารนี้ default เป็น "มี"
+**ยืนยันแล้วจากผู้ใช้ (2026-08-18)** — ไม่ต้องถามฝ่ายบัญชีซ้ำ เว้นแต่ฝ่ายบัญชีค้านในจุดอื่น: บัญชี `1160`
+แยกจาก `1150`, ฐาน WHT ส่วน 2 = มูลค่างวดเต็ม (200,000, ไม่ใช่ 160,000), บรรทัด `Cr 1160` ในผัง approve,
+โครงสร้าง `client_subcontract_billings` รวมตารางเดียว
+
+**ยังต้องให้ฝ่ายบัญชียืนยัน** (เรียงตามความสำคัญ):
+- [ ] มี WHT บนเงินล่วงหน้า (2.1) หรือไม่ — เอกสารนี้ default เป็น "มี" (มีผลต่อ 6.4 ด้วยว่า `advance`
+      ต้องออก 50 ทวิหรือไม่)
 - [ ] มี VAT บนเงินล่วงหน้า (2.1) หรือไม่ — ขึ้นกับผู้รับเหมาแต่ละราย เสนอให้ toggle ได้ต่อรายการ
 - [ ] ชื่อ/รหัสบัญชี `1160` เหมาะสมหรือไม่ (เลขไม่ชนของเดิม แต่ชื่อ/ตำแหน่งในผังบัญชีต้องยืนยัน)
-- [ ] โครงสร้าง `client_subcontract_billings` ที่รวม 3 ประเภทเอกสารไว้ตารางเดียว เห็นด้วยหรือควรแยก
+- [ ] จุดเช็คกันเบิกเกินสัญญา (ส่วน 6.1) ควรอยู่ที่ `submit` หรือ `approve` — เอกสารนี้เสนอ `approve`
