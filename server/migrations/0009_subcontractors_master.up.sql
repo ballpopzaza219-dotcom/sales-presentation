@@ -17,9 +17,20 @@ CREATE TABLE client_subcontractors (
   address TEXT NOT NULL DEFAULT '',
   taxpayer_type TEXT NOT NULL DEFAULT 'juristic' CHECK (taxpayer_type IN ('individual','juristic')),
   phone TEXT NOT NULL DEFAULT '',
+  -- ผู้ติดต่อ + อีเมล (ใช้ส่งใบสั่งจ้าง/หนังสือรับรองหัก ณ ที่จ่ายให้ผู้รับเหมาช่วงตลอดโครงการ)
+  contact_person TEXT NOT NULL DEFAULT '',
+  email TEXT NOT NULL DEFAULT '',
+  -- ข้อมูลบัญชีธนาคาร — จ่ายผู้รับเหมาช่วงส่วนใหญ่โอน ไม่ใช่เงินสด (settlement_channel='transfer' ที่มี
+  -- อยู่แล้วในโมดูล 1.3 ต้องใช้ข้อมูลนี้ตอนบันทึกจ่ายจริง)
+  bank_name TEXT NOT NULL DEFAULT '',
+  bank_account_no TEXT NOT NULL DEFAULT '',
+  bank_account_name TEXT NOT NULL DEFAULT '',
   is_active BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CHECK (tax_id IS NULL OR char_length(tax_id) = 13)
+  CHECK (tax_id IS NULL OR char_length(tax_id) = 13),
+  -- นิติบุคคลต้องมีเลขผู้เสียภาษี 13 หลักเสมอ (ไม่งั้นออก 50 ทวิ ไม่ได้ตอนถึงเวลาจ่ายจริง) — บุคคลธรรมดา
+  -- ยอมให้ tax_id ว่างได้ (อาจยังไม่ทราบตอนบันทึกครั้งแรก มากรอกทีหลังก่อนจ่ายเงินจริงได้)
+  CHECK (taxpayer_type <> 'juristic' OR tax_id IS NOT NULL)
 );
 CREATE INDEX idx_client_subcontractors_company ON client_subcontractors(company_id);
 ALTER TABLE client_subcontractors ADD CONSTRAINT client_subcontractors_company_id_id_key UNIQUE (company_id, id);
