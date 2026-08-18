@@ -18,6 +18,10 @@ const USERS = [
   { username: 'fx_approver_norule', companyId: COMPANY_A_ID, role: 'approver', flags: { can_approve_pr: true, can_approve_petty_cash: true, can_approve_advance: true, can_approve_other: true } },
   { username: 'fx_super', companyId: COMPANY_A_ID, role: 'super_user', flags: {} },
   { username: 'fx_other_co', companyId: COMPANY_B_ID, role: 'super_user', flags: {} },
+  // role='maker' + can_manage_po=true — ฝ่ายจัดซื้อ/จัดหา: ทดสอบเส้นทาง "OR can_manage_po" ของ
+  // hasPrItemActionPermission/hasSubcontractorManagePermission แยกจาก super_user (ต้องพิสูจน์ว่า flag
+  // เพียงอย่างเดียวพอ ไม่ต้องพึ่ง role)
+  { username: 'fx_procurement', companyId: COMPANY_A_ID, role: 'maker', flags: { can_manage_po: true } },
 ];
 
 // [username, docType, minAmount, maxAmount] — fx_approver_norule ตั้งใจไม่มี rule เลย (เทส no_rule)

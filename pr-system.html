@@ -745,6 +745,9 @@ let S = {
   approvalRules:[],
   approvalRulesLoaded:false,
   addRuleForm:null,
+  subcontractors:[],
+  subcontractorsLoaded:false,
+  subcontractorForm:null,
   geoProvinces:[],
   geoProvincesLoaded:false,
   jobPositionsLoaded:false,
@@ -810,6 +813,19 @@ async function loadApprovalRules(){
     S.approvalRulesLoaded = true;
   } catch(e){
     toast(e.message || 'โหลดข้อมูลเพดานวงเงินอนุมัติไม่สำเร็จ', 'err');
+  }
+  render();
+}
+
+async function loadSubcontractors(){
+  try {
+    const res = await fetch('/api/customer/subcontractors');
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error || 'โหลดข้อมูลผู้รับเหมาช่วงไม่สำเร็จ');
+    S.subcontractors = data.subcontractors;
+    S.subcontractorsLoaded = true;
+  } catch(e){
+    toast(e.message || 'โหลดข้อมูลผู้รับเหมาช่วงไม่สำเร็จ', 'err');
   }
   render();
 }
@@ -2411,6 +2427,7 @@ function navFor(role){
       {key:'company_settings', label:tr('nav.company_settings'), icon:'settings'},
       {key:'users', label:tr('nav.users'), icon:'users'},
       {key:'conditions', label:tr('nav.conditions'), icon:'flag'},
+      {key:'subcontractors', label:tr('nav.subcontractors'), icon:'users'},
       {key:'approval_permissions', label:tr('nav.approval_permissions'), icon:'lock'},
       {key:'admin_queue', label:tr('nav.admin_queue'), icon:'check'},
     );
@@ -2465,6 +2482,12 @@ function renderDashboard(){
   if(S.module==='employees' && !canEmployees) S.module='pr';
   if(S.module==='bidding' && !canBidding) S.module='pr';
   const nav = S.module==='finance' ? financeNavFor() : S.module==='employees' ? employeesNavFor() : S.module==='bidding' ? biddingNavFor() : navFor(u.role);
+  // ผู้ใช้ role อื่นที่ไม่ใช่ super_user แต่มี can_manage_po (เช่น ฝ่ายจัดซื้อ role='maker') ต้องเห็นเมนู
+  // จัดการผู้รับเหมาช่วงด้วย — navFor(role) branch ตาม role string ล้วนๆ ไม่รู้จัก flag นี้ (super_user
+  // ได้ผ่าน navFor ไปแล้วข้างบน ไม่ต้องเพิ่มซ้ำ)
+  if(u.role!=='super_user' && u.canManagePo && S.module==='pr' && !nav.find(n=>n.key==='subcontractors')){
+    nav.push({key:'subcontractors', label:tr('nav.subcontractors'), icon:'users'});
+  }
   const hiddenPages = ['emp_app_form','emp_app_print','fin_tender_add','fin_tender_detail','fin_budget_detail','fin_project_add','fin_project_detail','fin_project_schedule','fin_po_add','fin_quotation_add','fin_document_add']; // reachable only via buttons, not listed in any sidebar nav
   if(!hiddenPages.includes(S.page) && !nav.find(n=>n.key===S.page && n.key!=='section')) S.page = S.module==='finance' ? 'fin_overview' : S.module==='employees' ? 'emp_overview' : S.module==='bidding' ? 'fin_tender_overview' : 'overview';
 
@@ -2591,6 +2614,7 @@ function renderPage(){
     case 'emp_leave_request': return pageLeaveRequest();
     case 'emp_leave_calendar': return pageLeaveCalendar();
     case 'approval_permissions': return pageApprovalPermissions();
+    case 'subcontractors': return pageSubcontractors();
     case 'emp_app_form': return pageEmpAppForm();
     case 'emp_app_print': return pageEmpAppPrint();
     case 'fin_labor': return pageFinLabor();
@@ -6936,6 +6960,90 @@ function permFlagCell(cu, column, canManageThisRow){
   return `<td><span class="badge ${has?'badge-approved':'badge-draft'}">${has?tr('approval_permissions.has_permission'):tr('approval_permissions.no_permission')}</span>${btn}</td>`;
 }
 
+// ---------- หัวข้อ 2: จัดการผู้รับเหมาช่วง (client_subcontractors) — master data เท่านั้น ----------
+// สิทธิ์แก้ไข: super_user หรือ can_manage_po (ตรงกับ hasSubcontractorManagePermission ฝั่ง server) —
+// ทุกคนที่ล็อกอินดูรายการได้ (GET ไม่ gate สิทธิ์ ตรงกับ pattern เดิมของทั้งระบบ) แค่ปุ่มแก้ไขเท่านั้นที่ซ่อน
+function pageSubcontractors(){
+  if(S.dataMode==='demo'){
+    return `
+    <div class="page-head"><div><h2>${tr('nav.subcontractors')}</h2><div class="sub">${tr('subcontractors.subtitle')}</div></div></div>
+    <div class="card" style="padding:20px 22px;"><div class="empty">${tr('approval_permissions.demo_not_available')}</div></div>`;
+  }
+  const canManage = !!(S.currentUser && (S.currentUser.role==='super_user' || S.currentUser.canManagePo));
+  const rows = (S.subcontractors||[]).slice();
+  return `
+  <div class="page-head">
+    <div><h2>${tr('nav.subcontractors')}</h2><div class="sub">${tr('subcontractors.subtitle')}</div></div>
+    ${canManage ? `<button class="btn btn-primary btn-sm" data-act="open-add-subcontractor">${tr('subcontractors.add_button')}</button>` : ''}
+  </div>
+  ${!canManage ? permNote(tr('subcontractors.no_manage_note')) : ''}
+  ${canManage && S.subcontractorForm ? renderSubcontractorForm() : ''}
+  <div class="card" style="padding:20px 22px;">
+    <div class="table-wrap"><table>
+      <thead>
+        <tr>
+          <th>${tr('subcontractors.col_name')}</th>
+          <th>${tr('subcontractors.col_taxpayer_type')}</th>
+          <th>${tr('subcontractors.col_tax_id')}</th>
+          <th>${tr('subcontractors.col_contact')}</th>
+          <th>${tr('subcontractors.col_bank')}</th>
+          <th>${tr('common.col_status')}</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.length===0 ? `<tr><td colspan="7"><div class="empty" style="padding:20px 0;">${tr('subcontractors.no_subcontractors_yet')}</div></td></tr>` : rows.map(sc=>`
+          <tr style="${sc.isActive?'':'opacity:0.55;'}">
+            <td>${esc(sc.name)}</td>
+            <td>${sc.taxpayerType==='juristic'?tr('subcontractors.taxpayer_juristic'):tr('subcontractors.taxpayer_individual')}</td>
+            <td class="mono">${esc(sc.taxId)||'-'}</td>
+            <td>${esc(sc.contactPerson)||'-'}${sc.phone?`<div class="hint">${esc(sc.phone)}</div>`:''}</td>
+            <td>${sc.bankName?`${esc(sc.bankName)}<div class="hint">${esc(sc.bankAccountNo)}</div>`:'-'}</td>
+            <td><span class="badge ${sc.isActive?'badge-approved':'badge-rejected'}">${sc.isActive?tr('common.status_active'):tr('common.status_inactive')}</span></td>
+            <td>${canManage ? `<button class="btn btn-ghost btn-sm" data-act="open-edit-subcontractor" data-id="${sc.id}">${tr('common.action_edit')}</button>` : ''}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table></div>
+  </div>`;
+}
+
+function renderSubcontractorForm(){
+  const f = S.subcontractorForm;
+  const isEdit = f.mode==='edit';
+  return `
+  <div class="card" style="padding:16px; margin-bottom:16px; background:var(--surface-muted,#f7f8fa); border:1px solid var(--border);">
+    <div style="font-weight:600; margin-bottom:10px;">${isEdit?tr('subcontractors.edit_title'):tr('subcontractors.add_title')}</div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:10px;">
+      <div class="field"><label>${tr('subcontractors.field_name')} *</label><input id="f-scName" value="${esc(f.values.name)}"></div>
+      <div class="field"><label>${tr('subcontractors.field_taxpayer_type')}</label>
+        <select id="f-scTaxpayerType">
+          <option value="juristic" ${f.values.taxpayerType==='juristic'?'selected':''}>${tr('subcontractors.taxpayer_juristic')}</option>
+          <option value="individual" ${f.values.taxpayerType==='individual'?'selected':''}>${tr('subcontractors.taxpayer_individual')}</option>
+        </select>
+      </div>
+      <div class="field"><label>${tr('subcontractors.field_tax_id')}</label><input id="f-scTaxId" value="${esc(f.values.taxId)}" placeholder="13 หลัก" maxlength="13"></div>
+      <div class="field"><label>${tr('subcontractors.field_branch_code')}</label><input id="f-scBranchCode" value="${esc(f.values.branchCode)}" placeholder="00000"></div>
+      <div class="field"><label>${tr('subcontractors.field_phone')}</label><input id="f-scPhone" value="${esc(f.values.phone)}"></div>
+      <div class="field"><label>${tr('subcontractors.field_contact_person')}</label><input id="f-scContactPerson" value="${esc(f.values.contactPerson)}"></div>
+      <div class="field"><label>${tr('subcontractors.field_email')}</label><input id="f-scEmail" type="email" value="${esc(f.values.email)}"></div>
+      <div class="field" style="grid-column:1/-1;"><label>${tr('subcontractors.field_address')}</label><input id="f-scAddress" value="${esc(f.values.address)}"></div>
+      <div class="field"><label>${tr('subcontractors.field_bank_name')}</label><input id="f-scBankName" value="${esc(f.values.bankName)}"></div>
+      <div class="field"><label>${tr('subcontractors.field_bank_account_no')}</label><input id="f-scBankAccountNo" value="${esc(f.values.bankAccountNo)}"></div>
+      <div class="field"><label>${tr('subcontractors.field_bank_account_name')}</label><input id="f-scBankAccountName" value="${esc(f.values.bankAccountName)}"></div>
+      ${isEdit ? `<div class="field"><label>${tr('common.col_status')}</label>
+        <select id="f-scIsActive">
+          <option value="1" ${f.values.isActive?'selected':''}>${tr('common.status_active')}</option>
+          <option value="0" ${!f.values.isActive?'selected':''}>${tr('common.status_inactive')}</option>
+        </select>
+      </div>` : ''}
+    </div>
+    <div style="display:flex; gap:8px; margin-top:14px;">
+      <button type="button" class="btn btn-primary btn-sm" data-act="submit-subcontractor">${tr('common.save')}</button>
+      <button type="button" class="btn btn-ghost btn-sm" data-act="cancel-subcontractor-form">${tr('approval_permissions.cancel')}</button>
+    </div>
+  </div>`;
+}
+
 // ---------- Job application form helpers ----------
 function esc(v){ return (v==null?'':String(v)).replace(/"/g,'&quot;'); }
 function radioGroup(name, options, current){
@@ -9314,6 +9422,7 @@ async function handleAction(act, el){
         name: data.customer.name, position: data.customer.position, role: data.customer.role || 'super_user', active: true,
         canApproveApplications: !!data.customer.can_approve_applications,
         canApproveBudget: !!data.customer.can_approve_budget,
+        canManagePo: !!data.customer.can_manage_po,
       };
       S.view='dashboard'; S.page='overview';
       render();
@@ -9324,7 +9433,7 @@ async function handleAction(act, el){
     }
     return;
   }
-  if(act==='logout'){ S.currentUser=null; S.view='login'; S.customerUsersLoaded=false; S.approvalRulesLoaded=false; S.approvalConditionsLoaded=false; S.jobPositionsLoaded=false; S.employeesLoaded=false; S.jobApplicationsLoaded=false; S.foreignWorkerDocumentsLoaded=false; S.tendersLoaded=false; S.notifications=[]; S.notificationsUnread=0; S.notifDropdownOpen=false; render(); return; }
+  if(act==='logout'){ S.currentUser=null; S.view='login'; S.customerUsersLoaded=false; S.approvalRulesLoaded=false; S.subcontractorsLoaded=false; S.approvalConditionsLoaded=false; S.jobPositionsLoaded=false; S.employeesLoaded=false; S.jobApplicationsLoaded=false; S.foreignWorkerDocumentsLoaded=false; S.tendersLoaded=false; S.notifications=[]; S.notificationsUnread=0; S.notifDropdownOpen=false; render(); return; }
   if(act==='toggle-notif-dropdown'){ S.notifDropdownOpen = !S.notifDropdownOpen; render(); return; }
   if(act==='set-locale'){ await I18N.setLocale(el.dataset.locale); return; }
   if(act==='open-notification'){
@@ -9445,6 +9554,7 @@ async function handleAction(act, el){
     }
     if(S.page==='approval_permissions' && S.dataMode!=='demo' && !S.customerUsersLoaded) await loadCustomerUsers();
     if(S.page==='approval_permissions' && S.dataMode!=='demo' && !S.approvalRulesLoaded) await loadApprovalRules();
+    if(S.page==='subcontractors' && S.dataMode!=='demo' && !S.subcontractorsLoaded) await loadSubcontractors();
     if((S.page==='foreign_worker_docs' || S.page==='foreign_worker_expiry') && S.dataMode!=='demo'){
       if(!S.employeesLoaded) await loadRealEmployees();
       if(!S.foreignWorkerDocumentsLoaded) await loadRealForeignWorkerDocuments();
@@ -9742,6 +9852,48 @@ async function handleAction(act, el){
       await apiCall('POST', `/api/customer/pr-approval-rules/${id}/deactivate`, {});
       await loadApprovalRules();
       toast('ปิดใช้งานเพดานวงเงินแล้ว');
+    } catch(e){ toast(e.message,'err'); }
+    render(); return;
+  }
+  if(act==='open-add-subcontractor'){
+    S.subcontractorForm = { mode:'new', values:{ name:'', taxpayerType:'juristic', taxId:'', branchCode:'00000', phone:'', contactPerson:'', email:'', address:'', bankName:'', bankAccountNo:'', bankAccountName:'', isActive:true } };
+    render(); return;
+  }
+  if(act==='open-edit-subcontractor'){
+    const id = parseInt(el.dataset.id);
+    const sc = (S.subcontractors||[]).find(x=>x.id===id);
+    if(!sc){ toast('ไม่พบผู้รับเหมาช่วงนี้','err'); return; }
+    S.subcontractorForm = { mode:'edit', id, values:{
+      name:sc.name, taxpayerType:sc.taxpayerType, taxId:sc.taxId||'', branchCode:sc.branchCode||'00000',
+      phone:sc.phone||'', contactPerson:sc.contactPerson||'', email:sc.email||'', address:sc.address||'',
+      bankName:sc.bankName||'', bankAccountNo:sc.bankAccountNo||'', bankAccountName:sc.bankAccountName||'', isActive:sc.isActive,
+    }};
+    render(); return;
+  }
+  if(act==='cancel-subcontractor-form'){ S.subcontractorForm = null; render(); return; }
+  if(act==='submit-subcontractor'){
+    const f = S.subcontractorForm;
+    const body = {
+      name: document.getElementById('f-scName').value.trim(),
+      taxpayerType: document.getElementById('f-scTaxpayerType').value,
+      taxId: document.getElementById('f-scTaxId').value.trim(),
+      branchCode: document.getElementById('f-scBranchCode').value.trim(),
+      phone: document.getElementById('f-scPhone').value.trim(),
+      contactPerson: document.getElementById('f-scContactPerson').value.trim(),
+      email: document.getElementById('f-scEmail').value.trim(),
+      address: document.getElementById('f-scAddress').value.trim(),
+      bankName: document.getElementById('f-scBankName').value.trim(),
+      bankAccountNo: document.getElementById('f-scBankAccountNo').value.trim(),
+      bankAccountName: document.getElementById('f-scBankAccountName').value.trim(),
+    };
+    if(!body.name){ toast('กรุณากรอกชื่อผู้รับเหมาช่วง','err'); return; }
+    if(f.mode==='edit') body.isActive = document.getElementById('f-scIsActive').value==='1';
+    try{
+      if(f.mode==='edit') await apiCall('PUT', `/api/customer/subcontractors/${f.id}`, body);
+      else await apiCall('POST', '/api/customer/subcontractors', body);
+      await loadSubcontractors();
+      S.subcontractorForm = null;
+      toast(f.mode==='edit'?'บันทึกการแก้ไขเรียบร้อยแล้ว':'เพิ่มผู้รับเหมาช่วงเรียบร้อยแล้ว');
     } catch(e){ toast(e.message,'err'); }
     render(); return;
   }

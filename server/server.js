@@ -8651,6 +8651,185 @@ function hasPrItemActionPermission(customer) {
   return customer.role === 'super_user' || customer.can_manage_po === true;
 }
 
+// ---------------- ผู้รับเหมาช่วง (client_subcontractors) — หัวข้อ 2, master data เท่านั้น ----------------
+// ไม่มี flag ใหม่แยกเฉพาะ — ใช้ can_manage_po ร่วม (เดิมมีไว้สำหรับ consume/release/cancel-qty ของ PR)
+// เพราะจัดหาผู้รับเหมาช่วงเป็นงานฝั่งจัดซื้อ/จัดหาแบบเดียวกัน และตารางนี้เป็นแค่ข้อมูลติดต่อ/ธนาคาร ไม่มี
+// เพดานวงเงินหรือผลต่อการอนุมัติใดๆ เลย (ต่างจาก fund_limit ที่ CLAUDE.md ข้อ 14 เตือนไว้ — ที่นี่ไม่มี
+// ช่องโหว่ self-approval แบบเดียวกันให้ต้องแยก flag ใหม่) ถ้าวันหน้ามีสิทธิ์อนุมัติงวดงาน/เพดานสัญญา
+// (client_subcontract_terms/billings) ต้องแยก flag ใหม่ต่างหากแน่นอน — เตือนไว้ล่วงหน้าตรงนี้
+function hasSubcontractorManagePermission(customer) {
+  return customer.role === 'super_user' || customer.can_manage_po === true;
+}
+
+// includeBank=false ซ่อนข้อมูลบัญชีธนาคารออกจาก response ทั้งหมด (ไม่ใช่แค่ mask บางส่วน) — คนที่ดู
+// รายชื่อผู้รับเหมาช่วงทั่วไปได้ (ทุกคนที่ login แล้ว) ไม่ควรเห็นเลขบัญชีธนาคาร มีแต่คนที่มีสิทธิ์จัดการ
+// จริง (hasSubcontractorManagePermission) เท่านั้นที่ควรเห็น — เหตุผล: ถ้าใครก็ตามในบริษัทเห็นเลขบัญชีได้
+// หมด แล้ว social-engineer ให้เปลี่ยนเลขบัญชีสำเร็จ (หรือแค่จำเลขบัญชีเดิมแล้วเอาไปใช้ผิดที่ทางอื่น)
+// ความเสี่ยงจะสูงกว่าจำกัดวงคนเห็นไว้แค่คนที่มีสิทธิ์แก้ไขข้อมูลนี้อยู่แล้วเท่านั้น
+function serializeSubcontractor(row, includeBank) {
+  return {
+    id: row.id,
+    name: row.name,
+    taxId: row.tax_id,
+    branchCode: row.branch_code,
+    address: row.address,
+    taxpayerType: row.taxpayer_type,
+    phone: row.phone,
+    contactPerson: row.contact_person,
+    email: row.email,
+    bankName: includeBank ? row.bank_name : null,
+    bankAccountNo: includeBank ? row.bank_account_no : null,
+    bankAccountName: includeBank ? row.bank_account_name : null,
+    isActive: row.is_active,
+    createdAt: row.created_at,
+  };
+}
+
+// ทั้ง POST/PUT ใช้ validate ร่วมชุดเดียวกัน — ผ่านการเช็ค constraint ระดับ DB ทั้งหมด (unique tax_id,
+// unique normalized name, juristic ต้องมี tax_id) ไว้แล้วที่ migration 0009 แต่ยังเช็คซ้ำที่ชั้น
+// application ก่อนเพื่อคืนข้อความ error ที่อ่านเข้าใจง่ายกว่า unique violation ดิบๆ จาก Postgres (ตาม
+// pattern เดิมของทั้งไฟล์) — ถ้าหลุดผ่านมาถึง DB จริงแล้วชน constraint (เช่น race ระหว่างสอง request
+// พร้อมกัน) catch error code 23505 คืน 409 แทน 500 ด้านล่าง
+function validateSubcontractorInput({ name, taxId, branchCode, address, taxpayerType, phone, contactPerson, email, bankName, bankAccountNo, bankAccountName }) {
+  const safeName = String(name || '').trim();
+  if (!safeName) return { error: 'กรุณาระบุชื่อผู้รับเหมาช่วง' };
+  const safeTaxpayerType = ['individual', 'juristic'].includes(taxpayerType) ? taxpayerType : 'juristic';
+  const safeTaxId = taxId ? String(taxId).trim() : null;
+  if (safeTaxId && !/^\d{13}$/.test(safeTaxId)) return { error: 'เลขผู้เสียภาษีต้องเป็นตัวเลข 13 หลัก' };
+  if (safeTaxpayerType === 'juristic' && !safeTaxId) {
+    return { error: 'ผู้รับเหมาช่วงประเภทนิติบุคคลต้องระบุเลขผู้เสียภาษี (ใช้ออกหนังสือรับรองหัก ณ ที่จ่ายตอนจ่ายเงินจริง)' };
+  }
+  return {
+    safeName,
+    safeTaxId,
+    safeBranchCode: String(branchCode || '00000').trim() || '00000',
+    safeAddress: String(address || '').trim(),
+    safeTaxpayerType,
+    safePhone: String(phone || '').trim(),
+    safeContactPerson: String(contactPerson || '').trim(),
+    safeEmail: String(email || '').trim(),
+    safeBankName: String(bankName || '').trim(),
+    safeBankAccountNo: String(bankAccountNo || '').trim(),
+    safeBankAccountName: String(bankAccountName || '').trim(),
+  };
+}
+
+app.get('/api/customer/subcontractors', requireCustomerAuth, async (req, res) => {
+  const companyId = req.customer.company_id;
+  const canManage = hasSubcontractorManagePermission(req.customer);
+  const r = await pool.query('SELECT * FROM client_subcontractors WHERE company_id=$1 ORDER BY name', [companyId]);
+  res.json({ subcontractors: r.rows.map(row => serializeSubcontractor(row, canManage)) });
+});
+
+app.post('/api/customer/subcontractors', requireCustomerAuth, async (req, res) => {
+  if (!hasSubcontractorManagePermission(req.customer)) return res.status(403).json({ error: 'ไม่มีสิทธิ์จัดการผู้รับเหมาช่วง' });
+  const companyId = req.customer.company_id;
+  const v = validateSubcontractorInput(req.body || {});
+  if (v.error) return res.status(400).json({ error: v.error });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const insert = await client.query(
+      `INSERT INTO client_subcontractors
+         (company_id, name, tax_id, branch_code, address, taxpayer_type, phone, contact_person, email, bank_name, bank_account_no, bank_account_name)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      [companyId, v.safeName, v.safeTaxId, v.safeBranchCode, v.safeAddress, v.safeTaxpayerType, v.safePhone,
+       v.safeContactPerson, v.safeEmail, v.safeBankName, v.safeBankAccountNo, v.safeBankAccountName]
+    );
+    const row = insert.rows[0];
+    // doc_type='subcontractor' (คนละค่ากับ 'subcontractor_payment' ที่เตรียมไว้สำหรับเอกสารเบิกจ่าย/
+    // งวดงานในอนาคต — ข้อมูล master นี้เป็นคนละประเภทเหตุการณ์กัน ไม่ควรปนกันในรายงาน audit)
+    await writeAuditLog(client, {
+      companyId, docType: 'subcontractor', docId: row.id, action: 'create', performedBy: req.customer.id,
+      reason: `เพิ่มผู้รับเหมาช่วงใหม่ "${row.name}"${row.bank_account_no ? ` (บัญชี ${row.bank_name} ${row.bank_account_no})` : ''}`,
+    });
+    await client.query('COMMIT');
+    res.json({ subcontractor: serializeSubcontractor(row, true) });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    if (err.code === '23505') {
+      const isDupTaxId = err.constraint === 'uq_client_subcontractors_taxid';
+      return res.status(409).json({ error: isDupTaxId ? 'มีผู้รับเหมาช่วงที่ใช้เลขผู้เสียภาษีนี้อยู่แล้ว' : 'มีผู้รับเหมาช่วงชื่อนี้อยู่แล้ว (เทียบแบบไม่สนตัวพิมพ์เล็ก-ใหญ่และคำนำหน้านิติบุคคล)' });
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+// ⚠️ full-replace เสมอ ไม่ใช่ partial patch — client ต้องส่งครบทุกฟิลด์ทุกครั้ง (รวมข้อมูลธนาคารเดิมถ้า
+// ไม่ได้ตั้งใจแก้) ไม่งั้นฟิลด์ที่ไม่ได้ส่งมาจะถูกเคลียร์เป็นค่าว่างเงียบๆ — ฟอร์มแก้ไขฝั่ง UI (pr-system.html
+// open-edit-subcontractor) โหลดค่าปัจจุบันมาเต็มก่อนเสมอจึงปลอดภัยในทางปฏิบัติ แต่ผู้เรียก endpoint นี้
+// ตรงๆ (เช่นเทส) ต้องรู้พฤติกรรมนี้ไว้ (พบจริงจากการเขียนเทส deactivate ที่ส่ง body ไม่ครบแล้วข้อมูล
+// ธนาคารหายไปโดยไม่ตั้งใจ)
+app.put('/api/customer/subcontractors/:id', requireCustomerAuth, async (req, res) => {
+  if (!hasSubcontractorManagePermission(req.customer)) return res.status(403).json({ error: 'ไม่มีสิทธิ์จัดการผู้รับเหมาช่วง' });
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const existing = await client.query('SELECT * FROM client_subcontractors WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (existing.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบผู้รับเหมาช่วงนี้' }); }
+    const old = existing.rows[0];
+    const v = validateSubcontractorInput(req.body || {});
+    if (v.error) { await client.query('ROLLBACK'); return res.status(400).json({ error: v.error }); }
+    // ⚠️ TODO เมื่อสร้าง client_subcontract_terms/client_subcontract_billings แล้ว (batch ถัดไป): ปิด
+    // ใช้งาน (is_active=false) ผู้รับเหมาช่วงที่ยังมีสัญญา/ใบเบิกสถานะ active (draft/submitted/approved
+    // ที่ยังไม่ settled/cancelled) อ้างอิงอยู่ต้องถูกบล็อก 409 — ตอนนี้ไม่มีตารางเหล่านั้นให้เช็คเลย จึง
+    // ปิดใช้งานได้อิสระ อย่าลืมเพิ่มเช็คนี้ตอนสร้าง 2 ตารางนั้น ไม่งั้นจะปิดใช้งานผู้รับเหมาที่มีงานค้างอยู่
+    // ได้เงียบๆ โดยไม่มีอะไรเตือน (เหมือนกับที่กัน DROP TABLE ใน migration 0009 down.sql ไว้แล้ว —
+    // หลักการเดียวกัน แค่คนละชั้น: DB-level guard ตอน rollback schema vs application-level guard ตอน
+    // เปลี่ยนสถานะข้อมูลจริง)
+    const isActive = req.body && typeof req.body.isActive === 'boolean' ? req.body.isActive : true;
+
+    const update = await client.query(
+      `UPDATE client_subcontractors SET
+         name=$1, tax_id=$2, branch_code=$3, address=$4, taxpayer_type=$5, phone=$6,
+         contact_person=$7, email=$8, bank_name=$9, bank_account_no=$10, bank_account_name=$11, is_active=$12
+       WHERE id=$13 RETURNING *`,
+      [v.safeName, v.safeTaxId, v.safeBranchCode, v.safeAddress, v.safeTaxpayerType, v.safePhone,
+       v.safeContactPerson, v.safeEmail, v.safeBankName, v.safeBankAccountNo, v.safeBankAccountName, isActive, id]
+    );
+    const row = update.rows[0];
+
+    // บันทึกทุกฟิลด์ที่เปลี่ยนจริงแบบ "ค่าเก่า → ค่าใหม่" ชัดเจน (ไม่ใช่แค่ "แก้ไขข้อมูล" เฉยๆ) — เน้น
+    // ข้อมูลธนาคารเป็นพิเศษด้วย ⚠️ เพราะถ้าแก้แล้วไม่มีใครสังเกต เงินงวดถัดไปจะโอนผิดบัญชีจริง (พบจากคำเตือน
+    // ของผู้ใช้ตรงๆ ไม่ใช่แค่ทฤษฎี)
+    const changes = [];
+    if (old.name !== v.safeName) changes.push(`ชื่อ: "${old.name}" → "${v.safeName}"`);
+    if ((old.tax_id || '') !== (v.safeTaxId || '')) changes.push(`เลขผู้เสียภาษี: "${old.tax_id || '-'}" → "${v.safeTaxId || '-'}"`);
+    if (old.taxpayer_type !== v.safeTaxpayerType) changes.push(`ประเภท: "${old.taxpayer_type}" → "${v.safeTaxpayerType}"`);
+    if (old.phone !== v.safePhone) changes.push(`โทรศัพท์: "${old.phone || '-'}" → "${v.safePhone || '-'}"`);
+    if (old.contact_person !== v.safeContactPerson) changes.push(`ผู้ติดต่อ: "${old.contact_person || '-'}" → "${v.safeContactPerson || '-'}"`);
+    if (old.email !== v.safeEmail) changes.push(`อีเมล: "${old.email || '-'}" → "${v.safeEmail || '-'}"`);
+    if (old.bank_name !== v.safeBankName || old.bank_account_no !== v.safeBankAccountNo || old.bank_account_name !== v.safeBankAccountName) {
+      changes.push(`⚠️ ข้อมูลธนาคาร: "${old.bank_name || '-'} / ${old.bank_account_no || '-'} / ${old.bank_account_name || '-'}" → "${v.safeBankName || '-'} / ${v.safeBankAccountNo || '-'} / ${v.safeBankAccountName || '-'}"`);
+    }
+    if (old.is_active !== isActive) changes.push(`สถานะ: ${old.is_active ? 'ใช้งานอยู่' : 'ปิดใช้งาน'} → ${isActive ? 'ใช้งานอยู่' : 'ปิดใช้งาน'}`);
+
+    if (changes.length > 0) {
+      await writeAuditLog(client, {
+        companyId, docType: 'subcontractor', docId: id, action: 'edit', performedBy: req.customer.id,
+        fromStatus: old.is_active !== isActive ? String(old.is_active) : null,
+        toStatus: old.is_active !== isActive ? String(isActive) : null,
+        reason: changes.join('; '),
+      });
+    }
+    await client.query('COMMIT');
+    res.json({ subcontractor: serializeSubcontractor(row, true) });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    if (err.code === '23505') {
+      const isDupTaxId = err.constraint === 'uq_client_subcontractors_taxid';
+      return res.status(409).json({ error: isDupTaxId ? 'มีผู้รับเหมาช่วงที่ใช้เลขผู้เสียภาษีนี้อยู่แล้ว' : 'มีผู้รับเหมาช่วงชื่อนี้อยู่แล้ว (เทียบแบบไม่สนตัวพิมพ์เล็ก-ใหญ่และคำนำหน้านิติบุคคล)' });
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
 app.post('/api/customer/purchase-requests/:id/items/:itemId/consume', requireCustomerAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const itemId = parseInt(req.params.itemId, 10);
