@@ -156,7 +156,7 @@ Dr 2130 เจ้าหนี้ผู้รับเหมาช่วง    15
 
 ## ส่วน 4 — List คอลัมน์ (ยังไม่เขียน DDL)
 
-### `client_subcontractors` (master ข้อมูลผู้รับเหมา — คล้าย `client_external_payees` ที่มีอยู่แล้ว)
+### `client_subcontractors` ✅ **APPLIED แล้ว** (migration 0009, 2026-08-18 — master ข้อมูลผู้รับเหมา คล้าย `client_external_payees`)
 
 | คอลัมน์ | ชนิด | หมายเหตุ |
 |---|---|---|
@@ -168,12 +168,23 @@ Dr 2130 เจ้าหนี้ผู้รับเหมาช่วง    15
 | `address` | TEXT DEFAULT '' | |
 | `taxpayer_type` | TEXT CHECK (individual/juristic) | |
 | `phone` | TEXT DEFAULT '' | |
+| `contact_person` | TEXT DEFAULT '' | เพิ่มตอนรีวิว DDL — ผู้ติดต่อประจำโครงการ |
+| `email` | TEXT DEFAULT '' | เพิ่มตอนรีวิว DDL — ส่งใบสั่งจ้าง/50 ทวิ |
+| `bank_name` | TEXT DEFAULT '' | เพิ่มตอนรีวิว DDL |
+| `bank_account_no` | TEXT DEFAULT '' | เพิ่มตอนรีวิว DDL — จ่ายส่วนใหญ่โอน ไม่ใช่เงินสด |
+| `bank_account_name` | TEXT DEFAULT '' | เพิ่มตอนรีวิว DDL |
 | `is_active` | BOOLEAN DEFAULT true | |
 | `created_at` | TIMESTAMPTZ | |
 
+**CHECK เพิ่มตอนรีวิว**: `taxpayer_type <> 'juristic' OR tax_id IS NOT NULL` — นิติบุคคลต้องมีเลขผู้เสียภาษี
+เสมอ (ไม่งั้นออก 50 ทวิ ไม่ได้ตอนจ่ายจริง) บุคคลธรรมดายอมให้ว่างได้ — ทดสอบแล้วทั้ง 2 เคส (juristic+NULL
+ถูกปฏิเสธ, individual+NULL ผ่าน) ก่อน apply
+
 ⚠️ **ไม่เก็บ default WHT rate ไว้ที่ตารางนี้โดยเจตนา** — ตามที่ตกลงไว้ว่า override ได้ "รายสัญญา" ไม่ใช่
 "รายผู้รับเหมา" ค่า WHT income type/rate จึงอยู่ที่ `client_subcontract_terms` เท่านั้น (ผู้รับเหมารายเดียว
-อาจมีหลายสัญญาที่ WHT ต่างกันได้ในทางทฤษฎี เช่น สัญญาหนึ่งเป็นค่าจ้างทำของ อีกสัญญาเป็นค่าเช่าเครื่องจักร)
+อาจมีหลายสัญญาที่ WHT ต่างกันได้ในทางทฤษฎี เช่น สัญญาหนึ่งเป็นค่าจ้างทำของ อีกสัญญาเป็นค่าเช่าเครื่องจักร) —
+ถ้าต้องการ pre-fill ฟอร์มสร้างสัญญาใหม่ให้เร็วขึ้น ทำที่ชั้น UI แทน (ดึงจากสัญญาล่าสุดของผู้รับเหมารายนั้น
+แทนที่จะมีคอลัมน์ใหม่)
 
 ### `client_subcontract_terms` (สัญญาต่อโครงการ — ตัวกำหนด % ทั้งหมด)
 
