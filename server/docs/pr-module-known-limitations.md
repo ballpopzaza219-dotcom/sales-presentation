@@ -1,0 +1,176 @@
+# Known Limitations — client ledger / PR module (รวมทุกหัวข้อ)
+
+รวบรวมจากทุกรอบรีวิวที่ผ่านมา (หัวข้อ 4 ใบขอซื้อ, หัวข้อ 1 เงินสดย่อย/เงินทดรองจ่าย/จ่ายภายนอก)
+เรียงตามความสำคัญ: **บล็อกการใช้งานจริง** ก่อน แล้วตามด้วย **แค่ไม่สะดวก/ทำใจได้ชั่วคราว**
+อัปเดตล่าสุด: 2026-08-06
+
+---
+
+## ก. บล็อกการใช้งานจริง (ต้องแก้ก่อนเปิดใช้งานจริงกับข้อมูลเงินจริง)
+
+### ก.1 ~~สิทธิ์อนุมัติ/จัดการหลายจุดยังผูกกับ `super_user` ชั่วคราว~~ — แก้แล้ว (2026-08-06)
+
+**แก้แล้วโดย migration `0007_manage_permission_flags`** — เพิ่ม 3 flag `can_manage_po` /
+`can_manage_petty_cash_fund` / `can_settle_cash` บน `customers` และเชื่อมเข้ากับจุดตรวจสิทธิ์เดิมทั้ง
+3 จุดแล้ว (OR กับ `role==='super_user'` เสมอ ไม่ใช่แทนที่):
+
+1. `hasPrItemActionPermission()` (server.js) — ใช้ `can_manage_po`
+2. `hasPettyCashAdminPermission()` (server.js) — ใช้ `can_manage_petty_cash_fund`
+3. `POST /api/customer/advance-clearances/:id/settle` (server.js) — ใช้ `can_settle_cash`
+
+มอบ/ถอนสิทธิ์ทั้ง 3 flag ผ่าน `PUT /api/customer/users/:id/permission-flags` (endpoint ใหม่) — จำกัด
+`super_user` เท่านั้น ห้าม self-grant, whitelist ชื่อคอลัมน์, company scope 404, ปฏิเสธ target ที่ไม่
+`active`, เขียน audit log ทุกครั้งที่ค่าเปลี่ยนจริง (`doc_type='user_permission'`) — ใช้ฟังก์ชันร่วม
+`updateUserPermissionFlag()` เดียวกับ `approval-permission`/`budget-approval-permission` (2 endpoint
+เดิมที่แก้ให้ตรงกันแล้วในรอบเดียวกัน)
+
+**ยังไม่มีหน้า UI สำหรับมอบ/ถอน 3 flag นี้** (มีแต่ API) — หน้า `approval-permission` เดิมใน
+pr-system.html แก้ให้ตรงกับกฎ backend ใหม่แล้ว (super_user เท่านั้น + ซ่อนปุ่มแถวตัวเอง) แต่ยังไม่มีหน้า
+เทียบเท่าสำหรับ 3 flag ใหม่ — ต้องสร้างเพิ่มถ้าจะให้ใช้งานผ่าน UI ได้จริง
+
+### ก.2 `client_subcontractors` ยังไม่มีอยู่จริง — บล็อกหัวข้อ 2 ทั้งหมด
+
+**ปัญหา**: ไม่มีตาราง `client_subcontractors`/`client_subcontract_terms` เลย ทั้งที่
+`client_wht_certificates.source_type` (migration 0001) เตรียม `'subcontractor_payment'` ไว้ล่วงหน้า
+แล้วใน CHECK constraint — ถ้ามีโค้ดออก WHT cert ด้วย `source_type='subcontractor_payment'` ก่อนสร้าง
+ตารางจริง `source_id` จะชี้ไปยังตารางที่ไม่มีอยู่ (polymorphic reference ไม่มี FK คุ้มกันได้)
+
+**สถานะ**: ยังไม่เริ่ม รอคิวหัวข้อ 2
+
+### ก.3 `client_payment_vouchers` ไม่มี `/void` — ใบเบิกที่อนุมัติแล้วย้อนกลับไม่ได้
+
+**ปัญหา**: `/cancel` รับเฉพาะ `status IN ('draft','submitted')` เท่านั้น ใบเบิกที่ `approved` แล้ว
+(โพสต์ journal entry จริงแล้ว) ไม่มีทางย้อนกลับผ่าน API — มีคอลัมน์ `voided_reason/voided_by/voided_at`
+เตรียมไว้แล้วตั้งแต่ migration 0001 แต่ไม่มี route ไหนตั้งค่าให้
+
+**ผลกระทบจริง**: ถ้าอนุมัติใบเบิกผิด (จำนวนผิด/ผู้รับผิด) หลังอนุมัติแล้วแก้ไม่ได้เลยต้องรอ migration
+ใหม่ + endpoint ใหม่ — เสี่ยงเกิดปัญหาจริงถ้าเริ่มใช้งานจริงแล้วมีคนอนุมัติผิดพลาด
+
+**ต้องทำ**: journal entry ใหม่ที่ debit/credit สลับจากของเดิม (ไม่ลบของเดิม), `status='voided'`,
+บังคับกรอกเหตุผล — ต้องผ่านรอบรีวิว migration ก่อนเหมือนทุกจุด ยังไม่ได้ร่าง
+
+### ก.4 การนำส่งภาษีหัก ณ ที่จ่าย (ภ.ง.ด.3/53) ให้กรมสรรพากร — ยังไม่มีกระบวนการปิดยอด
+
+**ปัญหา**: ทุกครั้งที่หัก WHT จะ Cr เข้าบัญชี `2120 ภาษีหัก ณ ที่จ่ายค้างจ่าย` แต่ **ไม่มี endpoint
+ไหนเลยที่ debit ล้างยอดนี้ออก** เมื่อบริษัทนำส่งเงินให้กรมสรรพากรจริงแล้ว — ยอดใน 2120 จะสะสมเพิ่ม
+ไปเรื่อยๆ ไม่มีวันลดลง มีแค่ `GET /wht-payable-summary` ที่ช่วยสรุปยอดรายเดือน/ราย
+ประเภทภาษีให้ฝ่ายบัญชีเอาไปยื่นเองด้วยมือเท่านั้น ระบบไม่ได้ปิดยอดให้เมื่อยื่นจริง
+
+**ผลกระทบจริง**: ถ้าใช้งานจริงในระยะยาว ยอด 2120 ในงบจะไม่ตรงกับยอดค้างจ่ายจริง (จะสูงเกินจริงเรื่อยๆ)
+ต้องมี endpoint บันทึกการนำส่ง (debit 2120 / credit เงินสด) ก่อนใช้งานจริงเกิน 1 รอบภาษี
+
+---
+
+## ข. แค่ไม่สะดวก (ทำใจใช้งานได้ชั่วคราว ไม่บล็อก)
+
+### ข.1 `client_purchase_orders` (หัวข้อ 5) เป็นของเดิมก่อนเซสชันนี้ ไม่ผ่านมาตรฐานชุดนี้เลย
+
+ไม่มี composite FK เข้ม, ไม่มี idempotency, ไม่มี approval workflow, ไม่โพสต์ journal entry, เก็บ
+items เป็น JSONB ก้อนเดียว — ยังใช้งานได้ในตัวมันเอง แต่ไม่ตรงกฎ CLAUDE.md ข้อ 1-9 สักข้อ ไม่บล็อกเพราะ
+ยังไม่มีอะไรอื่นในระบบไปพึ่งพา schema ของมัน (PR ยังไม่เชื่อมกับ PO จริงในโค้ดปัจจุบัน) — เวลาจะทำหัวข้อ
+5 จริงต้องเขียนใหม่ทั้งหมด ไม่ใช่ต่อยอด ส่วน WO (หนังสือสั่งจ้าง) ไม่มีอะไรเลย
+
+### ข.2 `client_progress_claims` — เอกสารเก่าอ้างถึงแต่ไม่มีโค้ดจริง (ต้องถามผู้ใช้)
+
+เอกสาร known-limitations เวอร์ชันก่อนเซสชันนี้ (2026-07-29) มีข้อ "1. client_progress_claims
+cannot be voided after status='converted'" ที่อ้างถึงตาราง/endpoint นี้อย่างละเอียด แต่ตรวจสอบแล้ว
+**ไม่มีอยู่จริงในโค้ดปัจจุบันเลย** — grep ทั้ง `server.js`, `schema.sql`, migration ทุกไฟล์ พบเพียง
+ค่า `'progress_claim'` ที่เตรียมไว้ล่วงหน้าใน CHECK constraint ของ
+`client_document_audit_log.doc_type` (migration 0001 บรรทัด 320) เท่านั้น ไม่มีตารางจริง ไม่มี route
+จริง จึงลบเนื้อหาเก่าที่อ้างถึงฟีเจอร์ที่ไม่มีอยู่ออกจากไฟล์นี้ — **คำถามนี้อยู่ในรายการคำถามท้าย
+รายงานหลัก** (ไม่ใช่ yes/no ตอบเองไม่ได้ว่าเป็นเอกสารที่เขียนล่วงหน้าไว้ก่อนสร้างจริงแล้วยังไม่ได้ทำ
+หรือเคยมีแล้วถูกย้อนกลับไปในบางจุดของประวัติโปรเจกต์)
+
+### ข.3 `client_purchase_request_item_adjustments` ไม่มี `uncancel`
+
+`cancel-qty` เป็นการตัดสินใจถาวรโดยตั้งใจ (ยืนยันกับผู้ใช้แล้ว 2026-07-29) ต่างจาก consume/release
+ที่มี release ย้อนกลับได้ — ถ้าต้องการ uncancel ในอนาคตต้องเพิ่ม `adjustment_type='uncancel'` ผ่าน
+migration ใหม่ ยังไม่ได้ทำและไม่ได้วางแผนไว้
+
+### ข.4 `client_petty_cash_replenishments` มีคอลัมน์ `rejected_reason` แล้วแต่ route ยังไม่เขียนลงคอลัมน์
+
+Migration 0003 เพิ่มคอลัมน์ `rejected_reason TEXT NOT NULL DEFAULT ''` ให้แล้ว แต่
+`POST /petty-cash-replenishments/:id/reject` (`server.js:10129`) ยัง `UPDATE ... SET status='rejected'`
+เฉยๆ ไม่ได้เขียน `reason` ลงคอลัมน์นี้ (มีคอมเมนต์เตือนไว้ในโค้ดแล้ว) — เหตุผลที่ยังไม่บล็อก:
+`writeAuditLog` บันทึกเหตุผลไว้ใน `client_document_audit_log` ครบอยู่แล้วเสมอ ดูผ่าน audit trail ได้
+เพียงแต่ไม่มีคอลัมน์ผูกตรงบนแถวเอกสารเหมือนใบเบิกเงิน (`client_payment_vouchers.rejected_reason`)
+— แก้ไขง่าย (แค่เพิ่ม 1 บรรทัดในโค้ด ไม่ต้อง migration ใหม่) แต่ยังไม่ได้แก้เพราะไม่กระทบข้อมูลจริง
+
+### ข.5 เคลียร์เงินทดรองจ่ายที่อนุมัติแล้ว (advance clearance) ไม่มี `/void`
+
+เหมือนข้อ ก.3 (payment voucher) แต่สำหรับ `client_advance_clearances` — clearance ที่ `approved`/
+`settled` แล้วย้อนกลับไม่ได้ผ่าน API เช่นกัน **รวมถึงยังไม่มีวิธียกเลิกใบรับรองหัก ณ ที่จ่าย (50 ทวิ)
+ที่ออกไปแล้ว** ถ้า clearance ที่ผูกกับใบ 50 ทวิถูกพบว่าผิดพลาดหลังอนุมัติ — จงใจเลื่อนไว้ก่อนตาม
+คำสั่งผู้ใช้ก่อนหน้านี้ให้รอความเห็นฝ่ายบัญชีก่อนออกแบบ (ดู `accounting-review-checklist.md`)
+ความเสี่ยงต่ำกว่า ก.3 เพราะ workflow ปัจจุบันมี maker/approver แยกกันอยู่แล้วช่วยลดโอกาสอนุมัติผิดพลาด
+
+### ข.6 ใบเบิกจ่ายเจ้าหนี้ภายนอก (1.4) รองรับแค่ 1 บรรทัดค่าใช้จ่ายต่อใบ
+
+ต่างจาก 1.3 (เคลียร์เงินทดรองจ่าย) ที่มีตาราง `client_advance_clearance_items` แยกรองรับหลายรายการ
+ต่อใบ — `client_payment_vouchers` (voucher_type='other') ผูกกับบัญชีค่าใช้จ่าย/VAT/WHT เดียวต่อ 1
+voucher เท่านั้น ถ้าใบแจ้งหนี้จริงมีหลายรายการ (เช่น ค่าบริการ + ค่าวัสดุ คนละบัญชี) ต้องแยกสร้างหลาย
+voucher เอาเอง — ยังไม่บล็อกเพราะ workaround (แยกใบ) ทำได้จริง แค่ไม่สะดวก
+
+### ข.7 `payee_tax_id`/`payee_name` ของพนักงาน ไม่เชื่อมกับ master data พนักงานอัตโนมัติ
+
+เงินทดรองจ่าย/เคลียร์เงินทดรองจ่ายอ้างถึง "พนักงาน" ผ่าน `customers` (ผู้ใช้งานในระบบ) ซึ่งไม่มีคอลัมน์
+เลขผู้เสียภาษีส่วนบุคคลอยู่แล้ว ต่างจาก `client_external_payees` ที่บังคับดึง `tax_id`/`name` จาก master
+เสมอ (แก้ไปแล้วตามกฎ "ห้ามเชื่อ free-text เมื่อผูกกับ master data") — กรณีพนักงานยังไม่มี master data
+ที่เทียบเท่าให้ผูก จึงยังไม่ได้บังคับลักษณะเดียวกัน ผลกระทบจำกัดเพราะเงินทดรองจ่ายพนักงานมักไม่ใช่กรณีที่
+ต้องออก 50 ทวิให้ตัวพนักงานเอง (WHT ในเคลียร์เงินทดรองจ่ายคือหักจาก "ผู้รับเงินปลายทาง" ที่พนักงานสำรอง
+จ่ายให้ ไม่ใช่หักจากตัวพนักงาน)
+
+### ข.8 ไม่มี automated test suite ที่ commit เข้า repo
+
+การทดสอบทั้งหมดในเซสชันนี้ (concurrent, idempotency, cross-company, self-approval, balance
+verification ฯลฯ) ทำผ่านสคริปต์ใน scratchpad ที่ไม่ได้ commit เข้า repo — ทดสอบผ่านจริงตอนที่รัน แต่
+ถ้ามีการแก้โค้ดในอนาคตจะไม่มี regression test อัตโนมัติมาช่วยจับ ต้องเขียนซ้ำมือทุกครั้ง — เป็นหนี้ทาง
+เทคนิคที่สะสมมาตลอดทั้งเซสชัน ไม่บล็อกการใช้งานแต่ควรวางแผนทำ CI/test suite จริงก่อนขยายทีมพัฒนา
+
+### ข.9 npm audit — เหลือ 2 รายการ (moderate) ที่แก้ไม่ได้ ยอมรับความเสี่ยงแล้ว (2026-08-06)
+
+**แก้ไปแล้ว 10 จาก 12 รายการเดิม (2 moderate, 10 high)**:
+- `npm audit fix` (non-breaking) แก้สาย `brace-expansion`→`minimatch`→`glob`→`archiver-utils`/`rimraf`
+  →`archiver`/`fstream`/`zip-stream`/`unzipper` ครบ 8 รายการ (ทั้งหมด severity high, เป็น dependency
+  ของ `exceljs` สำหรับสร้าง/แตกไฟล์ .xlsx) — ไม่แตะ package.json ของเราเลย ไม่ใช่ breaking change
+- อัปเกรด `node-cron` 3.0.3 → **4.6.0** ตรงๆ (ไม่ใช้ `--force` เหมารวม เพราะ `--force` แบบเหมารวม
+  npm เลือกวิธีแก้ที่จะ **ลด (downgrade) `exceljs` ไปเป็น 3.4.0** แทน ซึ่งเสี่ยงเกินไปเนื่องจาก exceljs
+  ถูกเรียกใช้ตรงในโค้ดเราเอง) — ตรวจ migration guide v3→v4 แล้วพบว่าการเรียกแบบพื้นฐาน
+  `cron.schedule(pattern, callback)` (รูปแบบเดียวที่ server.js ใช้ ไม่มี option/event อื่นเลย) **ยังคง
+  ทำงานเหมือนเดิมไม่เปลี่ยน** ต้องการ Node ≥20 (เรามี Node 24.19.0) — ยืนยันด้วย smoke test จริง (เรียก
+  `cron.schedule()` แบบเดียวกับ server.js 2 จุด แล้วบังคับรันทันทีผ่าน `task.execute()` — ผ่านทั้งคู่)
+  แก้ severity ของ `node-cron` เอง (moderate) หายไป
+
+**เหลือ 2 รายการ (moderate) ที่ยอมรับความเสี่ยงไปก่อน** — ทั้งคู่คือ `exceljs@4.4.0` (เวอร์ชันล่าสุดที่
+มีจริงบน npm ตอนนี้) ที่ pin `uuid` ไว้ที่ `^8.3.0` ตายตัวในตัวมันเอง ไม่มี release ใหม่กว่านี้ที่แก้ —
+`npm audit fix --force` เสนอทางแก้เดียวคือ downgrade `exceljs` ไปเป็น 3.4.0 (major ย้อนหลัง) ซึ่งเสี่ยง
+เกินไป ไม่ทำ
+
+**เหตุผลที่ exploitability ต่ำ (ยอมรับความเสี่ยงได้)**: CVE ของ `uuid` (GHSA-w5hq-g745-h8pq) คือ "missing
+buffer bounds check **เมื่อมีการส่ง `buf` param เข้าไป**" เท่านั้น — ไล่โค้ดจริงของ `exceljs`
+(`node_modules/exceljs/lib/xlsx/xform/sheet/cf-ext/cf-rule-ext-xform.js`) แล้วพบว่าเรียก `uuidv4()`
+แบบไม่ส่ง `buf` เลยสักจุด (ใช้แค่สร้าง unique id สำหรับ conditional-formatting rule) → code path ที่จะ
+โดนช่องโหว่นี้ไม่เคยถูกเรียกใช้จริงในระบบเรา
+
+**ต้องทำต่อไป**: เช็ค release ใหม่ของ `exceljs` เป็นระยะ (เช่นทุกไตรมาส) ว่าอัปเดต dependency `uuid`
+เป็น `^11.x` แล้วหรือยัง ถ้าอัปเดตแล้วให้ bump ทันทีเพื่อปิดช่องนี้ให้สนิท
+
+---
+
+## ตารางสรุปด่วน
+
+| ID | เรื่อง | ระดับ |
+|---|---|---|
+| ก.1 | ~~สิทธิ์ super_user ชั่วคราว 3 จุด~~ | แก้แล้ว (0007) |
+| ก.2 | client_subcontractors ไม่มีอยู่จริง | บล็อก (หัวข้อ 2) |
+| ก.3 | payment voucher ไม่มี /void | บล็อก |
+| ก.4 | ไม่มีกระบวนการนำส่ง ภ.ง.ด. (2120 สะสมไม่มีวันลด) | บล็อก |
+| ข.1 | PO เดิมไม่ผ่านมาตรฐาน, ไม่มี WO | ไม่สะดวก |
+| ข.2 | client_progress_claims เอกสารอ้างถึงแต่ไม่มีจริง | ไม่สะดวก + ต้องถาม |
+| ข.3 | PR item adjustment ไม่มี uncancel (ตั้งใจ) | ไม่สะดวก |
+| ข.4 | replenishment reject ไม่เขียน rejected_reason column | ไม่สะดวก |
+| ข.5 | advance clearance ไม่มี /void + ยกเลิก 50 ทวิ | ไม่สะดวก (รอบัญชี) |
+| ข.6 | payment voucher (other) รองรับ 1 บรรทัด/ใบ | ไม่สะดวก |
+| ข.7 | payee_tax_id พนักงานไม่ผูก master data | ไม่สะดวก |
+| ข.8 | ไม่มี automated test suite | หนี้เทคนิค |
+| ข.9 | npm audit เหลือ 2 (moderate, exceljs/uuid) — 10 อื่นแก้แล้ว 2026-08-06 | หนี้เทคนิค (ยอมรับแล้ว) |

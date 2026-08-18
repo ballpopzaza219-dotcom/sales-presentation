@@ -1,0 +1,3203 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<title>Build-Con Admin — ระบบจัดการลูกค้า</title>
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap');
+
+:root{
+  --bg:#F5F6F8;
+  --surface:#FFFFFF;
+  --surface-alt:#F7F8FA;
+  --surface-sunken:#EFF1F4;
+  --navy:#16233F;
+  --navy-2:#223458;
+  --steel:#4A6E93;
+  --orange:#C25A28;
+  --orange-dark:#A34A1F;
+  --orange-tint:#FBEEE5;
+  --green:#1E7A54;
+  --green-bg:#E7F5EE;
+  --red:#B23B2E;
+  --red-bg:#FBEAE7;
+  --amber:#A8730E;
+  --amber-bg:#FBF1DC;
+  --text:#161D2E;
+  --text-muted:#68738C;
+  --text-faint:#9AA3B5;
+  --border:#E4E7ED;
+  --border-strong:#D4D9E2;
+  --radius:9px;
+  --radius-sm:6px;
+  --shadow-xs:0 1px 2px rgba(15,23,41,.05);
+  --shadow-sm:0 1px 3px rgba(15,23,41,.06), 0 1px 2px rgba(15,23,41,.04);
+  --shadow-md:0 4px 14px rgba(15,23,41,.08), 0 1px 3px rgba(15,23,41,.05);
+  --shadow-lg:0 16px 40px rgba(15,23,41,.14), 0 4px 12px rgba(15,23,41,.06);
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{background:var(--bg); color:var(--text); font-family:'Inter',sans-serif; min-height:100vh; -webkit-font-smoothing:antialiased;}
+#app{min-height:100vh;}
+h1,h2,h3,h4{font-family:'Manrope',sans-serif; letter-spacing:-.01em; margin:0; color:var(--navy); font-weight:800;}
+button{font-family:inherit; cursor:pointer;}
+input,select{font-family:inherit;}
+::selection{background:var(--orange-tint); color:var(--orange-dark);}
+
+.btn{border:none; border-radius:var(--radius-sm); padding:10px 18px; font-size:13.5px; font-weight:600; display:inline-flex; align-items:center; gap:7px; transition:background .12s ease, border-color .12s ease, box-shadow .12s ease, transform .06s ease; white-space:nowrap;}
+.btn:active{transform:translateY(1px);}
+.btn-primary{background:var(--navy); color:#fff; box-shadow:var(--shadow-xs);}
+.btn-primary:hover{background:var(--navy-2); box-shadow:var(--shadow-sm);}
+.btn-primary:disabled{background:var(--border-strong); color:var(--text-faint); cursor:not-allowed; box-shadow:none;}
+.btn-ghost{background:var(--surface); color:var(--navy); border:1px solid var(--border-strong);}
+.btn-ghost:hover{border-color:var(--steel); color:var(--steel); background:var(--surface-alt);}
+.btn-sm{padding:7px 12px; font-size:12px;}
+.btn-danger{background:transparent; color:var(--red); border:1px solid var(--red-bg);}
+.btn-danger:hover{background:var(--red-bg);}
+
+.card{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow-xs);}
+.field{margin-bottom:16px;}
+.field label{display:block; font-size:12.5px; font-weight:600; color:var(--navy); margin-bottom:6px; letter-spacing:.01em;}
+.field .hint{font-size:11.5px; color:var(--text-muted); margin-top:5px; line-height:1.5;}
+.hint{font-size:11.5px; color:var(--text-muted); line-height:1.5;}
+.field input, .field select, .field textarea{width:100%; padding:10px 12px; border:1px solid var(--border-strong); border-radius:var(--radius-sm); font-size:14px; background:#fff; color:var(--text); transition:border-color .12s ease, box-shadow .12s ease; font-family:inherit;}
+.field input:focus, .field select:focus, .field textarea:focus{outline:none; border-color:var(--navy); box-shadow:0 0 0 3px rgba(22,35,63,.09);}
+
+.badge{display:inline-flex; align-items:center; gap:6px; font-size:11.5px; font-weight:600; padding:4px 10px 4px 8px; border-radius:20px; letter-spacing:.01em;}
+.badge::before{content:''; width:6px; height:6px; border-radius:50%; background:currentColor; flex-shrink:0;}
+.badge-active{background:var(--green-bg); color:var(--green);}
+.badge-suspended{background:var(--red-bg); color:var(--red);}
+.badge-paid{background:var(--green-bg); color:var(--green);}
+.badge-unpaid{background:var(--amber-bg); color:var(--amber);}
+.badge-partial{background:var(--amber-bg); color:var(--amber);}
+.badge-overdue{background:var(--red-bg); color:var(--red);}
+.badge-cancelled{background:var(--surface-sunken); color:var(--text-muted);}
+
+.filter-bar{display:flex; gap:10px; margin-bottom:18px; flex-wrap:wrap;}
+.filter-bar select{padding:8px 12px; border:1px solid var(--border-strong); border-radius:var(--radius-sm); font-size:13px; background:#fff; font-family:inherit; color:var(--text);}
+.settings-grid{display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:start;}
+@media (max-width:1100px){.settings-grid{grid-template-columns:1fr;}}
+
+.auth-shell{min-height:100vh; display:grid; grid-template-columns:minmax(0,460px) 1fr;}
+.auth-brand-side{background:var(--navy); position:relative; overflow:hidden; display:flex; flex-direction:column; justify-content:space-between; padding:44px 44px 40px; color:#fff;}
+.auth-brand-side::before{content:''; position:absolute; inset:0; background-image:radial-gradient(rgba(255,255,255,.09) 1px, transparent 1px); background-size:22px 22px; opacity:.5;}
+.auth-brand-side::after{content:''; position:absolute; right:-120px; bottom:-120px; width:340px; height:340px; border-radius:50%; background:radial-gradient(circle, rgba(194,90,40,.25), transparent 70%);}
+.abs-top, .abs-bottom{position:relative; z-index:1;}
+.abs-tagline{font-family:'Manrope'; font-size:27px; font-weight:800; line-height:1.32; letter-spacing:-.01em; margin-top:40px; max-width:360px;}
+.abs-desc{font-size:13.5px; color:rgba(255,255,255,.6); margin-top:14px; max-width:320px; line-height:1.7;}
+.abs-foot{font-size:11.5px; color:rgba(255,255,255,.4); letter-spacing:.02em;}
+
+.auth-form-side{display:flex; align-items:center; justify-content:center; padding:40px 32px;}
+.auth-box{width:100%; max-width:400px;}
+.brand{display:flex; align-items:center; gap:11px; margin-bottom:8px;}
+.brand-logo-img{height:40px; width:auto; display:block;}
+.auth-form-side .brand-logo-img, .auth-brand-side .brand-logo-img{height:110px;}
+
+.panel{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:32px 30px; box-shadow:var(--shadow-md); margin-top:26px;}
+.form-error{background:var(--red-bg); color:var(--red); font-size:12.5px; padding:10px 12px; border-radius:var(--radius-sm); margin-bottom:16px;}
+@media (max-width:860px){.auth-shell{grid-template-columns:1fr;} .auth-brand-side{display:none;}}
+
+.shell{display:flex; min-height:100vh;}
+.sidebar{width:256px; background:var(--navy); color:#fff; flex-shrink:0; display:flex; flex-direction:column; position:sticky; top:0; height:100vh;}
+.sidebar .brand{justify-content:flex-start; padding:22px 22px 20px; margin:0;}
+.role-tag{margin:0 16px 14px; padding:12px 13px; background:rgba(255,255,255,.05); border-radius:var(--radius-sm); display:flex; align-items:center; gap:10px;}
+.rt-avatar{width:32px; height:32px; border-radius:50%; background:var(--orange); flex-shrink:0; display:flex; align-items:center; justify-content:center; font-family:'Manrope'; font-weight:800; font-size:12.5px; color:#fff;}
+.rt-name{font-size:12.5px; font-weight:700; line-height:1.3;}
+.rt-group{font-size:10.5px; color:rgba(255,255,255,.48); letter-spacing:.03em; margin-top:1px;}
+.nav{flex:1; padding:4px 12px; overflow-y:auto;}
+.nav-item{display:flex; align-items:center; gap:11px; padding:9px 12px; border-radius:var(--radius-sm); color:rgba(255,255,255,.62); font-size:13.5px; font-weight:500; margin-bottom:1px; border:none; background:none; width:100%; text-align:left; position:relative; transition:background .12s, color .12s;}
+.nav-item:hover{background:rgba(255,255,255,.06); color:#fff;}
+.nav-item.active{background:rgba(255,255,255,.09); color:#fff; font-weight:600;}
+.nav-item.active::before{content:''; position:absolute; left:-12px; top:8px; bottom:8px; width:3px; border-radius:0 3px 3px 0; background:var(--orange);}
+.nav-item.disabled{color:rgba(255,255,255,.28); cursor:default;}
+.nav-item.disabled:hover{background:none; color:rgba(255,255,255,.28);}
+.nav-item .soon{margin-left:auto; font-size:9.5px; font-family:'IBM Plex Mono'; letter-spacing:.04em; text-transform:uppercase; color:rgba(255,255,255,.32); border:1px solid rgba(255,255,255,.18); padding:2px 6px; border-radius:20px;}
+.nav-item .nav-badge{margin-left:auto; font-size:11px; font-weight:700; line-height:1; color:#fff; background:var(--red); padding:3px 7px; border-radius:20px; min-width:9px; text-align:center;}
+.unseen-dot{display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--red); margin-right:7px;}
+.quo-items-table th, .quo-items-table td{padding:8px 10px; font-size:12.5px;}
+.quo-items-table td{vertical-align:top;}
+.quo-items-table input, .quo-items-table select{width:100%; padding:6px 8px; font-size:12.5px;}
+.quo-items-table .quo-item-product{margin-bottom:5px;}
+.quo-item-subtotal{font-weight:700; color:var(--navy); padding:6px 0; white-space:nowrap;}
+.quo-total{text-align:right; font-weight:700; color:var(--navy); margin:14px 0; font-size:15px;}
+.nav-foot{padding:14px 22px 18px; border-top:1px solid rgba(255,255,255,.08); margin-top:6px;}
+.logout-btn{color:rgba(255,255,255,.5); font-size:12.5px; background:none; border:none; padding:0;}
+.logout-btn:hover{color:#fff;}
+
+.main{flex:1; padding:32px 42px 60px; max-width:calc(100vw - 256px);}
+.page-head{display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:24px; flex-wrap:wrap; gap:14px;}
+.page-head h2{font-size:23px;}
+.page-head .sub{color:var(--text-muted); font-size:13px; margin-top:5px;}
+
+.grid-cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:14px; margin-bottom:26px;}
+.stat-card{padding:19px 20px; display:flex; flex-direction:column; gap:12px;}
+.stat-card .stico{width:32px; height:32px; border-radius:8px; background:var(--orange-tint); color:var(--orange-dark); display:flex; align-items:center; justify-content:center; font-size:15px;}
+.stat-card .num{font-family:'Manrope'; font-size:28px; font-weight:800; color:var(--navy); line-height:1;}
+.stat-card .lbl{font-size:12.5px; color:var(--text-muted); margin-top:3px;}
+.stat-card .lbl-note{font-size:10.5px; color:var(--text-faint); margin-top:2px;}
+
+table{width:100%; border-collapse:collapse; font-size:13.5px;}
+th{text-align:left; padding:11px 16px; font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--text-muted); border-bottom:1px solid var(--border); font-weight:700; background:var(--surface-alt);}
+th:first-child{border-top-left-radius:var(--radius);}
+th:last-child{border-top-right-radius:var(--radius);}
+td{padding:13px 16px; border-bottom:1px solid var(--border); vertical-align:middle;}
+tr:last-child td{border-bottom:none;}
+tr:hover td{background:var(--surface-alt);}
+tr.clickable{cursor:pointer;}
+.table-wrap{overflow-x:auto; border:1px solid var(--border); border-radius:var(--radius);}
+.table-wrap table{border:none;}
+.row-actions{display:flex; gap:6px; flex-wrap:wrap;}
+
+.empty{padding:56px 20px; text-align:center; color:var(--text-muted);}
+
+.modal-overlay{position:fixed; inset:0; background:rgba(15,23,41,.55); display:flex; align-items:center; justify-content:center; z-index:50; padding:20px; backdrop-filter:blur(2px);}
+.modal{background:#fff; border-radius:var(--radius); width:100%; max-width:560px; max-height:88vh; overflow-y:auto; padding:28px 30px; box-shadow:var(--shadow-lg); scrollbar-width:thin; scrollbar-color:var(--border-strong) transparent;}
+.modal::-webkit-scrollbar, .contact-list-scroll::-webkit-scrollbar{width:9px;}
+.modal::-webkit-scrollbar-track, .contact-list-scroll::-webkit-scrollbar-track{background:transparent;}
+.modal::-webkit-scrollbar-thumb, .contact-list-scroll::-webkit-scrollbar-thumb{background:var(--border-strong); border-radius:20px;}
+.modal::-webkit-scrollbar-thumb:hover, .contact-list-scroll::-webkit-scrollbar-thumb:hover{background:var(--steel);}
+.contact-list-scroll{max-height:260px; overflow-y:auto; scrollbar-width:thin; scrollbar-color:var(--border-strong) transparent;}
+.modal h3{margin-bottom:6px; font-size:18px;}
+.modal .modal-sub{color:var(--text-muted); font-size:12.5px; margin-bottom:20px;}
+.modal-foot{display:flex; justify-content:flex-end; gap:10px; margin-top:20px;}
+.split2{display:grid; grid-template-columns:1fr 1fr; gap:12px;}
+.section-title{font-size:14.5px; font-weight:700; color:var(--navy); margin:22px 0 14px; padding-bottom:10px; border-bottom:1px solid var(--border); font-family:'Manrope'; display:flex; justify-content:space-between; align-items:center;}
+
+.contact-row{display:flex; justify-content:space-between; align-items:center; padding:11px 0; border-bottom:1px solid var(--border);}
+.contact-row:last-child{border-bottom:none;}
+.contact-name{font-weight:600; font-size:13.5px; color:var(--navy);}
+.contact-meta{font-size:12px; color:var(--text-muted); margin-top:2px;}
+
+.renew-card{margin-top:14px; padding:18px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow-xs);}
+.grid-cards .renew-card{margin-top:0;}
+.renew-card-head{display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:18px;}
+.renew-card-title{font-family:'Manrope'; font-weight:800; font-size:16px; color:var(--navy);}
+.renew-card-sub{font-size:12.5px; color:var(--text-muted); margin-top:2px;}
+.price-input{position:relative;}
+.price-input span{position:absolute; left:12px; top:50%; transform:translateY(-50%); color:var(--text-muted); font-size:14px; pointer-events:none;}
+.price-input input{padding-left:28px !important;}
+.duration-group{display:grid; grid-template-columns:repeat(4,1fr); gap:8px;}
+.duration-btn{position:relative; border:1px solid var(--border-strong); background:#fff; border-radius:var(--radius-sm); padding:10px 6px; font-size:12.5px; font-weight:600; color:var(--text); cursor:pointer; text-align:center; transition:border-color .12s ease, box-shadow .12s ease;}
+.duration-btn:hover{border-color:var(--steel);}
+.duration-btn.active{border-color:var(--navy); box-shadow:0 0 0 2px rgba(22,35,63,.12); color:var(--navy);}
+.duration-btn .discount{display:block; font-size:11px; font-weight:700; color:var(--green); margin-top:2px;}
+.stepper{display:flex; align-items:center; gap:0; border:1px solid var(--border-strong); border-radius:var(--radius-sm); overflow:hidden; width:fit-content;}
+.stepper button{width:34px; height:34px; border:none; background:var(--surface-alt); color:var(--navy); font-size:16px; font-weight:700; cursor:pointer; line-height:1;}
+.stepper button:hover{background:var(--border);}
+.stepper span{min-width:44px; text-align:center; font-size:14px; font-weight:700; color:var(--text);}
+.renew-summary{margin-top:14px; padding:14px; background:var(--surface-alt); border-radius:var(--radius-sm); font-size:13px;}
+.renew-summary .row{display:flex; justify-content:space-between; padding:4px 0; color:var(--text-muted);}
+.renew-summary .row.discount{color:var(--green);}
+.renew-summary .row.total{margin-top:6px; padding-top:10px; border-top:1px solid var(--border); font-weight:700; font-size:15px; color:var(--navy);}
+
+.toast{position:fixed; bottom:26px; right:26px; background:var(--navy); color:#fff; padding:13px 18px; border-radius:var(--radius-sm); font-size:13px; z-index:100; box-shadow:var(--shadow-lg); font-weight:500;}
+.toast.err{background:var(--red);}
+.toast.ok{background:var(--green);}
+
+@media (max-width:900px){
+  .sidebar{position:fixed; z-index:40; transform:translateX(-100%); transition:transform .2s;}
+  .sidebar.open{transform:translateX(0);}
+  .main{max-width:100vw; padding:22px;}
+  .split2{grid-template-columns:1fr;}
+}
+
+#invoice-print-area{display:none;}
+.invoice-doc{font-family:'Sarabun','Tahoma',sans-serif; color:#161225; font-size:12.5px; position:relative; --doc-blue:#1B4B96; --doc-blue-tint:#EAF0FA; display:flex; flex-direction:column; min-height:267mm;}
+.invoice-doc .doc-bottom-box{margin-top:auto;}
+.invoice-doc .doc-page-no{position:absolute; top:0; right:0; font-size:11px; color:#333;}
+.invoice-doc .doc-topbar{height:3px; background:#E7A9A6; margin:-6px -6px 16px;}
+.invoice-doc .doc-header{display:flex; align-items:center; justify-content:flex-start; gap:14px; margin-bottom:8px;}
+.invoice-doc .doc-logo{height:64px; flex-shrink:0;}
+.invoice-doc .doc-company-info{text-align:left;}
+.invoice-doc .doc-company-name{font-size:19px; font-weight:800; color:var(--doc-blue);}
+.invoice-doc .doc-company-addr{font-size:11.5px; margin-top:4px;}
+.invoice-doc .doc-company-contact{font-size:11.5px; margin-top:2px;}
+.invoice-doc .doc-title-row{position:relative; margin:18px 0 14px; min-height:52px;}
+.invoice-doc .doc-title{font-size:22px; font-weight:800; text-align:center; padding:0 210px;}
+.invoice-doc .doc-no-table{position:absolute; top:0; right:0; width:auto; border-collapse:collapse; font-size:11.5px; border:1px solid var(--doc-blue);}
+.invoice-doc .doc-no-table td{padding:5px 14px; border:1px solid var(--doc-blue);}
+.invoice-doc .doc-no-table td:first-child{background:var(--doc-blue-tint); font-weight:600;}
+.invoice-doc .doc-info-box{display:flex; border:1px solid var(--doc-blue); margin-bottom:14px; font-size:12px;}
+.invoice-doc .doc-info-col{flex:1; padding:10px 14px; line-height:1.85;}
+.invoice-doc .doc-info-col:first-child{border-right:1px solid var(--doc-blue);}
+.invoice-doc .doc-info-col b{display:inline-block; min-width:120px;}
+.invoice-doc table.items{width:100%; flex:1; border-collapse:collapse; margin-bottom:14px; border:1px solid var(--doc-blue);}
+.invoice-doc table.items td{border:none; border-left:1px solid var(--doc-blue); border-right:1px solid var(--doc-blue); padding:8px 10px; font-size:12px;}
+.invoice-doc table.items th{background:var(--doc-blue-tint); text-align:center; font-weight:700; border:1px solid var(--doc-blue); padding:8px 10px; font-size:12px;}
+.invoice-doc .doc-bottom-box{border:1px solid var(--doc-blue); margin-bottom:20px;}
+.invoice-doc .doc-bottom-row{display:flex;}
+.invoice-doc .doc-note-box{flex:1; padding:10px 14px; border-right:1px solid var(--doc-blue); min-height:80px;}
+.invoice-doc .totals-box{flex:1;}
+.invoice-doc .totals-box table{width:100%; border-collapse:collapse; font-size:12px;}
+.invoice-doc .totals-box td{padding:5px 14px;}
+.invoice-doc .totals-box .label{text-align:right;}
+.invoice-doc .totals-box .value{text-align:right; width:120px;}
+.invoice-doc .totals-box .net-row td{border-top:1px solid var(--doc-blue); font-weight:800; font-size:13.5px; padding-top:8px;}
+.invoice-doc .doc-baht-row{border-top:1px solid var(--doc-blue); text-align:center; padding:8px; font-style:italic; font-size:12px;}
+.invoice-doc .signatures{display:flex; gap:14px;}
+.invoice-doc .sig-box{flex:1; border:1px solid var(--doc-blue); text-align:center; font-size:11.5px; padding:55px 10px 12px;}
+.invoice-doc .sig-box b{display:block; margin-bottom:4px;}
+.invoice-doc .sig-date{margin-top:10px; font-size:11px;}
+
+@media print{
+  @page{size:A4; margin:15mm;}
+  body > *:not(#invoice-print-area){display:none !important;}
+  #invoice-print-area{display:block !important; position:absolute; top:0; left:0; width:100% !important; box-sizing:border-box;}
+  #invoice-print-area .invoice-doc{width:100%; box-sizing:border-box;}
+}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="invoice-print-area"></div>
+
+<script src="/i18n.js"></script>
+<script>
+/* SiteReq Admin — customer CRM panel (phase 1: login, dashboard, customer companies) */
+
+// See i18n.js for the shared loader. Named tr(), not t(), to stay consistent with pr-system.html
+// (which has pre-existing `t` loop variables this avoids colliding with).
+function tr(key){ return window.I18N.t(key); }
+
+let S = {
+  view: 'login',
+  page: 'dashboard',
+  currentAdmin: null,
+  loginError: '',
+  loginBusy: false,
+  stats: null,
+  companies: [],
+  companiesLoaded: false,
+  modal: null,          // 'newCompany' | 'companyDetail' | 'account' | 'package' | 'invoice' | 'slips' | 'lead'
+  companyForm: null,     // {mode:'new'|'edit', values, saving, error}
+  contactForm: null,     // {mode:'new'|'edit', id, values, saving, error}
+  renewForm: null,       // {values, saving, error}
+  detailCompanyId: null,
+  companyDetail: null,   // {company, customers, subscription}
+  leads: [],
+  leadsLoaded: false,
+  leadForm: null,        // {mode:'new'|'edit', id, values, saving, error}
+  leadViewId: null,
+  accounts: [],
+  accountsLoaded: false,
+  accountForm: null,     // {mode:'new'|'edit', id, values, saving, error}
+  packages: [],
+  packagesLoaded: false,
+  packageForm: null,     // {mode:'new'|'edit', id, values, saving, error}
+  products: [],
+  productsLoaded: false,
+  productForm: null,     // {mode:'new'|'edit', id, values, saving, error}
+  quotations: [],
+  quotationsLoaded: false,
+  quotationForm: null,   // {mode:'new'|'edit', id, values:{...,items:[]}, saving, error}
+  expenses: [],
+  expensesLoaded: false,
+  expenseForm: null,     // {mode:'new'|'edit', id, values, saving, error}
+  journalEntries: [],
+  journalEntriesLoaded: false,
+  journalFilters: { from: '', to: '', sourceType: '' },
+  reportTab: 'pl',       // 'pl' | 'ar' | 'vat'
+  reportFilters: { from: '', to: '' },
+  plReport: null,
+  arReport: null,
+  vatReport: null,
+  invoices: [],
+  invoicesLoaded: false,
+  invoiceFilters: { companyId: '', status: '' },
+  invoiceForm: null,     // {values, saving, error}
+  receivePaymentForm: null, // {invoiceId, amount, paymentDate, note, saving, error}
+  receivePaymentHistory: null, // payments for the currently-selected invoice on the รับชำระเงิน page
+  slipsModal: null,      // {invoiceId, slips, uploading, error}
+  printTaxModal: null,   // {invoiceId}
+  coaAccounts: [],
+  coaAccountsLoaded: false,
+  coaForm: null,         // {mode:'new'|'edit', id, values, saving, error}
+  settings: null,
+  settingsLoaded: false,
+  settingsForm: null,    // {values, saving, error}
+  myAccountForm: null,   // {values, saving, error}
+  passwordForm: null,    // {values, saving, error}
+  toast: null,
+};
+
+const DISABLED_NAV = [];
+const RENEW_DURATIONS = [
+  { months: 1, days: 30, discount: 0 },
+  { months: 3, days: 90, discount: 0.05 },
+  { months: 6, days: 180, discount: 0.10 },
+  { months: 12, days: 365, discount: 0.17 },
+];
+function computeRenewTotals(v){
+  const dur = RENEW_DURATIONS.find(d => d.months === Number(v.months)) || RENEW_DURATIONS[0];
+  const price = Number(v.customPrice) || 0;
+  const seatPrice = Number(v.customSeatPrice) || 0;
+  const addUsers = Number(v.additionalUsers) || 0;
+  const packageCost = price * dur.months;
+  const addUsersCost = addUsers * seatPrice * dur.months;
+  const subtotal = packageCost + addUsersCost;
+  const discountAmount = subtotal * dur.discount;
+  return { ...dur, packageCost, addUsersCost, subtotal, discountAmount, total: subtotal - discountAmount };
+}
+
+function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function generateCompanyCode(){
+  const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const existing = new Set(S.companies.map(c => c.code).filter(Boolean));
+  let code;
+  do {
+    code = Array.from({ length: 6 }, () => letters[Math.floor(Math.random() * letters.length)]).join('');
+  } while(existing.has(code));
+  return code;
+}
+
+function generateRandomPassword(){
+  const chars = '0123456789';
+  return Array.from({ length: 10 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+}
+
+function generateLeadRefCode(){
+  const existing = new Set(S.leads.map(l => l.ref_code).filter(Boolean));
+  let code;
+  do {
+    code = String(Math.floor(100000 + Math.random() * 900000));
+  } while(existing.has(code));
+  return code;
+}
+
+function thaiDate(dateStr){
+  if(!dateStr) return '-';
+  const d = new Date(dateStr);
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const yyyy = d.getFullYear() + 543;
+  return `${dd}/${mm}/${yyyy}`;
+}
+
+function thaiBahtText(amount){
+  const digits = ['ศูนย์','หนึ่ง','สอง','สาม','สี่','ห้า','หก','เจ็ด','แปด','เก้า'];
+  const positions = ['','สิบ','ร้อย','พัน','หมื่น','แสน'];
+  function convertGroup(numStr){
+    let out = '';
+    const len = numStr.length;
+    for(let i = 0; i < len; i++){
+      const digit = parseInt(numStr[i], 10);
+      const pos = len - i - 1;
+      if(digit === 0) continue;
+      if(pos === 0 && digit === 1 && len > 1){ out += 'เอ็ด'; continue; }
+      if(pos === 1 && digit === 1){ out += 'สิบ'; continue; }
+      if(pos === 1 && digit === 2){ out += 'ยี่สิบ'; continue; }
+      out += digits[digit] + (positions[pos] || '');
+    }
+    return out;
+  }
+  function convert(numStr){
+    numStr = numStr.replace(/^0+/, '') || '0';
+    if(numStr === '0') return digits[0];
+    let out = '';
+    while(numStr.length > 6){
+      const head = numStr.slice(0, numStr.length - 6);
+      out += convertGroup(head) + 'ล้าน';
+      numStr = numStr.slice(numStr.length - 6);
+    }
+    out += convertGroup(numStr);
+    return out;
+  }
+  const rounded = Math.round((Number(amount) || 0) * 100) / 100;
+  const intPart = Math.floor(rounded);
+  const decPart = Math.round((rounded - intPart) * 100);
+  let text = convert(String(intPart)) + 'บาท';
+  text += decPart === 0 ? 'ถ้วน' : convertGroup(String(decPart).padStart(2, '0')) + 'สตางค์';
+  return text;
+}
+
+const ROLE_LABELS = { owner: 'ผู้สร้าง', admin: 'ผู้ดูแลระบบ', staff: 'พนักงาน' };
+function roleLabel(role){ return ROLE_LABELS[role] || role; }
+
+// Roles a customer contact can hold when they log into pr-system (matches pr-system.html's ROLES keys).
+const CONTACT_ROLES = {
+  super_user: 'Super User',
+  admin_maker: 'Admin Maker',
+  admin_approver: 'Admin Approver',
+  single_auto: 'Single User (Auto Approved)',
+  single_dual: 'Single User (Dual Approved)',
+  maker: 'Maker',
+  checker: 'Checker',
+  approver: 'Approver',
+};
+function canManage(admin){ return admin.role === 'admin' || admin.role === 'owner'; }
+
+async function api(method, url, body){
+  const res = await fetch(url, {
+    method,
+    headers: body !== undefined ? {'Content-Type':'application/json'} : undefined,
+    credentials: 'include',
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  let data = {};
+  try { data = await res.json(); } catch(e){}
+  if(!res.ok) throw new Error(data.error || 'เกิดข้อผิดพลาด');
+  return data;
+}
+
+function showToast(msg, kind){
+  S.toast = { msg, kind: kind || 'ok' };
+  render();
+  setTimeout(() => { S.toast = null; render(); }, 2600);
+}
+
+/* ---------- render ---------- */
+function render(){
+  const app = document.getElementById('app');
+  app.innerHTML = S.view === 'login' ? renderLogin() : renderDashboardShell();
+  attachHandlers();
+}
+
+function renderLogin(){
+  return `
+  <div class="auth-shell">
+    <div class="auth-brand-side">
+      <div class="abs-top">
+        <div class="brand"><img src="/logo-white.svg" alt="Build-Con" class="brand-logo-img"></div>
+        <div class="abs-tagline">จัดการลูกค้าและบริษัทที่สมัครใช้บริการ SiteReq</div>
+        <div class="abs-desc">แดชบอร์ดสำหรับทีมงาน SiteReq ในการดูแลลูกค้า บริษัท และการสมัครสมาชิกทั้งหมดในที่เดียว</div>
+      </div>
+      <div class="abs-bottom"><div class="abs-foot">SiteReq Platform Admin</div></div>
+    </div>
+    <div class="auth-form-side">
+      <div class="auth-box">
+        <div class="brand"><img src="/logo.svg" alt="Build-Con" class="brand-logo-img"></div>
+        <div class="panel">
+          <h3 style="margin-bottom:18px;">เข้าสู่ระบบผู้ดูแล</h3>
+          ${S.loginError ? `<div class="form-error">${esc(S.loginError)}</div>` : ''}
+          <form data-form="login">
+            <div class="field"><label>อีเมล</label><input type="email" name="email" required autocomplete="username" placeholder="you@company.com"></div>
+            <div class="field"><label>รหัสผ่าน</label><input type="password" name="password" required autocomplete="current-password" placeholder="••••••••"></div>
+            <button class="btn btn-primary" type="submit" style="width:100%; justify-content:center;" ${S.loginBusy ? 'disabled' : ''}>${S.loginBusy ? 'กำลังเข้าสู่ระบบ...' : 'เข้าสู่ระบบ'}</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// Same pattern as pr-system.html's renderLangSwitch — separate copy since these are two
+// standalone HTML files with no shared JS scope, only the same i18n.js loader script.
+function renderLangSwitch(){
+  const cur = I18N.getLocale();
+  return `
+  <div style="display:flex; gap:0; border:1px solid var(--border-strong); border-radius:var(--radius-sm); overflow:hidden;">
+    <button class="btn btn-sm" style="border-radius:0; ${cur==='th'?'background:var(--navy); color:#fff;':'background:transparent;'}" data-act="set-locale" data-locale="th">TH</button>
+    <button class="btn btn-sm" style="border-radius:0; ${cur==='en'?'background:var(--navy); color:#fff;':'background:transparent;'}" data-act="set-locale" data-locale="en">EN</button>
+  </div>`;
+}
+function renderDashboardShell(){
+  const a = S.currentAdmin;
+  const initials = (a.name || '').trim().slice(0,1) || 'A';
+  const navBadges = { leads: S.stats?.newLeadsCount || 0, invoices: S.stats?.dueSoonInvoicesCount || 0 };
+  const navItems = [
+    ['dashboard', tr('admin.nav.dashboard')],
+    ['companies', tr('admin.nav.companies')],
+    ['leads', tr('admin.nav.leads')],
+    ['accounts', tr('admin.nav.accounts')],
+    ['packages', tr('admin.nav.packages')],
+    ['products', tr('admin.nav.products')],
+    ['quotations', tr('admin.nav.quotations')],
+    ['invoices', tr('admin.nav.invoices')],
+    ['receivePayment', tr('admin.nav.receive_payment')],
+    ['coa', tr('admin.nav.coa')],
+    ['expenses', tr('admin.nav.expenses')],
+    ['payables', tr('admin.nav.payables')],
+    ['journal', tr('admin.nav.journal')],
+    ['reports', tr('admin.nav.reports')],
+    ['data', tr('admin.nav.data')],
+    ['settings', tr('admin.nav.settings')],
+  ].map(([key,label]) => `<button class="nav-item ${S.page===key?'active':''}" data-act="nav" data-page="${key}">${esc(label)}${navBadges[key] > 0 ? `<span class="nav-badge">${navBadges[key]}</span>` : ''}</button>`).join('');
+  const disabledNav = DISABLED_NAV.map(([label]) => `<button class="nav-item disabled" disabled>${esc(label)}<span class="soon">เร็วๆ นี้</span></button>`).join('');
+
+  return `
+  <div class="shell">
+    <div class="sidebar">
+      <div class="brand"><img src="/logo-white.svg" alt="Build-Con" class="brand-logo-img"></div>
+      <div class="role-tag">
+        <div class="rt-avatar">${esc(initials)}</div>
+        <div><div class="rt-name">${esc(a.name)}</div><div class="rt-group">${roleLabel(a.role)}</div></div>
+      </div>
+      <div class="nav">${navItems}${disabledNav}</div>
+      <div class="nav-foot"><button class="logout-btn" data-act="logout">${tr('admin.nav.logout')}</button></div>
+    </div>
+    <div class="main">
+      <div style="display:flex; justify-content:flex-end; margin-bottom:14px;">${renderLangSwitch()}</div>
+      ${renderPageContent()}
+    </div>
+  </div>
+  ${S.modal === 'newCompany' ? renderCompanyFormModal() : ''}
+  ${S.modal === 'companyDetail' ? renderCompanyDetailModal() : ''}
+  ${S.modal === 'lead' ? renderLeadFormModal() : ''}
+  ${S.modal === 'leadView' ? renderLeadViewModal() : ''}
+  ${S.modal === 'account' ? renderAccountFormModal() : ''}
+  ${S.modal === 'package' ? renderPackageFormModal() : ''}
+  ${S.modal === 'product' ? renderProductFormModal() : ''}
+  ${S.modal === 'quotation' ? renderQuotationFormModal() : ''}
+  ${S.modal === 'expense' ? renderExpenseFormModal() : ''}
+  ${S.modal === 'invoice' ? renderInvoiceFormModal() : ''}
+  ${S.modal === 'slips' ? renderSlipsModal() : ''}
+  ${S.modal === 'printTax' ? renderPrintTaxModal() : ''}
+  ${S.modal === 'coaAccount' ? renderCoaFormModal() : ''}
+  ${S.toast ? `<div class="toast ${S.toast.kind}">${esc(S.toast.msg)}</div>` : ''}
+  `;
+}
+
+function renderPageContent(){
+  if(S.page === 'dashboard') return renderDashboardPage();
+  if(S.page === 'companies') return renderCompaniesPage();
+  if(S.page === 'leads') return renderLeadsPage();
+  if(S.page === 'accounts') return renderAccountsPage();
+  if(S.page === 'packages') return renderPackagesPage();
+  if(S.page === 'products') return renderProductsPage();
+  if(S.page === 'quotations') return renderQuotationsPage();
+  if(S.page === 'invoices') return renderInvoicesPage();
+  if(S.page === 'receivePayment') return renderReceivePaymentPage();
+  if(S.page === 'coa') return renderCoaPage();
+  if(S.page === 'expenses') return renderExpensesPage();
+  if(S.page === 'payables') return renderPayablesPage();
+  if(S.page === 'journal') return renderJournalPage();
+  if(S.page === 'reports') return renderReportsPage();
+  if(S.page === 'data') return renderDataPage();
+  if(S.page === 'settings') return renderSettingsPage();
+  return '';
+}
+
+function renderDashboardPage(){
+  const st = S.stats || { totalCustomers: 0, totalCompanies: 0, totalRevenue: 0, activeMembers: 0 };
+  const cards = [
+    [tr('admin.dashboard.total_customers'), st.totalCustomers, ''],
+    [tr('admin.dashboard.total_companies'), st.totalCompanies, ''],
+    [tr('admin.dashboard.total_revenue'), '฿' + st.totalRevenue.toLocaleString('th-TH'), ''],
+    [tr('admin.dashboard.active_members'), st.activeMembers, ''],
+  ];
+  return `
+    <div class="page-head"><div><h2>${tr('admin.dashboard.title')}</h2><div class="sub">${tr('admin.dashboard.subtitle')}</div></div></div>
+    <div class="grid-cards">
+      ${cards.map(([lbl,num,note]) => `
+        <div class="card stat-card">
+          <div class="stico">●</div>
+          <div><div class="num">${esc(num)}</div><div class="lbl">${esc(lbl)}</div>${note ? `<div class="lbl-note">${esc(note)}</div>` : ''}</div>
+        </div>`).join('')}
+    </div>
+  `;
+}
+
+function renderCompaniesPage(){
+  const canDelete = canManage(S.currentAdmin);
+  const rows = S.companies.map(c => `
+    <tr class="clickable" data-act="view-company" data-id="${c.id}">
+      <td>${esc(c.code || '-')}</td>
+      <td><b>${esc(c.name)}</b><div class="contact-meta">${esc(c.email || '-')}</div></td>
+      <td>${esc(c.phone || '-')}</td>
+      <td>${esc(c.packageName || '-')}</td>
+      <td>${c.contactCount}</td>
+      <td><span class="badge ${c.status === 'active' ? 'badge-active' : 'badge-suspended'}">${c.status === 'active' ? 'ใช้งานอยู่' : 'ระงับการใช้งาน'}</span></td>
+      <td>
+        <div class="row-actions">
+          <button class="btn btn-ghost btn-sm" data-act="suspend-company" data-id="${c.id}" onclick="event.stopPropagation()">${c.status === 'active' ? 'ระงับ' : 'เปิดใช้งาน'}</button>
+          ${canDelete ? `<button class="btn btn-danger btn-sm" data-act="delete-company" data-id="${c.id}" onclick="event.stopPropagation()">ลบ</button>` : ''}
+        </div>
+      </td>
+    </tr>`).join('');
+
+  return `
+    <div class="page-head">
+      <div><h2>จัดการบริษัทลูกค้า</h2><div class="sub">บริษัทที่สมัครใช้บริการ SiteReq ทั้งหมด</div></div>
+      <button class="btn btn-primary" data-act="new-company">+ เพิ่มบริษัทลูกค้า</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>รหัสบริษัท (Company ID)</th><th>บริษัท</th><th>โทรศัพท์</th><th>แพ็กเกจ</th><th>ผู้ติดต่อ</th><th>สถานะ</th><th></th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="7"><div class="empty">ยังไม่มีบริษัทลูกค้า</div></td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+const LEAD_STATUS_LABELS = { new: 'ลูกค้าใหม่', contacted: 'ติดต่อแล้ว', considering: 'กำลังพิจารณา', converted: 'เป็นลูกค้าแล้ว', lost: 'ไม่สนใจ' };
+const LEAD_STATUS_BADGE = { new: 'badge-unpaid', contacted: 'badge-cancelled', considering: 'badge-unpaid', converted: 'badge-active', lost: 'badge-suspended' };
+
+function renderLeadsPage(){
+  const canDelete = canManage(S.currentAdmin);
+  const rows = S.leads.map(l => `
+    <tr class="clickable" data-act="view-lead" data-id="${l.id}">
+      <td>${l.seen ? '' : `<span class="unseen-dot" title="ยังไม่ได้เปิดดู"></span>`}${esc(l.ref_code || '-')}</td>
+      <td><b>${esc(l.company_name)}</b><div class="contact-meta">${esc(l.company_email || '-')} · ${esc(l.company_phone || '-')}</div></td>
+      <td>${esc(l.contact_name || '-')}<div class="contact-meta">${esc(l.contact_position || '-')}</div></td>
+      <td>${esc(l.contact_phone || '-')}</td>
+      <td>${esc(l.contact_email || '-')}</td>
+      <td><span class="badge ${LEAD_STATUS_BADGE[l.status] || 'badge-cancelled'}">${esc(LEAD_STATUS_LABELS[l.status] || l.status)}</span></td>
+      <td>
+        <div class="row-actions">
+          <button class="btn btn-ghost btn-sm" data-act="edit-lead" data-id="${l.id}" onclick="event.stopPropagation()">แก้ไข</button>
+          ${canDelete ? `<button class="btn btn-danger btn-sm" data-act="delete-lead" data-id="${l.id}" onclick="event.stopPropagation()">ลบ</button>` : ''}
+        </div>
+      </td>
+    </tr>`).join('');
+
+  return `
+    <div class="page-head">
+      <div><h2>ข้อมูลบริษัทที่ลูกค้าสนใจ</h2><div class="sub">รายชื่อบริษัทที่แสดงความสนใจ ก่อนสมัครใช้บริการ SiteReq จริง</div></div>
+      <button class="btn btn-primary" data-act="new-lead">+ เพิ่มรายชื่อ</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>รหัสอ้างอิง</th><th>บริษัท</th><th>ผู้ติดต่อ</th><th>โทรศัพท์ผู้ติดต่อ</th><th>อีเมลผู้ติดต่อ</th><th>สถานะ</th><th></th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="7"><div class="empty">ยังไม่มีรายชื่อ</div></td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderLeadFormModal(){
+  const f = S.leadForm;
+  const v = f.values;
+  return `
+  <div class="modal-overlay" data-act="close-modal-overlay">
+    <div class="modal" onclick="event.stopPropagation()">
+      <h3>${f.mode === 'edit' ? 'แก้ไขรายชื่อ' : 'เพิ่มรายชื่อบริษัทที่สนใจ'}</h3>
+      <div class="modal-sub">บริษัทที่แสดงความสนใจ ยังไม่ใช่ลูกค้าที่สมัครใช้งานจริง</div>
+      ${f.error ? `<div class="form-error">${esc(f.error)}</div>` : ''}
+      <form data-form="lead">
+        <div class="field"><label>รหัสอ้างอิง</label><input name="refCode" readonly value="${esc(v.refCode)}"></div>
+        <div class="section-title" style="margin-top:0;">ข้อมูลบริษัท</div>
+        <div class="field"><label>ชื่อบริษัท *</label><input name="companyName" required value="${esc(v.companyName)}"></div>
+        <div class="split2">
+          <div class="field"><label>เลขผู้เสียภาษี</label><input name="taxId" value="${esc(v.taxId)}"></div>
+          <div class="field"><label>โทรศัพท์</label><input name="companyPhone" value="${esc(v.companyPhone)}"></div>
+        </div>
+        <div class="split2">
+          <div class="field"><label>อีเมล</label><input type="email" name="companyEmail" value="${esc(v.companyEmail)}"></div>
+          <div class="field"><label>เว็บไซต์ (ถ้ามี)</label><input name="website" value="${esc(v.website)}"></div>
+        </div>
+        <div class="field"><label>ที่อยู่</label><textarea name="address" rows="2">${esc(v.address)}</textarea></div>
+
+        <div class="section-title">ข้อมูลผู้ติดต่อ</div>
+        <div class="split2">
+          <div class="field"><label>ชื่อผู้ติดต่อ</label><input name="contactName" value="${esc(v.contactName)}"></div>
+          <div class="field"><label>ตำแหน่ง</label><input name="contactPosition" value="${esc(v.contactPosition)}"></div>
+        </div>
+        <div class="split2">
+          <div class="field"><label>อีเมลผู้ติดต่อ</label><input type="email" name="contactEmail" value="${esc(v.contactEmail)}"></div>
+          <div class="field"><label>โทรศัพท์ผู้ติดต่อ</label><input name="contactPhone" value="${esc(v.contactPhone)}"></div>
+        </div>
+        <div class="field"><label>ชื่อผู้ใช้งานระบบ</label><input name="username" autocomplete="off" value="${esc(v.username)}"></div>
+
+        <div class="field"><label>สถานะ</label>
+          <select name="status">
+            ${Object.entries(LEAD_STATUS_LABELS).map(([key,label]) => `<option value="${key}" ${v.status===key?'selected':''}>${esc(label)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>หมายเหตุ</label><textarea name="note" rows="3">${esc(v.note)}</textarea></div>
+        <div class="modal-foot">
+          <button type="button" class="btn btn-ghost" data-act="close-modal">ยกเลิก</button>
+          <button type="submit" class="btn btn-primary" ${f.saving ? 'disabled' : ''}>${f.saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+        </div>
+      </form>
+    </div>
+  </div>`;
+}
+
+function renderLeadViewModal(){
+  const l = S.leads.find(x => x.id === S.leadViewId);
+  if(!l) return `<div class="modal-overlay"><div class="modal">กำลังโหลด...</div></div>`;
+  const canDelete = canManage(S.currentAdmin);
+  return `
+  <div class="modal-overlay" data-act="close-modal-overlay">
+    <div class="modal" onclick="event.stopPropagation()">
+      <h3>${esc(l.company_name)} <span class="badge ${LEAD_STATUS_BADGE[l.status] || 'badge-cancelled'}">${esc(LEAD_STATUS_LABELS[l.status] || l.status)}</span></h3>
+      <div class="modal-sub">รหัสอ้างอิง: ${esc(l.ref_code || '-')}</div>
+
+      <div class="section-title" style="margin-top:16px;">ข้อมูลบริษัท</div>
+      <div class="field"><label>ชื่อบริษัท</label><input readonly value="${esc(l.company_name || '-')}"></div>
+      <div class="split2">
+        <div class="field"><label>เลขผู้เสียภาษี</label><input readonly value="${esc(l.tax_id || '-')}"></div>
+        <div class="field"><label>โทรศัพท์</label><input readonly value="${esc(l.company_phone || '-')}"></div>
+      </div>
+      <div class="split2">
+        <div class="field"><label>อีเมล</label><input readonly value="${esc(l.company_email || '-')}"></div>
+        <div class="field"><label>เว็บไซต์</label><input readonly value="${esc(l.website || '-')}"></div>
+      </div>
+      <div class="field"><label>ที่อยู่</label><textarea readonly rows="2">${esc(l.address || '-')}</textarea></div>
+
+      <div class="section-title">ข้อมูลผู้ติดต่อ</div>
+      <div class="split2">
+        <div class="field"><label>ชื่อผู้ติดต่อ</label><input readonly value="${esc(l.contact_name || '-')}"></div>
+        <div class="field"><label>ตำแหน่ง</label><input readonly value="${esc(l.contact_position || '-')}"></div>
+      </div>
+      <div class="split2">
+        <div class="field"><label>อีเมลผู้ติดต่อ</label><input readonly value="${esc(l.contact_email || '-')}"></div>
+        <div class="field"><label>โทรศัพท์ผู้ติดต่อ</label><input readonly value="${esc(l.contact_phone || '-')}"></div>
+      </div>
+      <div class="field"><label>ชื่อผู้ใช้งานระบบ</label><input readonly value="${esc(l.username || '-')}"></div>
+      <div class="field"><label>หมายเหตุ</label><textarea readonly rows="2">${esc(l.note || '-')}</textarea></div>
+
+      <div class="modal-foot">
+        <button type="button" class="btn btn-ghost" data-act="close-modal">ปิด</button>
+        ${canDelete ? `<button type="button" class="btn btn-danger" data-act="delete-lead" data-id="${l.id}">ลบ</button>` : ''}
+        <button type="button" class="btn btn-primary" data-act="edit-lead" data-id="${l.id}">แก้ไข</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderCompanyFormModal(){
+  const f = S.companyForm;
+  const v = f.values;
+  return `
+  <div class="modal-overlay" data-act="close-modal-overlay">
+    <div class="modal" onclick="event.stopPropagation()">
+      <h3>${f.mode === 'edit' ? 'แก้ไขบริษัทลูกค้า' : 'เพิ่มบริษัทลูกค้า'}</h3>
+      <div class="modal-sub">ข้อมูลบริษัทลูกค้าที่สมัครใช้บริการ SiteReq</div>
+      ${f.error ? `<div class="form-error">${esc(f.error)}</div>` : ''}
+      <form data-form="company">
+        ${f.mode === 'new' ? `
+        <div class="field" style="padding:12px 14px; background:var(--surface-alt); border-radius:var(--radius-sm); margin-bottom:16px;">
+          <label>ค้นหาจากรหัสอ้างอิง (ข้อมูลบริษัทที่ลูกค้าสนใจ)</label>
+          <div style="display:flex; gap:8px;">
+            <input type="text" data-lead-ref-input placeholder="กรอกรหัสอ้างอิง 6 หลัก" style="flex:1;">
+            <button type="button" class="btn btn-ghost" data-act="lookup-lead-for-company">ดึงข้อมูล</button>
+          </div>
+        </div>` : ''}
+        <div class="field"><label>รหัสบริษัท (Company ID)</label><input name="code" readonly value="${esc(v.code)}"></div>
+        <div class="field"><label>ชื่อบริษัท *</label><input name="name" required value="${esc(v.name)}"></div>
+        <div class="split2">
+          <div class="field"><label>เลขผู้เสียภาษี</label><input name="taxId" value="${esc(v.taxId)}"></div>
+          <div class="field"><label>โทรศัพท์</label><input name="phone" value="${esc(v.phone)}"></div>
+        </div>
+        <div class="field"><label>อีเมล</label><input type="email" name="email" value="${esc(v.email)}"></div>
+        <div class="field"><label>ที่อยู่</label><textarea name="address" rows="2">${esc(v.address)}</textarea></div>
+        <div class="field"><label>โทรสาร</label><input name="fax" value="${esc(v.fax)}"></div>
+        <div class="field"><label>แพ็กเกจปัจจุบัน</label>
+          <select name="packageId">
+            <option value="">— ไม่ระบุ —</option>
+            ${S.packages.filter(p => p.active || String(p.id) === String(v.packageId)).map(p => `<option value="${p.id}" ${String(v.packageId) === String(p.id) ? 'selected' : ''}>${esc(p.name)} (฿${Number(p.price).toLocaleString('th-TH')}/${p.billing_cycle === 'yearly' ? 'ปี' : p.billing_cycle === 'daily' ? (p.billing_days + ' วัน') : 'เดือน'})${p.active ? '' : ' — ปิดใช้งาน'}</option>`).join('')}
+          </select>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn btn-ghost" data-act="close-modal">ยกเลิก</button>
+          <button type="submit" class="btn btn-primary" ${f.saving ? 'disabled' : ''}>${f.saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+        </div>
+      </form>
+    </div>
+  </div>`;
+}
+
+function renderCompanyDetailModal(){
+  const d = S.companyDetail;
+  if(!d) return `<div class="modal-overlay"><div class="modal">กำลังโหลด...</div></div>`;
+  const canDelete = canManage(S.currentAdmin);
+  const c = d.company;
+  const contacts = d.customers.map(cu => `
+    <div class="contact-row">
+      <div>
+        <div class="contact-name">${esc(cu.name)} <span style="font-size:11.5px; font-weight:600; color:var(--text-muted);">${esc(CONTACT_ROLES[cu.role] || cu.role)}</span> ${cu.status === 'suspended' ? '<span class="badge badge-suspended">ระงับ</span>' : ''}</div>
+        <div class="contact-meta">${esc(cu.position || '-')} · ${esc(cu.email || '-')} · ${esc(cu.phone || '-')}</div>
+      </div>
+      <div class="row-actions">
+        <button class="btn btn-ghost btn-sm" data-act="edit-contact" data-id="${cu.id}">แก้ไข</button>
+        <button class="btn btn-ghost btn-sm" data-act="suspend-contact" data-id="${cu.id}">${cu.status === 'active' ? 'ระงับ' : 'เปิดใช้งาน'}</button>
+        ${canDelete ? `<button class="btn btn-danger btn-sm" data-act="delete-contact" data-id="${cu.id}">ลบ</button>` : ''}
+      </div>
+    </div>`).join('') || `<div class="empty">ยังไม่มีผู้ติดต่อ</div>`;
+
+  const cf = S.contactForm;
+  const contactFormHtml = cf ? `
+    <form data-form="contact" style="margin-top:14px; padding:14px; background:var(--surface-alt); border-radius:var(--radius-sm);">
+      ${cf.error ? `<div class="form-error">${esc(cf.error)}</div>` : ''}
+      ${cf.mode === 'new' ? `
+      <div class="field" style="margin-bottom:10px; padding:10px 12px; background:var(--surface); border-radius:var(--radius-sm);">
+        <label>ค้นหาจากรหัสอ้างอิง (ข้อมูลบริษัทที่ลูกค้าสนใจ)</label>
+        <div style="display:flex; gap:8px;">
+          <input type="text" data-lead-ref-input-contact placeholder="กรอกรหัสอ้างอิง 6 หลัก" style="flex:1;">
+          <button type="button" class="btn btn-ghost btn-sm" data-act="lookup-lead-for-contact">ดึงข้อมูล</button>
+        </div>
+      </div>` : ''}
+      <div class="split2">
+        <div class="field" style="margin-bottom:10px;"><label>ชื่อ *</label><input name="name" required value="${esc(cf.values.name)}"></div>
+        <div class="field" style="margin-bottom:10px;"><label>ตำแหน่ง</label><input name="position" value="${esc(cf.values.position)}"></div>
+      </div>
+      <div class="split2">
+        <div class="field" style="margin-bottom:10px;"><label>อีเมล</label><input type="email" name="email" value="${esc(cf.values.email)}"></div>
+        <div class="field" style="margin-bottom:10px;"><label>โทรศัพท์</label><input name="phone" value="${esc(cf.values.phone)}"></div>
+      </div>
+      <div class="split2">
+        <div class="field" style="margin-bottom:10px;"><label>ชื่อผู้ใช้งาน</label><input name="username" autocomplete="off" value="${esc(cf.values.username)}"></div>
+        <div class="field" style="margin-bottom:10px;"><label>รหัสผ่าน${cf.mode === 'edit' ? ' (ว่าง = ไม่เปลี่ยนรหัสผ่าน)' : ''}</label>
+          <div style="display:flex; gap:8px;">
+            <input type="text" name="password" readonly autocomplete="off" value="${esc(cf.values.password || '')}" style="flex:1;">
+            <button type="button" class="btn btn-ghost btn-sm" data-act="generate-contact-password">สุ่มรหัสผ่าน</button>
+          </div>
+        </div>
+      </div>
+      <div class="field" style="margin-bottom:10px;"><label>บทบาท (สิทธิ์การใช้งานในระบบ pr-system)</label>
+        <select name="role">
+          ${Object.entries(CONTACT_ROLES).map(([k, label]) => `<option value="${k}" ${cf.values.role === k ? 'selected' : ''}>${label}</option>`).join('')}
+        </select>
+      </div>
+      <div class="modal-foot" style="margin-top:6px;">
+        <button type="button" class="btn btn-ghost btn-sm" data-act="cancel-contact-form">ยกเลิก</button>
+        <button type="submit" class="btn btn-primary btn-sm" ${cf.saving ? 'disabled' : ''}>${cf.saving ? 'กำลังบันทึก...' : 'บันทึกผู้ติดต่อ'}</button>
+      </div>
+    </form>` : '';
+
+  const sub = d.subscription;
+  const subBadge = sub
+    ? `<span class="badge ${sub.active ? 'badge-active' : 'badge-suspended'}">${sub.active ? 'ใช้งานอยู่' : 'หมดอายุ'}</span>`
+    : `<span class="badge badge-suspended">ยังไม่มีแพ็กเกจ</span>`;
+  const subInfo = sub
+    ? `<div class="modal-sub">ผู้ใช้งานสูงสุด: ${sub.max_users} คน · หมดอายุ: ${sub.expires_at ? new Date(sub.expires_at).toLocaleDateString('th-TH') : '-'}</div>`
+    : '';
+
+  const rf = S.renewForm;
+  const renewFormHtml = rf ? `
+    <form data-form="renew" class="renew-card">
+      <div class="renew-card-head">
+        <div>
+          <div class="renew-card-title">แพ็กเกจ ${esc((c.packageName || 'ไม่ระบุ'))}</div>
+          <div class="renew-card-sub">${esc(c.name)}</div>
+        </div>
+        ${subBadge}
+      </div>
+      ${rf.error ? `<div class="form-error">${esc(rf.error)}</div>` : ''}
+
+      <div class="field">
+        <label>ราคาแพ็กเกจ (ต่อเดือน)</label>
+        <div class="price-input"><span>฿</span><input type="number" name="customPrice" readonly value="${esc(rf.values.customPrice)}"></div>
+        <div class="hint">ดึงจากแพ็กเกจที่เปิดขาย</div>
+      </div>
+
+      <div class="field">
+        <label>ต่ออายุกี่วัน</label>
+        <div class="duration-group">
+          ${RENEW_DURATIONS.map(d => `
+            <button type="button" class="duration-btn ${Number(rf.values.months) === d.months ? 'active' : ''}" data-act="renew-duration" data-months="${d.months}">
+              ${d.months} เดือน${d.discount > 0 ? `<span class="discount">-${Math.round(d.discount * 100)}%</span>` : ''}
+            </button>`).join('')}
+        </div>
+      </div>
+
+      <div class="split2">
+        <div class="field">
+          <label>จำนวนผู้ใช้งาน</label>
+          <input readonly value="${Number(rf.values.baseUsers) || 0} คน">
+          <div class="hint">ดึงจากแพ็กเกจที่เปิดขาย</div>
+        </div>
+        <div class="field">
+          <label>เพิ่มคนใช้งาน</label>
+          <div class="stepper">
+            <button type="button" data-act="renew-step" data-field="additionalUsers" data-dir="-1">−</button>
+            <span>${Number(rf.values.additionalUsers) || 0}</span>
+            <button type="button" data-act="renew-step" data-field="additionalUsers" data-dir="1">+</button>
+          </div>
+          <div class="hint">คน</div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>ราคาต่อคนใช้งานเพิ่ม (ต่อคน/เดือน)</label>
+        <div class="price-input"><span>฿</span><input type="number" min="0" step="0.01" name="customSeatPrice" data-calc="renew" required value="${esc(rf.values.customSeatPrice)}"></div>
+      </div>
+
+      <div class="renew-summary" data-calc-out="renew-summary">${renderRenewSummaryRows(computeRenewTotals(rf.values))}</div>
+
+      <div class="modal-foot" style="margin-top:14px;">
+        <button type="button" class="btn btn-ghost btn-sm" data-act="cancel-renew-form">ยกเลิก</button>
+        <button type="submit" class="btn btn-primary" ${rf.saving ? 'disabled' : ''} style="flex:1; justify-content:center;">${rf.saving ? 'กำลังบันทึก...' : 'ต่ออายุแพ็กเกจ'}</button>
+      </div>
+    </form>` : '';
+
+  return `
+  <div class="modal-overlay" data-act="close-modal-overlay">
+    <div class="modal" onclick="event.stopPropagation()">
+      <h3>${esc(c.name)} <span class="badge ${c.status === 'active' ? 'badge-active' : 'badge-suspended'}">${c.status === 'active' ? 'ใช้งานอยู่' : 'ระงับการใช้งาน'}</span></h3>
+      <div class="modal-sub">${esc(c.phone || '-')} · ${esc(c.email || '-')} · แพ็กเกจ: ${esc(c.packageName || 'ไม่ระบุ')}</div>
+      <div class="row-actions">
+        <button class="btn btn-ghost btn-sm" data-act="edit-company" data-id="${c.id}">แก้ไขข้อมูลบริษัท</button>
+        <button class="btn btn-ghost btn-sm" data-act="suspend-company" data-id="${c.id}">${c.status === 'active' ? 'ระงับบริษัท' : 'เปิดใช้งานบริษัท'}</button>
+        ${canDelete ? `<button class="btn btn-danger btn-sm" data-act="delete-company" data-id="${c.id}">ลบบริษัท</button>` : ''}
+      </div>
+
+      ${!rf ? `
+      <div class="section-title">แพ็กเกจการใช้งาน ${subBadge}
+        <button class="btn btn-ghost btn-sm" data-act="new-renew">ต่ออายุแพ็กเกจ</button>
+      </div>
+      ${subInfo}` : ''}
+      ${renewFormHtml}
+
+      <div class="section-title">ผู้ติดต่อ (${d.customers.length})
+        ${!cf ? `<button class="btn btn-ghost btn-sm" data-act="new-contact">+ เพิ่มผู้ติดต่อ</button>` : ''}
+      </div>
+      <div class="contact-list-scroll">${contacts}</div>
+      ${contactFormHtml}
+
+      <div class="modal-foot"><button class="btn btn-ghost" data-act="close-modal">ปิด</button></div>
+    </div>
+  </div>`;
+}
+
+function renderAccountsPage(){
+  const isAdmin = canManage(S.currentAdmin);
+  const rows = S.accounts.map(a => {
+    const isProtected = a.role === 'owner';
+    return `
+    <tr>
+      <td><b>${esc(a.name)}</b><div class="contact-meta">${esc(a.email)}</div></td>
+      <td>${roleLabel(a.role)}</td>
+      <td><span class="badge ${a.active ? 'badge-active' : 'badge-suspended'}">${a.active ? 'ใช้งานอยู่' : 'ปิดใช้งาน'}</span></td>
+      <td>
+        ${isAdmin && !isProtected ? `
+        <div class="row-actions">
+          <button class="btn btn-ghost btn-sm" data-act="edit-account" data-id="${a.id}">แก้ไข</button>
+          <button class="btn btn-ghost btn-sm" data-act="toggle-active-account" data-id="${a.id}">${a.active ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}</button>
+        </div>` : (isProtected ? `<span class="hint">แก้ไข/ลบไม่ได้</span>` : '')}
+      </td>
+    </tr>`;
+  }).join('');
+  return `
+    <div class="page-head">
+      <div><h2>จัดการผู้ใช้งาน</h2><div class="sub">บัญชีผู้ดูแลและพนักงานที่เข้าใช้งานระบบหลังบ้านนี้</div></div>
+      ${isAdmin ? `<button class="btn btn-primary" data-act="new-account">+ เพิ่มบัญชีผู้ดูแล</button>` : ''}
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>บัญชี</th><th>บทบาท</th><th>สถานะ</th><th></th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="4"><div class="empty">ยังไม่มีบัญชี</div></td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderAccountFormModal(){
+  const f = S.accountForm;
+  const v = f.values;
+  return `
+  <div class="modal-overlay" data-act="close-modal-overlay">
+    <div class="modal" onclick="event.stopPropagation()">
+      <h3>${f.mode === 'edit' ? 'แก้ไขบัญชีผู้ดูแล' : 'เพิ่มบัญชีผู้ดูแล'}</h3>
+      <div class="modal-sub">บัญชีสำหรับเข้าใช้งานระบบหลังบ้าน SiteReq Admin</div>
+      ${f.error ? `<div class="form-error">${esc(f.error)}</div>` : ''}
+      <form data-form="account">
+        ${f.mode === 'new' ? `<div class="field"><label>อีเมล *</label><input type="email" name="email" required value="${esc(v.email)}"></div>` : ''}
+        <div class="field"><label>ชื่อ *</label><input name="name" required value="${esc(v.name)}"></div>
+        ${f.mode === 'new' ? `<div class="field"><label>รหัสผ่าน *</label><input type="password" name="password" required></div>` : ''}
+        <div class="field"><label>บทบาท *</label>
+          <select name="role">
+            <option value="staff" ${v.role==='staff'?'selected':''}>พนักงาน</option>
+            <option value="admin" ${v.role==='admin'?'selected':''}>ผู้ดูแลระบบ</option>
+            ${S.currentAdmin.role === 'owner' ? `<option value="owner" ${v.role==='owner'?'selected':''}>ผู้สร้าง</option>` : ''}
+          </select>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn btn-ghost" data-act="close-modal">ยกเลิก</button>
+          <button type="submit" class="btn btn-primary" ${f.saving ? 'disabled' : ''}>${f.saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+        </div>
+      </form>
+    </div>
+  </div>`;
+}
+
+function renderPackagesPage(){
+  const statusLabel = { unpaid:'ยังไม่ชำระ', partial:'ชำระบางส่วน', paid:'ชำระแล้ว', overdue:'เกินกำหนด', cancelled:'ยกเลิก' };
+  const rows = S.invoices.map(i => `
+    <tr class="clickable" data-act="view-slips" data-id="${i.id}">
+      <td><b>${esc(i.invoiceNo)}</b></td>
+      <td>${esc(i.companyName)}</td>
+      <td>฿${Number(i.amount).toLocaleString('th-TH')}</td>
+      <td><span class="badge badge-${i.status}">${statusLabel[i.status] || i.status}</span></td>
+      <td>${i.slipCount > 0 ? `<span class="badge badge-active">${i.slipCount} ไฟล์</span>` : `<span class="hint">ยังไม่มีหลักฐาน</span>`}</td>
+      <td><button class="btn btn-ghost btn-sm" data-act="view-slips" data-id="${i.id}" onclick="event.stopPropagation()">ดู/แนบหลักฐาน</button></td>
+    </tr>`).join('');
+  return `
+    <div class="page-head">
+      <div><h2>หลักฐานการชำระเงิน</h2><div class="sub">แนบและตรวจสอบสลิปโอนเงินของลูกค้าตามใบแจ้งหนี้แต่ละใบ</div></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>เลขที่ใบแจ้งหนี้</th><th>บริษัท</th><th>จำนวนเงิน</th><th>สถานะ</th><th>หลักฐาน</th><th></th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="6"><div class="empty">ยังไม่มีใบแจ้งหนี้</div></td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderSlipsModal(){
+  const sm = S.slipsModal;
+  if(!sm) return `<div class="modal-overlay"><div class="modal">กำลังโหลด...</div></div>`;
+  const statusLabel = { unpaid:'ยังไม่ชำระ', partial:'ชำระบางส่วน', paid:'ชำระแล้ว', overdue:'เกินกำหนด', cancelled:'ยกเลิก' };
+  const inv = S.invoices.find(i => i.id === sm.invoiceId);
+  const canDelete = canManage(S.currentAdmin);
+  const slipRows = sm.slips.map(s => `
+    <div class="contact-row">
+      <div>
+        <div class="contact-name"><a href="/api/admin/slips/${s.id}/file" target="_blank" rel="noopener">${esc(s.fileName)}</a></div>
+        <div class="contact-meta">${new Date(s.uploadedAt).toLocaleString('th-TH')}</div>
+      </div>
+      ${canDelete ? `<button class="btn btn-danger btn-sm" data-act="delete-slip" data-id="${s.id}">ลบ</button>` : ''}
+    </div>`).join('') || `<div class="empty">ยังไม่มีไฟล์แนบ</div>`;
+
+  return `
+  <div class="modal-overlay" data-act="close-modal-overlay">
+    <div class="modal" onclick="event.stopPropagation()">
+      <h3>${inv ? esc(inv.invoiceNo) : ''} ${inv ? `<span class="badge badge-${inv.status}">${statusLabel[inv.status] || inv.status}</span>` : ''}</h3>
+      <div class="modal-sub">${inv ? `${esc(inv.companyName)} · ฿${Number(inv.amount).toLocaleString('th-TH')}` : ''}</div>
+
+      <div class="section-title">ไฟล์หลักฐานการชำระเงิน (${sm.slips.length})</div>
+      ${sm.loading ? `<div class="empty">กำลังโหลด...</div>` : slipRows}
+
+      <form data-form="slip-upload" style="margin-top:14px; padding:14px; background:var(--surface-alt); border-radius:var(--radius-sm);">
+        ${sm.error ? `<div class="form-error">${esc(sm.error)}</div>` : ''}
+        <div class="field"><label>แนบไฟล์สลิป (jpg, png, webp, pdf ไม่เกิน 5MB)</label><input type="file" name="file" accept="image/jpeg,image/png,image/webp,application/pdf" required></div>
+        <div class="modal-foot" style="margin-top:6px;">
+          <button type="submit" class="btn btn-primary btn-sm" ${sm.uploading ? 'disabled' : ''}>${sm.uploading ? 'กำลังอัปโหลด...' : '+ แนบไฟล์'}</button>
+        </div>
+      </form>
+
+      <div class="modal-foot"><button class="btn btn-ghost" data-act="close-modal">ปิด</button></div>
+    </div>
+  </div>`;
+}
+
+function renderPrintTaxModal(){
+  const pm = S.printTaxModal;
+  if(!pm) return '';
+  const inv = S.invoices.find(i => i.id === pm.invoiceId);
+  return `
+  <div class="modal-overlay" data-act="close-modal-overlay">
+    <div class="modal" onclick="event.stopPropagation()" style="max-width:380px;">
+      <h3>เลือกวิธีคำนวณภาษี</h3>
+      <div class="modal-sub">ก่อนพิมพ์ใบแจ้งหนี้${inv ? ' เลขที่ ' + esc(inv.invoiceNo) : ''}</div>
+      <div style="display:flex; flex-direction:column; gap:10px; margin:18px 0;">
+        <button class="btn btn-ghost" data-act="confirm-print-invoice" data-rate="7" style="justify-content:flex-start;">หักภาษี 7%</button>
+        <button class="btn btn-ghost" data-act="confirm-print-invoice" data-rate="3" style="justify-content:flex-start;">หัก ณ ที่จ่าย 3%</button>
+        <button class="btn btn-ghost" data-act="confirm-print-invoice" data-rate="0" style="justify-content:flex-start;">ไม่หักภาษี</button>
+      </div>
+      <div class="modal-foot"><button class="btn btn-ghost" data-act="close-modal">ยกเลิก</button></div>
+    </div>
+  </div>`;
+}
+
+function renderPackageFormModal(){
+  const f = S.packageForm;
+  const v = f.values;
+  return `
+  <div class="modal-overlay" data-act="close-modal-overlay">
+    <div class="modal" onclick="event.stopPropagation()">
+      <h3>${f.mode === 'edit' ? 'แก้ไขแพ็กเกจ' : 'เพิ่มแพ็กเกจ'}</h3>
+      ${f.error ? `<div class="form-error">${esc(f.error)}</div>` : ''}
+      <form data-form="package">
+        <div class="field"><label>ชื่อแพ็กเกจ *</label><input name="name" required value="${esc(v.name)}"></div>
+        <div class="split2">
+          <div class="field"><label>ราคา (บาท) *</label><input type="number" name="price" min="0" step="0.01" required value="${esc(v.price)}"></div>
+          <div class="field"><label>รอบบิล</label>
+            <select name="billingCycle" data-act-change="package-cycle-change">
+              <option value="daily" ${v.billingCycle==='daily'?'selected':''}>รายวัน</option>
+              <option value="monthly" ${v.billingCycle==='monthly'?'selected':''}>รายเดือน</option>
+              <option value="yearly" ${v.billingCycle==='yearly'?'selected':''}>รายปี</option>
+            </select>
+          </div>
+        </div>
+        ${v.billingCycle === 'daily' ? `<div class="field"><label>จำนวนวัน *</label><input type="number" name="billingDays" min="1" step="1" required value="${esc(v.billingDays)}"></div>` : ''}
+        <div class="field"><label>จำนวนผู้ใช้งาน (คน) *</label><input type="number" name="maxUsers" min="1" step="1" required value="${esc(v.maxUsers)}"></div>
+        <div class="field"><label>รายละเอียด</label><textarea name="description" rows="2">${esc(v.description)}</textarea></div>
+        <div class="modal-foot">
+          <button type="button" class="btn btn-ghost" data-act="close-modal">ยกเลิก</button>
+          <button type="submit" class="btn btn-primary" ${f.saving ? 'disabled' : ''}>${f.saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+        </div>
+      </form>
+    </div>
+  </div>`;
+}
+
+function isInvoiceDueSoon(i){
+  if(i.status !== 'unpaid' || !i.dueDate) return false;
+  const due = new Date(i.dueDate);
+  const today = new Date(); today.setHours(0,0,0,0);
+  const diffDays = Math.ceil((due - today) / 86400000);
+  return diffDays >= 0 && diffDays <= 7;
+}
+
+function renderInvoicesPage(){
+  const statusLabel = { unpaid:'ยังไม่ชำระ', partial:'ชำระบางส่วน', paid:'ชำระแล้ว', overdue:'เกินกำหนด', cancelled:'ยกเลิก' };
+  const rows = S.invoices.map(i => `
+    <tr>
+      <td><b>${esc(i.invoiceNo)}</b></td>
+      <td>${esc(i.companyName)}</td>
+      <td>${esc(i.packageName || '-')}</td>
+      <td>฿${Number(i.amount).toLocaleString('th-TH')}</td>
+      <td>${esc(i.issueDate)}</td>
+      <td>${esc(i.dueDate || '-')}</td>
+      <td><span class="badge badge-${i.status}">${statusLabel[i.status] || i.status}</span> ${isInvoiceDueSoon(i) ? `<span class="badge badge-unpaid" title="ใกล้ครบกำหนดชำระ">ใกล้ครบกำหนด</span>` : ''}</td>
+      <td>
+        <div class="row-actions">
+          <button class="btn btn-ghost btn-sm" data-act="print-invoice" data-id="${i.id}">พิมพ์</button>
+          ${(i.status === 'unpaid' || i.status === 'partial' || i.status === 'overdue') ? `<button class="btn btn-ghost btn-sm" data-act="go-receive-payment" data-id="${i.id}">รับชำระ</button>` : ''}
+          ${(i.status === 'unpaid' || i.status === 'overdue') ? `<button class="btn btn-ghost btn-sm" data-act="mark-paid-invoice" data-id="${i.id}">ชำระเต็มจำนวน</button>` : ''}
+          ${(i.status === 'unpaid' || i.status === 'overdue') ? `<button class="btn btn-danger btn-sm" data-act="cancel-invoice" data-id="${i.id}">ยกเลิก</button>` : ''}
+        </div>
+      </td>
+    </tr>`).join('');
+
+  const companyOptions = S.companies.map(c => `<option value="${c.id}" ${String(S.invoiceFilters.companyId)===String(c.id)?'selected':''}>${esc(c.name)}</option>`).join('');
+
+  return `
+    <div class="page-head">
+      <div><h2>ใบแจ้งหนี้</h2><div class="sub">รายการเรียกเก็บเงินและสถานะการชำระของลูกค้าทั้งหมด</div></div>
+      <button class="btn btn-primary" data-act="new-invoice">+ สร้างใบแจ้งหนี้</button>
+    </div>
+
+    <div class="section-title">ใบแจ้งหนี้ทั้งหมด</div>
+    <div class="filter-bar">
+      <select data-filter="invoice-company">
+        <option value="">ทุกบริษัท</option>
+        ${companyOptions}
+      </select>
+      <select data-filter="invoice-status">
+        <option value="">ทุกสถานะ</option>
+        <option value="unpaid" ${S.invoiceFilters.status==='unpaid'?'selected':''}>ยังไม่ชำระ</option>
+        <option value="partial" ${S.invoiceFilters.status==='partial'?'selected':''}>ชำระบางส่วน</option>
+        <option value="paid" ${S.invoiceFilters.status==='paid'?'selected':''}>ชำระแล้ว</option>
+        <option value="overdue" ${S.invoiceFilters.status==='overdue'?'selected':''}>เกินกำหนด</option>
+        <option value="cancelled" ${S.invoiceFilters.status==='cancelled'?'selected':''}>ยกเลิก</option>
+      </select>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>เลขที่</th><th>บริษัท</th><th>แพ็กเกจ</th><th>จำนวนเงิน</th><th>วันที่ออก</th><th>ครบกำหนด</th><th>สถานะ</th><th></th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="8"><div class="empty">ยังไม่มีใบแจ้งหนี้</div></td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderProductsPage(){
+  const canDelete = canManage(S.currentAdmin);
+  const rows = S.products.map(p => `
+    <tr>
+      <td><b>${esc(p.name)}</b>${p.description ? `<div class="contact-meta">${esc(p.description)}</div>` : ''}</td>
+      <td>${esc(p.unit || '-')}</td>
+      <td>฿${Number(p.price).toLocaleString('th-TH')}</td>
+      <td><span class="badge ${p.is_active ? 'badge-active' : 'badge-suspended'}">${p.is_active ? 'ขายอยู่' : 'ปิดขาย'}</span></td>
+      <td>
+        <div class="row-actions">
+          <button class="btn btn-ghost btn-sm" data-act="edit-product" data-id="${p.id}">แก้ไข</button>
+          ${canDelete ? `<button class="btn btn-ghost btn-sm" data-act="toggle-active-product" data-id="${p.id}">${p.is_active ? 'ปิดขาย' : 'เปิดขาย'}</button>` : ''}
+        </div>
+      </td>
+    </tr>`).join('');
+
+  const packageCards = S.packages.map(p => `
+    <div class="renew-card">
+      <div class="renew-card-head">
+        <div>
+          <div class="renew-card-title">${esc(p.name)}</div>
+          <div class="renew-card-sub">${esc(p.description || 'ไม่มีคำอธิบาย')}</div>
+        </div>
+        <span class="badge ${p.active ? 'badge-active' : 'badge-suspended'}">${p.active ? 'ใช้งานอยู่' : 'ปิดใช้งาน'}</span>
+      </div>
+      <div class="field">
+        <label>ราคา (${p.billing_cycle === 'yearly' ? 'ต่อปี' : p.billing_cycle === 'daily' ? ('ต่อ ' + p.billing_days + ' วัน') : 'ต่อเดือน'})</label>
+        <div class="price-input"><span>฿</span><input readonly value="${Number(p.price).toLocaleString('th-TH')}"></div>
+      </div>
+      <div class="renew-card-sub">จำนวนผู้ใช้งาน: ${esc(p.max_users)} คน</div>
+      <div class="row-actions" style="margin-top:14px;">
+        <button class="btn btn-ghost btn-sm" data-act="edit-package" data-id="${p.id}">แก้ไข</button>
+        <button class="btn btn-ghost btn-sm" data-act="toggle-active-package" data-id="${p.id}">${p.active ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}</button>
+      </div>
+    </div>`).join('') || `<div class="empty">ยังไม่มีแพ็กเกจ</div>`;
+
+  return `
+    <div class="page-head">
+      <div><h2>สินค้า/บริการ</h2><div class="sub">รายการสินค้าและบริการที่ใช้อ้างอิงในใบเสนอราคา/ใบแจ้งหนี้</div></div>
+      <button class="btn btn-primary" data-act="new-product">+ เพิ่มสินค้า/บริการ</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>ชื่อสินค้า/บริการ</th><th>หน่วยนับ</th><th>ราคา</th><th>สถานะ</th><th></th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="5"><div class="empty">ยังไม่มีสินค้า/บริการ</div></td></tr>`}</tbody>
+      </table>
+    </div>
+
+    <div class="section-title" style="margin-top:26px;">แพ็กเกจที่เปิดขาย
+      <button class="btn btn-ghost btn-sm" data-act="new-package">+ เพิ่มแพ็กเกจ</button>
+    </div>
+    <div class="grid-cards" style="align-items:start;">${packageCards}</div>
+  `;
+}
+
+function renderProductFormModal(){
+  const f = S.productForm;
+  const v = f.values;
+  return `
+  <div class="modal-overlay" data-act="close-modal-overlay">
+    <div class="modal" onclick="event.stopPropagation()">
+      <h3>${f.mode === 'edit' ? 'แก้ไขสินค้า/บริการ' : 'เพิ่มสินค้า/บริการ'}</h3>
+      ${f.error ? `<div class="form-error">${esc(f.error)}</div>` : ''}
+      <form data-form="product">
+        <div class="field"><label>ชื่อสินค้า/บริการ *</label><input name="name" required value="${esc(v.name)}"></div>
+        <div class="split2">
+          <div class="field"><label>หน่วยนับ</label><input name="unit" placeholder="เช่น ชิ้น, เดือน, งาน" value="${esc(v.unit)}"></div>
+          <div class="field"><label>ราคา (บาท)</label><input type="number" name="price" min="0" step="0.01" value="${esc(v.price)}"></div>
+        </div>
+        <div class="field"><label>รายละเอียด</label><textarea name="description" rows="2">${esc(v.description)}</textarea></div>
+        <div class="modal-foot">
+          <button type="button" class="btn btn-ghost" data-act="close-modal">ยกเลิก</button>
+          <button type="submit" class="btn btn-primary" ${f.saving ? 'disabled' : ''}>${f.saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+        </div>
+      </form>
+    </div>
+  </div>`;
+}
+
+const QUOTATION_STATUS_LABELS = { draft:'ร่าง', sent:'ส่งแล้ว', accepted:'ยอมรับแล้ว', declined:'ปฏิเสธ' };
+const QUOTATION_STATUS_BADGE = { draft:'badge-cancelled', sent:'badge-unpaid', accepted:'badge-active', declined:'badge-suspended' };
+
+function renderQuotationsPage(){
+  const canDelete = canManage(S.currentAdmin);
+  const rows = S.quotations.map(q => `
+    <tr>
+      <td><b>${esc(q.quotationNo)}</b></td>
+      <td>${esc(q.companyName)}</td>
+      <td>฿${Number(q.totalAmount).toLocaleString('th-TH')}</td>
+      <td>${esc(q.issueDate)}</td>
+      <td>${esc(q.validUntil || '-')}</td>
+      <td><span class="badge ${QUOTATION_STATUS_BADGE[q.status] || 'badge-cancelled'}">${esc(QUOTATION_STATUS_LABELS[q.status] || q.status)}</span>${q.convertedInvoiceId ? `<div class="contact-meta">แปลงเป็นใบแจ้งหนี้แล้ว</div>` : ''}</td>
+      <td>
+        <div class="row-actions">
+          <button class="btn btn-ghost btn-sm" data-act="print-quotation" data-id="${q.id}">พิมพ์</button>
+          <button class="btn btn-ghost btn-sm" data-act="edit-quotation" data-id="${q.id}">แก้ไข</button>
+          ${!q.convertedInvoiceId ? `<button class="btn btn-navy btn-sm" data-act="convert-quotation" data-id="${q.id}">แปลงเป็นใบแจ้งหนี้</button>` : ''}
+          ${canDelete ? `<button class="btn btn-danger btn-sm" data-act="delete-quotation" data-id="${q.id}">ลบ</button>` : ''}
+        </div>
+      </td>
+    </tr>`).join('');
+
+  return `
+    <div class="page-head">
+      <div><h2>ใบเสนอราคา</h2><div class="sub">สร้างและติดตามใบเสนอราคาสำหรับลูกค้า</div></div>
+      <button class="btn btn-primary" data-act="new-quotation">+ สร้างใบเสนอราคา</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>เลขที่</th><th>บริษัท</th><th>จำนวนเงิน</th><th>วันที่ออก</th><th>ยืนราคาถึง</th><th>สถานะ</th><th></th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="7"><div class="empty">ยังไม่มีใบเสนอราคา</div></td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderQuotationFormModal(){
+  const f = S.quotationForm;
+  if(!f.values) return `<div class="modal-overlay"><div class="modal">กำลังโหลด...</div></div>`;
+  const v = f.values;
+  const locked = !!v.convertedInvoiceId;
+  const companyOptions = S.companies.map(c => `<option value="${c.id}" ${String(v.companyId)===String(c.id)?'selected':''}>${esc(c.name)}${c.code?' ('+esc(c.code)+')':''}</option>`).join('');
+  const productOptionsFor = (selectedId) => S.products
+    .filter(p => p.is_active || String(p.id) === String(selectedId))
+    .map(p => `<option value="${p.id}" ${String(selectedId)===String(p.id)?'selected':''}>${esc(p.name)}</option>`).join('');
+  const lineTotal = it => (Number(it.qty) || 0) * (Number(it.unitPrice) || 0) - (Number(it.discount) || 0);
+  const grandTotal = v.items.reduce((sum, it) => sum + lineTotal(it), 0);
+  const fmt = n => n.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  const itemsHtml = v.items.map((it, i) => `
+    <tr>
+      <td style="text-align:center;">${i + 1}</td>
+      <td>
+        <select class="quo-item-product" data-act-change="quotation-item-product" data-idx="${i}" ${locked ? 'disabled' : ''}>
+          <option value="">— เลือกสินค้า/บริการ (ถ้ามี) —</option>
+          ${productOptionsFor(it.productId)}
+        </select>
+        <input type="text" placeholder="รายการ" data-calc="quotation-item" data-idx="${i}" data-field="description" value="${esc(it.description)}" ${locked ? 'disabled' : ''}>
+      </td>
+      <td><input type="number" min="0" step="0.01" data-calc="quotation-item" data-idx="${i}" data-field="qty" value="${esc(it.qty)}" ${locked ? 'disabled' : ''}></td>
+      <td><input type="text" data-calc="quotation-item" data-idx="${i}" data-field="unit" value="${esc(it.unit)}" ${locked ? 'disabled' : ''}></td>
+      <td><input type="number" min="0" step="0.01" data-calc="quotation-item" data-idx="${i}" data-field="unitPrice" value="${esc(it.unitPrice)}" ${locked ? 'disabled' : ''}></td>
+      <td><input type="number" min="0" step="0.01" data-calc="quotation-item" data-idx="${i}" data-field="discount" value="${esc(it.discount)}" ${locked ? 'disabled' : ''}></td>
+      <td class="quo-item-subtotal" data-line-total="${i}">฿${fmt(lineTotal(it))}</td>
+      <td>${!locked && v.items.length > 1 ? `<button type="button" class="btn btn-ghost btn-sm" data-act="remove-quotation-item" data-idx="${i}">ลบ</button>` : ''}</td>
+    </tr>`).join('');
+
+  return `
+  <div class="modal-overlay" data-act="close-modal-overlay">
+    <div class="modal" onclick="event.stopPropagation()" style="max-width:760px;">
+      <h3>${f.mode === 'edit' ? 'แก้ไขใบเสนอราคา' : 'สร้างใบเสนอราคา'}</h3>
+      ${locked ? `<div class="hint">ใบเสนอราคานี้ถูกแปลงเป็นใบแจ้งหนี้แล้ว ไม่สามารถแก้ไขได้</div>` : ''}
+      ${f.error ? `<div class="form-error">${esc(f.error)}</div>` : ''}
+      <form data-form="quotation">
+        ${f.mode === 'new' ? `
+        <div class="field" style="padding:10px 12px; background:var(--surface-alt); border-radius:var(--radius-sm);">
+          <label>ค้นหาจากรหัสบริษัท (Company ID)</label>
+          <div style="display:flex; gap:8px;">
+            <input type="text" data-company-code-input placeholder="กรอกรหัสบริษัท" style="flex:1;">
+            <button type="button" class="btn btn-ghost btn-sm" data-act="lookup-company-for-quotation">ดึงข้อมูล</button>
+          </div>
+        </div>` : ''}
+        <div class="split2">
+          <div class="field"><label>บริษัท *</label>
+            <select name="companyId" required ${locked ? 'disabled' : ''}>
+              <option value="">— เลือกบริษัท —</option>
+              ${companyOptions}
+            </select>
+          </div>
+          <div class="field"><label>สถานะ</label>
+            <select name="status" ${locked ? 'disabled' : ''}>
+              ${Object.entries(QUOTATION_STATUS_LABELS).map(([k,label]) => `<option value="${k}" ${v.status===k?'selected':''}>${label}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div class="split2">
+          <div class="field"><label>ชื่อผู้ติดต่อ</label><input name="contactName" value="${esc(v.contactName)}" ${locked ? 'disabled' : ''}></div>
+          <div class="field"><label>ชื่อบริษัท</label><input name="companyName" value="${esc(v.companyName)}" ${locked ? 'disabled' : ''}></div>
+        </div>
+        <div class="field"><label>ที่อยู่</label><textarea name="address" rows="2" ${locked ? 'disabled' : ''}>${esc(v.address)}</textarea></div>
+        <div class="split2">
+          <div class="field"><label>โทร</label><input name="phone" value="${esc(v.phone)}" ${locked ? 'disabled' : ''}></div>
+          <div class="field"><label>โทรสาร</label><input name="fax" value="${esc(v.fax)}" ${locked ? 'disabled' : ''}></div>
+        </div>
+        <div class="field"><label>อีเมล</label><input type="email" name="email" value="${esc(v.email)}" ${locked ? 'disabled' : ''}></div>
+        <div class="split2">
+          <div class="field"><label>วันที่ออก</label><input type="date" name="issueDate" value="${esc(v.issueDate)}" ${locked ? 'disabled' : ''}></div>
+          <div class="field"><label>ยืนราคาถึง</label><input type="date" name="validUntil" value="${esc(v.validUntil)}" ${locked ? 'disabled' : ''}></div>
+        </div>
+
+        <div class="section-title">รายการ</div>
+        <div class="table-wrap">
+          <table class="quo-items-table">
+            <thead><tr><th>ลำดับ</th><th>รายการ</th><th>จำนวน</th><th>หน่วย</th><th>ราคา/หน่วย</th><th>ส่วนลด</th><th>จำนวนเงิน</th><th></th></tr></thead>
+            <tbody>${itemsHtml}</tbody>
+          </table>
+        </div>
+        ${!locked ? `<button type="button" class="btn btn-ghost btn-sm" style="margin-top:10px;" data-act="add-quotation-item">+ เพิ่มรายการ</button>` : ''}
+
+        <div class="quo-total" data-calc-out="quotation-total">รวมทั้งสิ้น: ฿${fmt(grandTotal)}</div>
+
+        <div class="field"><label>หมายเหตุ</label><textarea name="note" rows="2" ${locked ? 'disabled' : ''}>${esc(v.note)}</textarea></div>
+        <div class="modal-foot">
+          <button type="button" class="btn btn-ghost" data-act="close-modal">ยกเลิก</button>
+          ${!locked ? `<button type="submit" class="btn btn-primary" ${f.saving ? 'disabled' : ''}>${f.saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>` : ''}
+        </div>
+      </form>
+    </div>
+  </div>`;
+}
+
+const COA_CATEGORY_LABELS = { asset:'สินทรัพย์', liability:'หนี้สิน', equity:'ส่วนของเจ้าของ', revenue:'รายได้', expense:'ค่าใช้จ่าย' };
+const COA_CATEGORY_ORDER = ['asset','liability','equity','revenue','expense'];
+
+function renderCoaPage(){
+  const canDelete = canManage(S.currentAdmin);
+  const byCode = Object.fromEntries(S.coaAccounts.map(a => [a.code, a]));
+  const groups = COA_CATEGORY_ORDER.map(cat => ({
+    cat, accounts: S.coaAccounts.filter(a => a.category === cat).sort((a,b) => a.code.localeCompare(b.code)),
+  })).filter(g => g.accounts.length > 0);
+
+  const sections = groups.map(g => `
+    <div class="section-title">${COA_CATEGORY_LABELS[g.cat]}</div>
+    <div class="table-wrap" style="margin-bottom:22px;">
+      <table>
+        <thead><tr><th>รหัสบัญชี</th><th>ชื่อบัญชี</th><th>บัญชีแม่</th><th>สถานะ</th><th></th></tr></thead>
+        <tbody>
+          ${g.accounts.map(a => `
+            <tr>
+              <td><b>${esc(a.code)}</b></td>
+              <td>${esc(a.name)}</td>
+              <td>${a.parent_code ? `${esc(a.parent_code)}${byCode[a.parent_code] ? ' — ' + esc(byCode[a.parent_code].name) : ''}` : '-'}</td>
+              <td><span class="badge ${a.is_active ? 'badge-active' : 'badge-suspended'}">${a.is_active ? 'ใช้งานอยู่' : 'ปิดใช้งาน'}</span></td>
+              <td>
+                <div class="row-actions">
+                  <button class="btn btn-ghost btn-sm" data-act="edit-coa-account" data-id="${a.id}">แก้ไข</button>
+                  ${canDelete ? `<button class="btn btn-ghost btn-sm" data-act="toggle-active-coa-account" data-id="${a.id}">${a.is_active ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}</button>` : ''}
+                </div>
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`).join('');
+
+  return `
+    <div class="page-head">
+      <div><h2>ผังบัญชี</h2><div class="sub">รหัสบัญชีสำหรับบันทึกรายรับ-รายจ่าย จัดกลุ่มตามหมวดบัญชี</div></div>
+      <button class="btn btn-primary" data-act="new-coa-account">+ เพิ่มบัญชี</button>
+    </div>
+    ${S.coaAccounts.length === 0 ? `<div class="card" style="padding:20px 22px;"><div class="empty">ยังไม่มีบัญชี</div></div>` : sections}
+  `;
+}
+
+function renderCoaFormModal(){
+  const f = S.coaForm;
+  const v = f.values;
+  const parentOptions = S.coaAccounts.filter(a => a.category === v.category && String(a.id) !== String(f.id));
+  return `
+  <div class="modal-overlay" data-act="close-modal-overlay">
+    <div class="modal" onclick="event.stopPropagation()">
+      <h3>${f.mode === 'edit' ? 'แก้ไขบัญชี' : 'เพิ่มบัญชี'}</h3>
+      ${f.error ? `<div class="form-error">${esc(f.error)}</div>` : ''}
+      <form data-form="coaAccount">
+        <div class="split2">
+          <div class="field"><label>รหัสบัญชี *</label><input name="code" required value="${esc(v.code)}"></div>
+          <div class="field"><label>ชื่อบัญชี *</label><input name="name" required value="${esc(v.name)}"></div>
+        </div>
+        <div class="field"><label>หมวดบัญชี *</label>
+          <select name="category" data-act-change="coa-category-change">
+            ${COA_CATEGORY_ORDER.map(k => `<option value="${k}" ${v.category===k?'selected':''}>${COA_CATEGORY_LABELS[k]}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>บัญชีแม่ (ถ้ามี)</label>
+          <select name="parentCode">
+            <option value="">— ไม่มี —</option>
+            ${parentOptions.map(a => `<option value="${a.code}" ${v.parentCode===a.code?'selected':''}>${esc(a.code)} — ${esc(a.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn btn-ghost" data-act="close-modal">ยกเลิก</button>
+          <button type="submit" class="btn btn-primary" ${f.saving ? 'disabled' : ''}>${f.saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+        </div>
+      </form>
+    </div>
+  </div>`;
+}
+
+function renderExpensesPage(){
+  const canDelete = canManage(S.currentAdmin);
+  const rows = S.expenses.map(e => `
+    <tr>
+      <td>${esc(e.expenseDate)}</td>
+      <td>${e.categoryName ? `${esc(e.categoryCode)} — ${esc(e.categoryName)}` : (e.categoryCode ? esc(e.categoryCode) : '-')}</td>
+      <td>${esc(e.description)}</td>
+      <td>฿${Number(e.amount).toLocaleString('th-TH')}</td>
+      <td><span class="badge ${e.paymentStatus==='unpaid'?'badge-unpaid':'badge-paid'}">${e.paymentStatus==='unpaid'?'ยังไม่จ่าย':'จ่ายแล้ว'}</span></td>
+      <td>${e.receiptFile ? `<a href="/api/admin/expenses/${e.id}/receipt" target="_blank">ดูใบเสร็จ</a>` : '-'}</td>
+      <td>${esc(e.createdByName || '-')}</td>
+      <td>
+        <div class="row-actions">
+          <button class="btn btn-ghost btn-sm" data-act="edit-expense" data-id="${e.id}">แก้ไข</button>
+          ${canDelete ? `<button class="btn btn-danger btn-sm" data-act="delete-expense" data-id="${e.id}">ลบ</button>` : ''}
+        </div>
+      </td>
+    </tr>`).join('');
+
+  return `
+    <div class="page-head">
+      <div><h2>รายจ่าย</h2><div class="sub">บันทึกค่าใช้จ่ายแต่ละรายการ พร้อมแนบไฟล์ใบเสร็จ</div></div>
+      <button class="btn btn-primary" data-act="new-expense">+ บันทึกรายจ่าย</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>วันที่</th><th>หมวดบัญชี</th><th>รายละเอียด</th><th>จำนวนเงิน</th><th>สถานะ</th><th>ใบเสร็จ</th><th>บันทึกโดย</th><th></th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="8"><div class="empty">ยังไม่มีรายการรายจ่าย</div></td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderPayablesPage(){
+  const unpaid = (S.expenses || []).filter(e => e.paymentStatus === 'unpaid');
+  const totalOutstanding = unpaid.reduce((sum, e) => sum + Number(e.amount), 0);
+  const rows = unpaid.map(e => `
+    <tr>
+      <td>${esc(e.expenseDate)}</td>
+      <td>${e.categoryName ? `${esc(e.categoryCode)} — ${esc(e.categoryName)}` : (e.categoryCode ? esc(e.categoryCode) : '-')}</td>
+      <td>${esc(e.description)}</td>
+      <td>฿${Number(e.amount).toLocaleString('th-TH')}</td>
+      <td><button class="btn btn-primary btn-sm" data-act="pay-expense" data-id="${e.id}">จ่ายชำระ</button></td>
+    </tr>`).join('');
+
+  return `
+    <div class="page-head">
+      <div><h2>จ่ายชำระเจ้าหนี้</h2><div class="sub">รายจ่ายที่บันทึกแบบ "ยังไม่จ่าย" — กด "จ่ายชำระ" เมื่อจ่ายเงินจริง</div></div>
+    </div>
+    <div style="background:var(--surface-alt); border-radius:var(--radius); padding:14px 18px; margin-bottom:18px; font-size:14px;">ยอดเจ้าหนี้คงค้างรวม: <b>฿${Number(totalOutstanding).toLocaleString('th-TH')}</b></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>วันที่</th><th>หมวดบัญชี</th><th>รายละเอียด</th><th>จำนวนเงิน</th><th></th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="5"><div class="empty">ไม่มีเจ้าหนี้ค้างชำระ</div></td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderExpenseFormModal(){
+  const f = S.expenseForm;
+  const v = f.values;
+  const expenseAccounts = S.coaAccounts.filter(a => a.category === 'expense' && a.is_active);
+  return `
+  <div class="modal-overlay" data-act="close-modal-overlay">
+    <div class="modal" onclick="event.stopPropagation()">
+      <h3>${f.mode === 'edit' ? 'แก้ไขรายจ่าย' : 'บันทึกรายจ่าย'}</h3>
+      ${f.error ? `<div class="form-error">${esc(f.error)}</div>` : ''}
+      <form data-form="expense">
+        <div class="field"><label>หมวดบัญชี</label>
+          <select name="categoryCode">
+            <option value="">— ไม่ระบุ —</option>
+            ${expenseAccounts.map(a => `<option value="${a.code}" ${v.categoryCode===a.code?'selected':''}>${esc(a.code)} — ${esc(a.name)}</option>`).join('')}
+          </select>
+          ${expenseAccounts.length === 0 ? `<div class="hint">ยังไม่มีบัญชีในหมวดค่าใช้จ่าย — เพิ่มได้ที่ "ผังบัญชี"</div>` : ''}
+        </div>
+        <div class="field"><label>รายละเอียด *</label><input name="description" required value="${esc(v.description)}"></div>
+        <div class="split2">
+          <div class="field"><label>จำนวนเงิน (บาท) *</label><input type="number" name="amount" min="0" step="0.01" required value="${esc(v.amount)}"></div>
+          <div class="field"><label>วันที่</label><input type="date" name="expenseDate" value="${esc(v.expenseDate)}"></div>
+        </div>
+        <div class="field"><label>สถานะการจ่าย</label>
+          <select name="paymentStatus" ${f.mode === 'edit' ? 'disabled' : ''}>
+            <option value="paid" ${v.paymentStatus!=='unpaid'?'selected':''}>จ่ายแล้ว</option>
+            <option value="unpaid" ${v.paymentStatus==='unpaid'?'selected':''}>ยังไม่จ่าย</option>
+          </select>
+          ${f.mode === 'edit' ? `<div class="hint">เปลี่ยนสถานะการจ่ายได้ที่หน้า "จ่ายชำระเจ้าหนี้" เท่านั้น</div>` : ''}
+        </div>
+        <div class="field"><label>ไฟล์ใบเสร็จ (ถ้ามี)</label>
+          <input type="file" name="receipt" accept="image/jpeg,image/png,image/webp,application/pdf">
+          ${f.mode === 'edit' && v.hasReceipt ? `<div class="hint">มีไฟล์แนบอยู่แล้ว — อัปโหลดใหม่เพื่อแทนที่</div>` : ''}
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn btn-ghost" data-act="close-modal">ยกเลิก</button>
+          <button type="submit" class="btn btn-primary" ${f.saving ? 'disabled' : ''}>${f.saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+        </div>
+      </form>
+    </div>
+  </div>`;
+}
+
+const JOURNAL_SOURCE_LABELS = { invoice:'ใบแจ้งหนี้', payment:'การชำระเงิน', expense:'รายจ่าย', manual:'บันทึกเอง' };
+
+function renderJournalFilterBar(){
+  const f = S.journalFilters;
+  const options = ['', 'invoice', 'payment', 'expense', 'manual'].map(v =>
+    `<option value="${v}" ${f.sourceType===v?'selected':''}>${v ? esc(JOURNAL_SOURCE_LABELS[v]) : 'ทุกประเภท'}</option>`).join('');
+  return `
+    <div class="filter-bar">
+      <input type="date" data-journal-filter="from" value="${esc(f.from)}">
+      <input type="date" data-journal-filter="to" value="${esc(f.to)}">
+      <select data-journal-filter="sourceType">${options}</select>
+      <button class="btn btn-ghost btn-sm" data-act="apply-journal-filter">ค้นหา</button>
+    </div>`;
+}
+
+function renderJournalPage(){
+  const entries = S.journalEntries || [];
+  const totalDebit = entries.reduce((sum, e) => sum + Number(e.totalDebit), 0);
+  const totalCredit = entries.reduce((sum, e) => sum + Number(e.totalCredit), 0);
+  const rows = entries.flatMap(e => e.lines.map((l, i) => `
+    <tr ${i===0 ? 'style="border-top:2px solid var(--border);"' : ''}>
+      <td>${i===0 ? esc(e.entryDate) : ''}</td>
+      <td>${i===0 ? esc(e.description) : ''}</td>
+      <td>${i===0 ? esc(JOURNAL_SOURCE_LABELS[e.sourceType] || e.sourceType) : ''}</td>
+      <td>${esc(l.accountCode)} — ${esc(l.accountName || '-')}</td>
+      <td style="text-align:right">${Number(l.debitAmount) > 0 ? '฿' + fmtBaht(l.debitAmount, 2) : ''}</td>
+      <td style="text-align:right">${Number(l.creditAmount) > 0 ? '฿' + fmtBaht(l.creditAmount, 2) : ''}</td>
+    </tr>`)).join('');
+  return `
+    <div class="page-head">
+      <div><h2>สมุดรายวัน</h2><div class="sub">รายการบันทึกบัญชีคู่ (เดบิต/เครดิต) ทั้งหมด เรียงตามวันที่</div></div>
+    </div>
+    ${renderJournalFilterBar()}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>วันที่</th><th>รายการ</th><th>ประเภท</th><th>บัญชี</th><th style="text-align:right">เดบิต</th><th style="text-align:right">เครดิต</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="6"><div class="empty">ยังไม่มีรายการบันทึกบัญชี</div></td></tr>`}</tbody>
+        <tfoot><tr style="font-weight:700;">
+          <td colspan="4">รวม</td>
+          <td style="text-align:right">฿${fmtBaht(totalDebit, 2)}</td>
+          <td style="text-align:right">฿${fmtBaht(totalCredit, 2)}</td>
+        </tr></tfoot>
+      </table>
+    </div>
+  `;
+}
+
+const REPORT_TABS = { pl:'กำไรขาดทุน', ar:'ลูกหนี้ค้างชำระ', vat:'ภาษีขาย (VAT)' };
+const THAI_MONTHS = ['มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม'];
+function thaiMonthLabel(yyyyMM){
+  if(!yyyyMM) return '-';
+  const [y, m] = yyyyMM.split('-').map(Number);
+  return `${THAI_MONTHS[m - 1]} ${y + 543}`;
+}
+const fmtBaht = (n, decimals) => Number(n).toLocaleString('th-TH', { minimumFractionDigits: decimals || 0, maximumFractionDigits: decimals || 0 });
+
+function renderReportsPage(){
+  const tabs = Object.entries(REPORT_TABS).map(([k,label]) => `<button class="btn ${S.reportTab===k?'btn-navy':'btn-ghost'} btn-sm" data-act="report-tab" data-tab="${k}">${label}</button>`).join('');
+  let body = '';
+  if(S.reportTab === 'pl') body = renderPLReportBody();
+  else if(S.reportTab === 'ar') body = renderARReportBody();
+  else if(S.reportTab === 'vat') body = renderVATReportBody();
+
+  return `
+    <div class="page-head">
+      <div><h2>รายงาน</h2><div class="sub">สรุปข้อมูลการเงินจากใบแจ้งหนี้และรายจ่าย</div></div>
+    </div>
+    <div class="filter-bar">${tabs}</div>
+    ${body}
+  `;
+}
+
+function renderReportDateFilter(){
+  const f = S.reportFilters;
+  return `
+    <div class="filter-bar">
+      <input type="date" data-report-filter="from" value="${esc(f.from)}">
+      <input type="date" data-report-filter="to" value="${esc(f.to)}">
+      <button class="btn btn-ghost btn-sm" data-act="apply-report-filter">ค้นหา</button>
+    </div>`;
+}
+
+function renderPLReportBody(){
+  const rep = S.plReport;
+  if(!rep) return `${renderReportDateFilter()}<div class="card" style="padding:20px 22px;"><div class="empty">กำลังโหลด...</div></div>`;
+  const rows = rep.months.map(m => `
+    <tr>
+      <td>${thaiMonthLabel(m.month)}</td>
+      <td>฿${fmtBaht(m.revenue)}</td>
+      <td>฿${fmtBaht(m.expenses)}</td>
+      <td style="font-weight:700; color:${m.net>=0?'var(--green)':'var(--red)'};">฿${fmtBaht(m.net)}</td>
+    </tr>`).join('');
+  return `
+    ${renderReportDateFilter()}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>เดือน</th><th>รายรับ</th><th>รายจ่าย</th><th>กำไร/ขาดทุนสุทธิ</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="4"><div class="empty">ไม่มีข้อมูลในช่วงเวลานี้</div></td></tr>`}</tbody>
+        <tfoot><tr style="font-weight:700;">
+          <td>รวม</td><td>฿${fmtBaht(rep.totals.revenue)}</td><td>฿${fmtBaht(rep.totals.expenses)}</td>
+          <td style="color:${rep.totals.net>=0?'var(--green)':'var(--red)'};">฿${fmtBaht(rep.totals.net)}</td>
+        </tr></tfoot>
+      </table>
+    </div>
+  `;
+}
+
+function renderARReportBody(){
+  const rep = S.arReport;
+  if(!rep) return `<div class="card" style="padding:20px 22px;"><div class="empty">กำลังโหลด...</div></div>`;
+  const rows = rep.invoices.map(inv => `
+    <tr>
+      <td><b>${esc(inv.invoiceNo)}</b></td>
+      <td>${esc(inv.companyName)}</td>
+      <td>฿${fmtBaht(inv.amount)}</td>
+      <td>${esc(inv.dueDate || '-')}</td>
+      <td style="font-weight:700; color:${inv.daysOverdue>0?'var(--red)':'var(--text-muted)'};">${inv.daysOverdue!=null ? (inv.daysOverdue>0?inv.daysOverdue+' วัน':'ยังไม่ครบกำหนด') : '-'}</td>
+      <td><span class="badge ${inv.status==='overdue'?'badge-overdue':'badge-unpaid'}">${inv.status==='overdue'?'เกินกำหนด':'ยังไม่ชำระ'}</span></td>
+    </tr>`).join('');
+  return `
+    <div style="background:var(--surface-alt); border-radius:var(--radius); padding:14px 18px; margin-bottom:18px; font-size:14px;">ยอดค้างชำระรวม: <b>฿${fmtBaht(rep.totalOutstanding)}</b></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>เลขที่</th><th>บริษัท</th><th>จำนวนเงิน</th><th>ครบกำหนด</th><th>ค้างชำระ</th><th>สถานะ</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="6"><div class="empty">ไม่มีลูกหนี้ค้างชำระ</div></td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderVATReportBody(){
+  const rep = S.vatReport;
+  if(!rep) return `${renderReportDateFilter()}<div class="card" style="padding:20px 22px;"><div class="empty">กำลังโหลด...</div></div>`;
+  const rows = rep.months.map(m => `
+    <tr>
+      <td>${thaiMonthLabel(m.month)}</td>
+      <td>฿${fmtBaht(m.totalSales, 2)}</td>
+      <td>฿${fmtBaht(m.netSales, 2)}</td>
+      <td>฿${fmtBaht(m.vatAmount, 2)}</td>
+    </tr>`).join('');
+  return `
+    <div class="hint" style="margin-bottom:14px;">คำนวณจากอัตราภาษีมูลค่าเพิ่ม 7% โดยสมมติว่ายอดในใบแจ้งหนี้รวมภาษีแล้ว — เป็นตัวเลขเบื้องต้นสำหรับเตรียมยื่น ภ.พ.30 ไม่ใช่ยอดที่ยื่นจริง</div>
+    ${renderReportDateFilter()}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>เดือน</th><th>ยอดขายรวม (รวม VAT)</th><th>ยอดขายสุทธิ</th><th>ภาษีขาย (VAT 7%)</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="4"><div class="empty">ไม่มีข้อมูลในช่วงเวลานี้</div></td></tr>`}</tbody>
+        <tfoot><tr style="font-weight:700;">
+          <td>รวม</td><td>฿${fmtBaht(rep.totals.totalSales, 2)}</td><td>฿${fmtBaht(rep.totals.netSales, 2)}</td><td>฿${fmtBaht(rep.totals.vatAmount, 2)}</td>
+        </tr></tfoot>
+      </table>
+    </div>
+  `;
+}
+
+function renderInvoiceFormModal(){
+  const f = S.invoiceForm;
+  const v = f.values;
+  const companyOptions = S.companies.map(c => `<option value="${c.id}" ${String(v.companyId)===String(c.id)?'selected':''}>${esc(c.name)}</option>`).join('');
+  const packageOptions = S.packages.map(p => `<option value="${p.id}" ${String(v.packageId)===String(p.id)?'selected':''}>${esc(p.name)} (฿${Number(p.price).toLocaleString('th-TH')})</option>`).join('');
+  return `
+  <div class="modal-overlay" data-act="close-modal-overlay">
+    <div class="modal" onclick="event.stopPropagation()">
+      <h3>สร้างใบแจ้งหนี้ / บันทึกการชำระเงิน</h3>
+      ${f.error ? `<div class="form-error">${esc(f.error)}</div>` : ''}
+      <form data-form="invoice">
+        <div class="field"><label>บริษัท *</label>
+          <select name="companyId" required data-act-change="fill-invoice-from-company">
+            <option value="">— เลือกบริษัท —</option>
+            ${companyOptions}
+          </select>
+        </div>
+        <div class="field"><label>แพ็กเกจ (ไม่บังคับ)</label>
+          <select name="packageId" data-act-change="fill-invoice-amount">
+            <option value="">— ไม่ระบุ —</option>
+            ${packageOptions}
+          </select>
+        </div>
+        <div class="split2">
+          <div class="field"><label>จำนวนเงิน (บาท) *</label><input type="number" name="amount" min="0.01" step="0.01" required value="${esc(v.amount)}"></div>
+          <div class="field"><label>วันครบกำหนด</label><input type="date" name="dueDate" value="${esc(v.dueDate)}"></div>
+        </div>
+        <div class="field"><label>หมายเหตุ</label><textarea name="note" rows="2">${esc(v.note)}</textarea></div>
+        <div class="modal-foot">
+          <button type="button" class="btn btn-ghost" data-act="close-modal">ยกเลิก</button>
+          <button type="submit" class="btn btn-primary" ${f.saving ? 'disabled' : ''}>${f.saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+        </div>
+      </form>
+    </div>
+  </div>`;
+}
+
+function renderReceivePaymentPage(){
+  const f = S.receivePaymentForm;
+  const payable = S.invoices.filter(i => i.status === 'unpaid' || i.status === 'partial' || i.status === 'overdue');
+  const selectedInvoice = f && f.invoiceId ? S.invoices.find(i => String(i.id) === String(f.invoiceId)) : null;
+  const remaining = selectedInvoice ? Number(selectedInvoice.amount) - Number(selectedInvoice.amountReceived || 0) : 0;
+
+  const invoiceOptions = payable.map(i => {
+    const rem = Number(i.amount) - Number(i.amountReceived || 0);
+    return `<option value="${i.id}" ${f && String(f.invoiceId)===String(i.id)?'selected':''}>${esc(i.invoiceNo)} — ${esc(i.companyName)} (คงเหลือ ฿${fmtBaht(rem,2)})</option>`;
+  }).join('');
+
+  const historyRows = (S.receivePaymentHistory || []).map(p => `
+    <tr>
+      <td>${esc(p.paymentDate)}</td>
+      <td>฿${fmtBaht(p.amount,2)}</td>
+      <td>${esc(p.note || '-')}</td>
+      <td>${esc(p.createdByName || '-')}</td>
+    </tr>`).join('');
+
+  return `
+    <div class="page-head"><div><h2>รับชำระเงิน</h2><div class="sub">บันทึกการรับชำระเงินจากใบแจ้งหนี้ รองรับการรับชำระหลายงวด</div></div></div>
+    <div class="card" style="padding:22px 24px; margin-bottom:20px;">
+      ${f && f.error ? `<div class="form-error">${esc(f.error)}</div>` : ''}
+      <form data-form="receivePayment">
+        <div class="field"><label>ใบแจ้งหนี้ *</label>
+          <select name="invoiceId" required data-act-change="select-payment-invoice">
+            <option value="">— เลือกใบแจ้งหนี้ —</option>
+            ${invoiceOptions}
+          </select>
+          ${payable.length === 0 ? `<div class="hint">ไม่มีใบแจ้งหนี้ที่รอรับชำระ</div>` : ''}
+        </div>
+        ${selectedInvoice ? `
+        <div style="background:var(--surface-alt); border-radius:var(--radius); padding:12px 16px; margin:10px 0 16px; font-size:13.5px;">
+          ยอดเต็ม: ฿${fmtBaht(selectedInvoice.amount,2)} · รับแล้ว: ฿${fmtBaht(selectedInvoice.amountReceived||0,2)} · คงเหลือ: <b>฿${fmtBaht(remaining,2)}</b>
+        </div>
+        <div class="split2">
+          <div class="field"><label>จำนวนเงินที่รับ (บาท) *</label><input type="number" name="amount" min="0.01" step="0.01" max="${remaining}" required value="${esc(f.amount)}"></div>
+          <div class="field"><label>วันที่รับชำระ</label><input type="date" name="paymentDate" value="${esc(f.paymentDate)}"></div>
+        </div>
+        <div class="field"><label>หมายเหตุ</label><input name="note" value="${esc(f.note)}"></div>
+        <button type="submit" class="btn btn-primary" ${f.saving ? 'disabled' : ''}>${f.saving ? 'กำลังบันทึก...' : 'บันทึกรับชำระ'}</button>
+        ` : ''}
+      </form>
+    </div>
+    ${selectedInvoice ? `
+    <div class="section-title" style="margin-top:0;">ประวัติการรับชำระของใบแจ้งหนี้นี้</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>วันที่</th><th>จำนวนเงิน</th><th>หมายเหตุ</th><th>บันทึกโดย</th></tr></thead>
+        <tbody>${historyRows || `<tr><td colspan="4"><div class="empty">ยังไม่เคยรับชำระสำหรับใบแจ้งหนี้นี้</div></td></tr>`}</tbody>
+      </table>
+    </div>` : ''}
+  `;
+}
+
+function renderDataPage(){
+  return `
+    <div class="page-head"><div><h2>จัดการข้อมูลทั้งหมด</h2><div class="sub">ดาวน์โหลดข้อมูลออกเป็นไฟล์ CSV เพื่อเปิดใน Excel หรือสำรองข้อมูล</div></div></div>
+    <div class="settings-grid">
+      <div class="card" style="padding:22px 24px;">
+        <div class="section-title" style="margin-top:0;">บริษัทลูกค้า + ผู้ติดต่อ</div>
+        <p class="hint" style="margin-bottom:16px;">ข้อมูลบริษัทลูกค้าทั้งหมดพร้อมแพ็กเกจปัจจุบันและรายชื่อผู้ติดต่อ</p>
+        <a class="btn btn-primary" href="/api/admin/export/companies" download>ดาวน์โหลด CSV</a>
+      </div>
+      <div class="card" style="padding:22px 24px;">
+        <div class="section-title" style="margin-top:0;">ใบแจ้งหนี้/การชำระเงิน</div>
+        <p class="hint" style="margin-bottom:16px;">รายการใบแจ้งหนี้ทั้งหมดพร้อมสถานะการชำระเงิน</p>
+        <a class="btn btn-primary" href="/api/admin/export/invoices" download>ดาวน์โหลด CSV</a>
+      </div>
+    </div>
+  `;
+}
+
+function renderSettingsPage(){
+  const isAdmin = canManage(S.currentAdmin);
+  const sf = S.settingsForm;
+  const sv = sf ? sf.values : { companyName:'', logoUrl:'', address:'', contactEmail:'', contactPhone:'', taxId:'', contactFax:'' };
+  const mf = S.myAccountForm;
+  const mv = mf ? mf.values : { name: S.currentAdmin.name };
+  const pf = S.passwordForm;
+  const pv = pf ? pf.values : { currentPassword:'', newPassword:'', confirmNewPassword:'' };
+
+  return `
+    <div class="page-head"><div><h2>ตั้งค่าระบบ</h2><div class="sub">ข้อมูลบริษัท SiteReq และบัญชีของฉัน</div></div></div>
+    <div class="settings-grid">
+      <div class="card" style="padding:22px 24px;">
+        <div class="section-title" style="margin-top:0;">ข้อมูลบริษัท SiteReq</div>
+        ${sf && sf.error ? `<div class="form-error">${esc(sf.error)}</div>` : ''}
+        <form data-form="settings">
+          <div class="field"><label>ชื่อบริษัท *</label><input name="companyName" required value="${esc(sv.companyName)}" ${isAdmin?'':'disabled'}></div>
+          <div class="field"><label>โลโก้ (URL)</label><input name="logoUrl" value="${esc(sv.logoUrl)}" ${isAdmin?'':'disabled'}></div>
+          <div class="field"><label>ที่อยู่</label><textarea name="address" rows="2" ${isAdmin?'':'disabled'}>${esc(sv.address)}</textarea></div>
+          <div class="split2">
+            <div class="field"><label>อีเมลติดต่อ</label><input type="email" name="contactEmail" value="${esc(sv.contactEmail)}" ${isAdmin?'':'disabled'}></div>
+            <div class="field"><label>โทรศัพท์ติดต่อ</label><input name="contactPhone" value="${esc(sv.contactPhone)}" ${isAdmin?'':'disabled'}></div>
+          </div>
+          <div class="split2">
+            <div class="field"><label>โทรสาร</label><input name="contactFax" value="${esc(sv.contactFax)}" ${isAdmin?'':'disabled'}></div>
+            <div class="field"><label>เลขประจำตัวผู้เสียภาษี</label><input name="taxId" value="${esc(sv.taxId)}" ${isAdmin?'':'disabled'}></div>
+          </div>
+          ${isAdmin ? `<button type="submit" class="btn btn-primary" ${sf && sf.saving ? 'disabled' : ''}>${sf && sf.saving ? 'กำลังบันทึก...' : 'บันทึกข้อมูลบริษัท'}</button>` : `<div class="field hint">เฉพาะผู้ดูแลระบบเท่านั้นที่แก้ไขได้</div>`}
+        </form>
+      </div>
+      <div class="card" style="padding:22px 24px;">
+        <div class="section-title" style="margin-top:0;">บัญชีของฉัน</div>
+        ${mf && mf.error ? `<div class="form-error">${esc(mf.error)}</div>` : ''}
+        <form data-form="myAccount">
+          <div class="field"><label>ชื่อ *</label><input name="name" required value="${esc(mv.name)}"></div>
+          <button type="submit" class="btn btn-ghost" ${mf && mf.saving ? 'disabled' : ''}>${mf && mf.saving ? 'กำลังบันทึก...' : 'บันทึกชื่อ'}</button>
+        </form>
+        <div class="section-title">เปลี่ยนรหัสผ่าน</div>
+        ${pf && pf.error ? `<div class="form-error">${esc(pf.error)}</div>` : ''}
+        <form data-form="password">
+          <div class="field"><label>รหัสผ่านปัจจุบัน *</label><input type="password" name="currentPassword" required value="${esc(pv.currentPassword)}"></div>
+          <div class="field"><label>รหัสผ่านใหม่ *</label><input type="password" name="newPassword" required value="${esc(pv.newPassword)}"></div>
+          <div class="field"><label>ยืนยันรหัสผ่านใหม่ *</label><input type="password" name="confirmNewPassword" required value="${esc(pv.confirmNewPassword)}"></div>
+          <button type="submit" class="btn btn-ghost" ${pf && pf.saving ? 'disabled' : ''}>${pf && pf.saving ? 'กำลังบันทึก...' : 'เปลี่ยนรหัสผ่าน'}</button>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+/* ---------- data loading ---------- */
+async function loadStats(){
+  S.stats = await api('GET', '/api/admin/dashboard/stats');
+  render();
+}
+async function loadCompanies(){
+  const data = await api('GET', '/api/admin/companies');
+  S.companies = data.companies;
+  S.companiesLoaded = true;
+  render();
+}
+async function loadCompanyDetail(id){
+  const data = await api('GET', `/api/admin/companies/${id}`);
+  S.companyDetail = data;
+  render();
+}
+async function loadLeads(){
+  const data = await api('GET', '/api/admin/leads');
+  S.leads = data.leads;
+  S.leadsLoaded = true;
+  render();
+}
+
+async function markLeadSeenIfNeeded(id){
+  const l = S.leads.find(x => x.id === id);
+  if(!l || l.seen) return;
+  await api('POST', `/api/admin/leads/${id}/mark-seen`);
+  l.seen = true;
+  await loadStats();
+  render();
+}
+async function loadAccounts(){
+  const data = await api('GET', '/api/admin/accounts');
+  S.accounts = data.accounts;
+  S.accountsLoaded = true;
+  render();
+}
+async function loadPackages(){
+  const data = await api('GET', '/api/admin/packages');
+  S.packages = data.packages;
+  S.packagesLoaded = true;
+  render();
+}
+async function loadInvoices(){
+  const params = new URLSearchParams();
+  if(S.invoiceFilters.companyId) params.set('companyId', S.invoiceFilters.companyId);
+  if(S.invoiceFilters.status) params.set('status', S.invoiceFilters.status);
+  const qs = params.toString();
+  const data = await api('GET', `/api/admin/invoices${qs ? '?' + qs : ''}`);
+  S.invoices = data.invoices;
+  S.invoicesLoaded = true;
+  render();
+}
+async function loadInvoicePayments(invoiceId){
+  const data = await api('GET', `/api/admin/invoices/${invoiceId}/payments`);
+  S.receivePaymentHistory = data.payments;
+  render();
+}
+async function loadProducts(){
+  const data = await api('GET', '/api/admin/products');
+  S.products = data.products;
+  S.productsLoaded = true;
+  render();
+}
+async function loadQuotations(){
+  const data = await api('GET', '/api/admin/quotations');
+  S.quotations = data.quotations;
+  S.quotationsLoaded = true;
+  render();
+}
+async function loadQuotationDetailIntoForm(id){
+  const data = await api('GET', `/api/admin/quotations/${id}`);
+  const q = data.quotation;
+  S.quotationForm = {
+    mode:'edit', id,
+    values:{
+      companyId:q.companyId, contactName:q.contactName || '', companyName:q.companyName || '',
+      address:q.companyAddress || '', phone:q.companyPhone || '', fax:q.companyFax || '', email:q.companyEmail || '',
+      status:q.status, issueDate:q.issueDate, validUntil:q.validUntil || '',
+      note:q.note, convertedInvoiceId:q.convertedInvoiceId,
+      items: data.items.length
+        ? data.items.map(it => ({ productId:it.productId || '', description:it.description, qty:it.qty, unit:it.unit || '', unitPrice:it.unitPrice, discount:it.discount || 0 }))
+        : [{ productId:'', description:'', qty:1, unit:'', unitPrice:0, discount:0 }],
+    },
+    saving:false, error:'',
+  };
+  render();
+}
+async function loadCoaAccounts(){
+  const data = await api('GET', '/api/admin/chart-of-accounts');
+  S.coaAccounts = data.accounts;
+  S.coaAccountsLoaded = true;
+  render();
+}
+async function loadExpenses(){
+  const data = await api('GET', '/api/admin/expenses');
+  S.expenses = data.expenses;
+  S.expensesLoaded = true;
+  render();
+}
+function journalDateQuery(){
+  const params = new URLSearchParams();
+  if(S.journalFilters.from) params.set('from', S.journalFilters.from);
+  if(S.journalFilters.to) params.set('to', S.journalFilters.to);
+  if(S.journalFilters.sourceType) params.set('sourceType', S.journalFilters.sourceType);
+  const qs = params.toString();
+  return qs ? '?' + qs : '';
+}
+async function loadJournalEntries(){
+  const data = await api('GET', `/api/admin/journal-entries${journalDateQuery()}`);
+  S.journalEntries = data.entries;
+  S.journalEntriesLoaded = true;
+  render();
+}
+function reportDateQuery(){
+  const params = new URLSearchParams();
+  if(S.reportFilters.from) params.set('from', S.reportFilters.from);
+  if(S.reportFilters.to) params.set('to', S.reportFilters.to);
+  const qs = params.toString();
+  return qs ? '?' + qs : '';
+}
+async function loadPLReport(){
+  S.plReport = await api('GET', `/api/admin/reports/profit-loss${reportDateQuery()}`);
+  render();
+}
+async function loadARReport(){
+  S.arReport = await api('GET', '/api/admin/reports/receivables-aging');
+  render();
+}
+async function loadVATReport(){
+  S.vatReport = await api('GET', `/api/admin/reports/vat${reportDateQuery()}`);
+  render();
+}
+async function loadSettings(){
+  const data = await api('GET', '/api/admin/settings');
+  S.settings = data.settings;
+  S.settingsLoaded = true;
+  render();
+}
+async function loadSlips(invoiceId){
+  const data = await api('GET', `/api/admin/invoices/${invoiceId}/slips`);
+  S.slipsModal.slips = data.slips;
+  S.slipsModal.loading = false;
+  render();
+}
+
+function addDaysToDateStr(dateStr, days){
+  if(!dateStr || !days) return null;
+  const d = new Date(dateStr);
+  d.setDate(d.getDate() + Number(days));
+  return d.toISOString().slice(0, 10);
+}
+
+async function printQuotation(id){
+  let detail;
+  try {
+    detail = await api('GET', `/api/admin/quotations/${id}`);
+  } catch(err){ showToast(err.message, 'err'); return; }
+  if(!S.settingsLoaded){
+    try { await loadSettings(); } catch(err){ showToast(err.message, 'err'); return; }
+  }
+  const q = detail.quotation;
+  const items = detail.items;
+  const settings = S.settings || { company_name:'Build-Con', address:'', contact_phone:'', contact_email:'', tax_id:'', contact_fax:'' };
+  const fmt = n => n.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const lineTotal = it => Number(it.qty) * Number(it.unitPrice) - Number(it.discount || 0);
+  const total = items.reduce((sum, it) => sum + lineTotal(it), 0);
+
+  const fillerRow = `<tr><td class="filler">&nbsp;</td><td class="filler"></td><td class="filler"></td><td class="filler"></td><td class="filler"></td><td class="filler"></td><td class="filler"></td></tr>`;
+  const itemRows = items.map((it, idx) => `<tr style="height:1px;">
+    <td style="text-align:center;">${idx + 1}</td>
+    <td>${esc(it.description)}</td>
+    <td style="text-align:center;">${it.qty}</td>
+    <td style="text-align:center;">${esc(it.unit || '-')}</td>
+    <td style="text-align:right;">${fmt(Number(it.unitPrice))}</td>
+    <td style="text-align:right;">${Number(it.discount) > 0 ? fmt(Number(it.discount)) : '-'}</td>
+    <td style="text-align:right;">${fmt(lineTotal(it))}</td>
+  </tr>`).join('');
+  const itemTableBody = itemRows + fillerRow;
+
+  const html = `
+  <div class="doc-page-no">หน้า 1/1</div>
+  <div class="doc-topbar"></div>
+  <div class="doc-header">
+    <img src="/logo.svg" alt="logo" class="doc-logo">
+    <div class="doc-company-info">
+      <div class="doc-company-name">${esc(settings.company_name)}</div>
+      <div class="doc-company-addr">${esc(settings.address || '')}</div>
+      <div class="doc-company-contact">
+        ${settings.contact_phone ? 'โทร. ' + esc(settings.contact_phone) + '  ' : ''}${settings.contact_fax ? 'โทรสาร ' + esc(settings.contact_fax) + '  ' : ''}${settings.tax_id ? 'เลขประจำตัวผู้เสียภาษี ' + esc(settings.tax_id) : ''}
+      </div>
+    </div>
+  </div>
+
+  <div class="doc-title-row">
+    <div class="doc-title">ใบเสนอราคา</div>
+    <table class="doc-no-table">
+      <tr><td>เลขที่</td><td>${esc(q.quotationNo)}</td></tr>
+      <tr><td>วันที่</td><td>${thaiDate(q.issueDate)}</td></tr>
+    </table>
+  </div>
+
+  <div class="doc-info-box">
+    <div class="doc-info-col">
+      <div><b>ชื่อบริษัท</b> ${esc(q.companyName)}</div>
+      <div><b>ผู้ติดต่อ</b> ${esc(q.contactName || '-')}</div>
+      <div><b>เลขผู้เสียภาษี</b> ${esc(q.companyTaxId || '-')}</div>
+      <div><b>ที่อยู่</b> ${esc(q.companyAddress || '-')}</div>
+      <div><b>โทร.</b> ${esc(q.companyPhone || '-')} &nbsp; <b>โทรสาร</b> ${esc(q.companyFax || '-')}</div>
+      <div><b>E-mail</b> ${esc(q.companyEmail || '-')}</div>
+    </div>
+    <div class="doc-info-col">
+      <div><b>ยืนราคาถึง</b> ${q.validUntil ? thaiDate(q.validUntil) : '-'}</div>
+      <div><b>สถานะ</b> ${esc(QUOTATION_STATUS_LABELS[q.status] || q.status)}</div>
+    </div>
+  </div>
+
+  <table class="items">
+    <thead><tr>
+      <th style="width:6%;">ลำดับ</th>
+      <th style="width:32%;">รายการ</th>
+      <th style="width:9%;">จำนวน</th>
+      <th style="width:9%;">หน่วย</th>
+      <th style="width:14%;">ราคา/หน่วย</th>
+      <th style="width:12%;">ส่วนลด</th>
+      <th>จำนวนเงิน (บาท)</th>
+    </tr></thead>
+    <tbody>
+      ${itemTableBody}
+    </tbody>
+  </table>
+
+  <div class="doc-bottom-box">
+    <div class="doc-bottom-row">
+      <div class="doc-note-box">${q.note ? `<b>หมายเหตุ:</b> ${esc(q.note)}` : ''}</div>
+      <div class="totals-box">
+        <table>
+          <tr class="net-row"><td class="label">จำนวนเงินรวม</td><td class="value">${fmt(total)}</td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="doc-baht-row">( ${thaiBahtText(total)} )</div>
+  </div>
+
+  <div class="signatures">
+    <div class="sig-box"><b>ผู้เสนอราคา</b>${esc(settings.company_name)}<div class="sig-date">วันที่ _______________</div></div>
+    <div class="sig-box"><b>ผู้อนุมัติ/ตอบรับ</b><div class="sig-date">วันที่ _______________</div></div>
+  </div>`;
+
+  const container = document.getElementById('invoice-print-area');
+  container.innerHTML = `<div class="invoice-doc">${html}</div>`;
+  const logoImg = container.querySelector('img.doc-logo');
+  if(logoImg && !logoImg.complete){
+    logoImg.addEventListener('load', () => window.print(), { once: true });
+    logoImg.addEventListener('error', () => window.print(), { once: true });
+  } else {
+    window.print();
+  }
+}
+
+async function printInvoice(id, taxRate){
+  const invoice = S.invoices.find(i => i.id === id);
+  if(!invoice) return;
+  if(!S.settingsLoaded){
+    try { await loadSettings(); } catch(err){ showToast(err.message, 'err'); return; }
+  }
+  const settings = S.settings || { company_name:'Build-Con', address:'', contact_phone:'', contact_email:'', tax_id:'', contact_fax:'' };
+  const amount = Number(invoice.amount) || 0;
+  const rate = Number(taxRate) || 0;
+  const taxLabel = rate === 7 ? 'หักภาษี 7%' : rate === 3 ? 'หัก ภาษี ณ ที่จ่าย 3%' : '';
+  const tax = amount * (rate / 100);
+  const net = amount - tax;
+  const fmt = n => n.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const QUOTE_VALIDITY_DAYS_FIXED = 7;
+  const expireDate = addDaysToDateStr(invoice.dueDate, QUOTE_VALIDITY_DAYS_FIXED);
+  const tierLabel = invoice.packageName || (invoice.subTier ? invoice.subTier.charAt(0).toUpperCase() + invoice.subTier.slice(1) : '-');
+  const items = [];
+  if(invoice.subPeriodStart && invoice.subExpiresAt){
+    const rangeLabel = `(${thaiDate(invoice.subPeriodStart)} - ${thaiDate(invoice.subExpiresAt)})`;
+    items.push({ label: `ค่าบริการระบบ Build-Con แพ็กเกจ ${esc(tierLabel)} ${rangeLabel}`, amount: fmt(amount) });
+    if(invoice.subAdditionalUsers > 0){
+      items.push({ label: `ผู้ใช้งานเพิ่ม ${esc(invoice.subAdditionalUsers)} คน ${rangeLabel}`, amount: '' });
+    }
+  } else {
+    items.push({ label: `ค่าบริการระบบ Build-Con แพ็กเกจ ${esc(tierLabel)}`, amount: fmt(amount) });
+  }
+  const fillerRow = `<tr><td class="filler">&nbsp;</td><td class="filler"></td><td class="filler"></td></tr>`;
+  const itemRows = items.map((it, idx) => `<tr style="height:1px;"><td style="text-align:center;">${idx + 1}</td><td>${it.label}</td><td style="text-align:right;">${it.amount}</td></tr>`).join('');
+  const itemTableBody = itemRows + fillerRow;
+
+  const html = `
+  <div class="doc-page-no">หน้า 1/1</div>
+  <div class="doc-topbar"></div>
+  <div class="doc-header">
+    <img src="/logo.svg" alt="logo" class="doc-logo">
+    <div class="doc-company-info">
+      <div class="doc-company-name">${esc(settings.company_name)}</div>
+      <div class="doc-company-addr">${esc(settings.address || '')}</div>
+      <div class="doc-company-contact">
+        ${settings.contact_phone ? 'โทร. ' + esc(settings.contact_phone) + '  ' : ''}${settings.contact_fax ? 'โทรสาร ' + esc(settings.contact_fax) + '  ' : ''}${settings.tax_id ? 'เลขประจำตัวผู้เสียภาษี ' + esc(settings.tax_id) : ''}
+      </div>
+    </div>
+  </div>
+
+  <div class="doc-title-row">
+    <div class="doc-title">ใบแจ้งหนี้</div>
+    <table class="doc-no-table">
+      <tr><td>เลขที่</td><td>${esc(invoice.invoiceNo)}</td></tr>
+      <tr><td>วันที่</td><td>${thaiDate(invoice.issueDate)}</td></tr>
+    </table>
+  </div>
+
+  <div class="doc-info-box">
+    <div class="doc-info-col">
+      <div><b>ชื่อบริษัท</b> ${esc(invoice.companyName)}</div>
+      <div><b>เลขผู้เสียภาษี</b> ${esc(invoice.companyTaxId || '-')}</div>
+      <div><b>ที่อยู่</b> ${esc(invoice.companyAddress || '-')}</div>
+      <div><b>โทร.</b> ${esc(invoice.companyPhone || '-')} &nbsp; <b>โทรสาร</b> ${esc(invoice.companyFax || '-')}</div>
+      <div><b>E-mail</b> ${esc(invoice.companyEmail || '-')}</div>
+    </div>
+    <div class="doc-info-col">
+      <div><b>วันครบกำหนด</b> ${invoice.dueDate ? thaiDate(invoice.dueDate) : '-'}</div>
+      <div><b>ยืนราคาภายใน (วัน)</b> ${QUOTE_VALIDITY_DAYS_FIXED} วัน</div>
+      <div><b>จำนวนวันเครดิต</b> ไม่มี</div>
+      <div><b>Expire Date</b> ${expireDate ? thaiDate(expireDate) : '-'}</div>
+    </div>
+  </div>
+
+  <table class="items">
+    <thead><tr><th style="width:8%;">ลำดับ</th><th style="width:62%;">รายการ</th><th>จำนวนเงิน (บาท)</th></tr></thead>
+    <tbody>
+      ${itemTableBody}
+    </tbody>
+  </table>
+
+  <div class="doc-bottom-box">
+    <div class="doc-bottom-row">
+      <div class="doc-note-box">${invoice.note ? `<b>หมายเหตุ:</b> ${esc(invoice.note)}` : ''}</div>
+      <div class="totals-box">
+        <table>
+          <tr><td class="label">ยอดเงิน</td><td class="value">${fmt(amount)}</td></tr>
+          ${taxLabel ? `<tr><td class="label">${taxLabel}</td><td class="value">-${fmt(tax)}</td></tr>` : ''}
+          <tr class="net-row"><td class="label">จำนวนเงินที่ต้องชำระสุทธิ</td><td class="value">${fmt(net)}</td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="doc-baht-row">( ${thaiBahtText(net)} )</div>
+  </div>
+
+  <div class="signatures">
+    <div class="sig-box"><b>ผู้รับวางบิล</b><div class="sig-date">วันที่ _______________</div></div>
+    <div class="sig-box"><b>ผู้มีอำนาจลงนาม</b>${esc(settings.company_name)}<div class="sig-date">วันที่ _______________</div></div>
+  </div>`;
+
+  const container = document.getElementById('invoice-print-area');
+  container.innerHTML = `<div class="invoice-doc">${html}</div>`;
+  const logoImg = container.querySelector('img.doc-logo');
+  if(logoImg && !logoImg.complete){
+    logoImg.addEventListener('load', () => window.print(), { once: true });
+    logoImg.addEventListener('error', () => window.print(), { once: true });
+  } else {
+    window.print();
+  }
+}
+
+/* ---------- handlers ---------- */
+function attachHandlers(){
+  document.querySelectorAll('[data-act]').forEach(el => {
+    if(el.__bound) return;
+    el.__bound = true;
+    el.addEventListener('click', onAction);
+  });
+  const loginForm = document.querySelector('[data-form="login"]');
+  if(loginForm) loginForm.addEventListener('submit', onLoginSubmit);
+  const companyForm = document.querySelector('[data-form="company"]');
+  if(companyForm) companyForm.addEventListener('submit', onCompanyFormSubmit);
+  const contactForm = document.querySelector('[data-form="contact"]');
+  if(contactForm) contactForm.addEventListener('submit', onContactFormSubmit);
+  const renewForm = document.querySelector('[data-form="renew"]');
+  if(renewForm) renewForm.addEventListener('submit', onRenewFormSubmit);
+  document.querySelectorAll('[data-form="renew"] [data-calc="renew"]').forEach(el => {
+    if(el.__boundCalc) return;
+    el.__boundCalc = true;
+    el.addEventListener('input', onRenewCalcInput);
+  });
+  const leadForm = document.querySelector('[data-form="lead"]');
+  if(leadForm) leadForm.addEventListener('submit', onLeadFormSubmit);
+  const accountForm = document.querySelector('[data-form="account"]');
+  if(accountForm) accountForm.addEventListener('submit', onAccountFormSubmit);
+  const packageForm = document.querySelector('[data-form="package"]');
+  if(packageForm) packageForm.addEventListener('submit', onPackageFormSubmit);
+  const invoiceForm = document.querySelector('[data-form="invoice"]');
+  if(invoiceForm) invoiceForm.addEventListener('submit', onInvoiceFormSubmit);
+  const receivePaymentForm = document.querySelector('[data-form="receivePayment"]');
+  if(receivePaymentForm) receivePaymentForm.addEventListener('submit', onReceivePaymentFormSubmit);
+  const paymentInvoiceSelect = document.querySelector('[data-act-change="select-payment-invoice"]');
+  if(paymentInvoiceSelect) paymentInvoiceSelect.addEventListener('change', onSelectPaymentInvoiceChange);
+  const slipUploadForm = document.querySelector('[data-form="slip-upload"]');
+  if(slipUploadForm) slipUploadForm.addEventListener('submit', onSlipUploadSubmit);
+  const settingsForm = document.querySelector('[data-form="settings"]');
+  if(settingsForm) settingsForm.addEventListener('submit', onSettingsFormSubmit);
+  const myAccountForm = document.querySelector('[data-form="myAccount"]');
+  if(myAccountForm) myAccountForm.addEventListener('submit', onMyAccountFormSubmit);
+  const passwordForm = document.querySelector('[data-form="password"]');
+  if(passwordForm) passwordForm.addEventListener('submit', onPasswordFormSubmit);
+  const filterCompany = document.querySelector('[data-filter="invoice-company"]');
+  if(filterCompany) filterCompany.addEventListener('change', onInvoiceFilterChange);
+  const filterStatus = document.querySelector('[data-filter="invoice-status"]');
+  if(filterStatus) filterStatus.addEventListener('change', onInvoiceFilterChange);
+  const invoicePackageSelect = document.querySelector('[data-act-change="fill-invoice-amount"]');
+  if(invoicePackageSelect) invoicePackageSelect.addEventListener('change', onInvoicePackageChange);
+  const invoiceCompanySelect = document.querySelector('[data-act-change="fill-invoice-from-company"]');
+  if(invoiceCompanySelect) invoiceCompanySelect.addEventListener('change', onInvoiceCompanyChange);
+  const packageCycleSelect = document.querySelector('[data-act-change="package-cycle-change"]');
+  if(packageCycleSelect) packageCycleSelect.addEventListener('change', onPackageCycleChange);
+  const coaAccountForm = document.querySelector('[data-form="coaAccount"]');
+  if(coaAccountForm) coaAccountForm.addEventListener('submit', onCoaFormSubmit);
+  const productForm = document.querySelector('[data-form="product"]');
+  if(productForm) productForm.addEventListener('submit', onProductFormSubmit);
+  const coaCategorySelect = document.querySelector('[data-act-change="coa-category-change"]');
+  if(coaCategorySelect) coaCategorySelect.addEventListener('change', onCoaCategoryChange);
+  const quotationForm = document.querySelector('[data-form="quotation"]');
+  if(quotationForm) quotationForm.addEventListener('submit', onQuotationFormSubmit);
+  document.querySelectorAll('[data-form="quotation"] [data-calc="quotation-item"]').forEach(el => {
+    if(el.__boundCalc) return;
+    el.__boundCalc = true;
+    el.addEventListener('input', onQuotationItemInput);
+  });
+  document.querySelectorAll('[data-act-change="quotation-item-product"]').forEach(el => {
+    if(el.__boundChange) return;
+    el.__boundChange = true;
+    el.addEventListener('change', onQuotationItemProductChange);
+  });
+  const expenseForm = document.querySelector('[data-form="expense"]');
+  if(expenseForm) expenseForm.addEventListener('submit', onExpenseFormSubmit);
+}
+
+async function onAction(e){
+  const el = e.currentTarget;
+  const act = el.dataset.act;
+  const id = el.dataset.id ? parseInt(el.dataset.id, 10) : null;
+
+  try {
+    if(act === 'close-modal-overlay' && e.target !== el) return;
+    if(act === 'close-modal' || act === 'close-modal-overlay'){
+      S.modal = null; S.companyForm = null; S.contactForm = null; S.renewForm = null; S.companyDetail = null; S.detailCompanyId = null;
+      S.accountForm = null; S.packageForm = null; S.invoiceForm = null; S.slipsModal = null; S.printTaxModal = null; S.leadForm = null; S.leadViewId = null; S.coaForm = null; S.productForm = null; S.quotationForm = null; S.expenseForm = null;
+      render();
+    } else if(act === 'nav'){
+      S.page = el.dataset.page;
+      render();
+      if(S.page === 'companies' && !S.companiesLoaded) await loadCompanies();
+      else if(S.page === 'leads' && !S.leadsLoaded) await loadLeads();
+      else if(S.page === 'accounts' && !S.accountsLoaded) await loadAccounts();
+      else if(S.page === 'packages' && !S.invoicesLoaded) await loadInvoices();
+      else if(S.page === 'products'){
+        if(!S.productsLoaded) await loadProducts();
+        if(!S.packagesLoaded) await loadPackages();
+      }
+      else if(S.page === 'invoices'){
+        if(!S.companiesLoaded) await loadCompanies();
+        if(!S.packagesLoaded) await loadPackages();
+        if(!S.invoicesLoaded) await loadInvoices();
+      } else if(S.page === 'receivePayment'){
+        if(!S.invoicesLoaded) await loadInvoices();
+        if(!S.receivePaymentForm) S.receivePaymentForm = { invoiceId:'', amount:'', paymentDate:new Date().toISOString().slice(0,10), note:'', saving:false, error:'' };
+        render();
+      } else if(S.page === 'quotations'){
+        if(!S.companiesLoaded) await loadCompanies();
+        if(!S.productsLoaded) await loadProducts();
+        if(!S.quotationsLoaded) await loadQuotations();
+      } else if(S.page === 'coa' && !S.coaAccountsLoaded) await loadCoaAccounts();
+      else if(S.page === 'expenses'){
+        if(!S.coaAccountsLoaded) await loadCoaAccounts();
+        if(!S.expensesLoaded) await loadExpenses();
+      }
+      else if(S.page === 'payables' && !S.expensesLoaded) await loadExpenses();
+      else if(S.page === 'journal' && !S.journalEntriesLoaded) await loadJournalEntries();
+      else if(S.page === 'reports'){
+        if(S.reportTab === 'pl' && !S.plReport) await loadPLReport();
+        else if(S.reportTab === 'ar' && !S.arReport) await loadARReport();
+        else if(S.reportTab === 'vat' && !S.vatReport) await loadVATReport();
+      }
+      else if(S.page === 'settings'){
+        if(!S.settingsLoaded) await loadSettings();
+        if(!S.settingsForm && S.settings){
+          S.settingsForm = { values:{ companyName:S.settings.company_name, logoUrl:S.settings.logo_url, address:S.settings.address, contactEmail:S.settings.contact_email, contactPhone:S.settings.contact_phone, taxId:S.settings.tax_id, contactFax:S.settings.contact_fax }, saving:false, error:'' };
+        }
+        if(!S.myAccountForm) S.myAccountForm = { values:{ name:S.currentAdmin.name }, saving:false, error:'' };
+        if(!S.passwordForm) S.passwordForm = { values:{ currentPassword:'', newPassword:'', confirmNewPassword:'' }, saving:false, error:'' };
+        render();
+      }
+    } else if(act === 'set-locale'){
+      await I18N.setLocale(el.dataset.locale);
+    } else if(act === 'logout'){
+      await api('POST', '/api/admin/logout');
+      S = {
+        view:'login', page:'dashboard', currentAdmin:null, loginError:'', loginBusy:false, stats:null,
+        companies:[], companiesLoaded:false, modal:null, companyForm:null, contactForm:null, renewForm:null, detailCompanyId:null, companyDetail:null,
+        leads:[], leadsLoaded:false, leadForm:null, leadViewId:null,
+        accounts:[], accountsLoaded:false, accountForm:null,
+        packages:[], packagesLoaded:false, packageForm:null,
+        invoices:[], invoicesLoaded:false, invoiceFilters:{companyId:'',status:''}, invoiceForm:null, slipsModal:null, printTaxModal:null,
+        receivePaymentForm:null, receivePaymentHistory:null,
+        coaAccounts:[], coaAccountsLoaded:false, coaForm:null,
+        products:[], productsLoaded:false, productForm:null,
+        quotations:[], quotationsLoaded:false, quotationForm:null,
+        expenses:[], expensesLoaded:false, expenseForm:null,
+        journalEntries:[], journalEntriesLoaded:false, journalFilters:{from:'',to:'',sourceType:''},
+        reportTab:'pl', reportFilters:{from:'',to:''}, plReport:null, arReport:null, vatReport:null,
+        settings:null, settingsLoaded:false, settingsForm:null, myAccountForm:null, passwordForm:null,
+        toast:null,
+      };
+      render();
+    } else if(act === 'new-company'){
+      S.modal = 'newCompany';
+      S.companyForm = { mode:'new', values:{ code:generateCompanyCode(), name:'', taxId:'', phone:'', email:'', address:'', packageId:'', fax:'' }, saving:false, error:'' };
+      render();
+    } else if(act === 'lookup-lead-for-company'){
+      const input = document.querySelector('[data-lead-ref-input]');
+      const code = input ? input.value.trim() : '';
+      if(!code){ showToast('กรุณากรอกรหัสอ้างอิง', 'err'); return; }
+      const data = await api('GET', `/api/admin/leads/by-code/${encodeURIComponent(code)}`);
+      const l = data.lead;
+      Object.assign(S.companyForm.values, { name: l.company_name, taxId: l.tax_id, phone: l.company_phone, email: l.company_email, address: l.address });
+      render();
+      showToast('ดึงข้อมูลจากรหัสอ้างอิงแล้ว', 'ok');
+    } else if(act === 'view-company'){
+      S.modal = 'companyDetail'; S.detailCompanyId = id; S.companyDetail = null; S.contactForm = null; S.renewForm = null;
+      render();
+      await loadCompanyDetail(id);
+    } else if(act === 'edit-company'){
+      const c = S.companyDetail.company;
+      S.companyForm = { mode:'edit', id:c.id, values:{ code:c.code || '', name:c.name, taxId:c.tax_id, phone:c.phone, email:c.email, address:c.address, packageId:c.package_id || '', fax:c.fax || '' }, saving:false, error:'' };
+      S.modal = 'newCompany';
+      render();
+    } else if(act === 'suspend-company'){
+      const updated = await api('POST', `/api/admin/companies/${id}/suspend`);
+      if(S.companyDetail && S.companyDetail.company.id === id) S.companyDetail.company = updated.company;
+      await loadCompanies();
+      showToast('อัปเดตสถานะบริษัทแล้ว', 'ok');
+    } else if(act === 'delete-company'){
+      if(!confirm('ยืนยันการลบบริษัทนี้? ผู้ติดต่อทั้งหมดของบริษัทจะถูกลบไปด้วย')) return;
+      await api('DELETE', `/api/admin/companies/${id}`);
+      S.modal = null; S.companyDetail = null;
+      await loadCompanies();
+      showToast('ลบบริษัทแล้ว', 'ok');
+    } else if(act === 'new-lead'){
+      S.modal = 'lead';
+      S.leadForm = { mode:'new', values:{ refCode:generateLeadRefCode(), companyName:'', taxId:'', address:'', companyPhone:'', companyEmail:'', website:'', contactName:'', contactPosition:'', contactEmail:'', contactPhone:'', username:'', status:'new', note:'' }, saving:false, error:'' };
+      render();
+    } else if(act === 'view-lead'){
+      S.modal = 'leadView';
+      S.leadViewId = id;
+      render();
+      await markLeadSeenIfNeeded(id);
+    } else if(act === 'edit-lead'){
+      const l = S.leads.find(x => x.id === id);
+      S.leadForm = { mode:'edit', id, values:{ refCode:l.ref_code || '', companyName:l.company_name, taxId:l.tax_id, address:l.address, companyPhone:l.company_phone, companyEmail:l.company_email, website:l.website, contactName:l.contact_name, contactPosition:l.contact_position, contactEmail:l.contact_email, contactPhone:l.contact_phone, username:l.username || '', status:l.status, note:l.note }, saving:false, error:'' };
+      S.modal = 'lead';
+      render();
+      await markLeadSeenIfNeeded(id);
+    } else if(act === 'delete-lead'){
+      if(!confirm('ยืนยันการลบรายชื่อนี้?')) return;
+      await api('DELETE', `/api/admin/leads/${id}`);
+      S.modal = null; S.leadViewId = null; S.leadForm = null;
+      await loadLeads();
+      showToast('ลบรายชื่อแล้ว', 'ok');
+    } else if(act === 'new-contact'){
+      S.contactForm = { mode:'new', values:{ name:'', email:'', phone:'', position:'', username:'', password:generateRandomPassword(), role:'super_user' }, saving:false, error:'' };
+      render();
+    } else if(act === 'generate-contact-password'){
+      S.contactForm.values.password = generateRandomPassword();
+      render();
+    } else if(act === 'lookup-lead-for-contact'){
+      const input = document.querySelector('[data-lead-ref-input-contact]');
+      const code = input ? input.value.trim() : '';
+      if(!code){ showToast('กรุณากรอกรหัสอ้างอิง', 'err'); return; }
+      const data = await api('GET', `/api/admin/leads/by-code/${encodeURIComponent(code)}`);
+      const l = data.lead;
+      Object.assign(S.contactForm.values, { name: l.contact_name, position: l.contact_position, email: l.contact_email, phone: l.contact_phone, username: l.username || '' });
+      render();
+      showToast('ดึงข้อมูลผู้ติดต่อจากรหัสอ้างอิงแล้ว', 'ok');
+    } else if(act === 'edit-contact'){
+      const cu = S.companyDetail.customers.find(x => x.id === id);
+      S.contactForm = { mode:'edit', id, values:{ name:cu.name, email:cu.email, phone:cu.phone, position:cu.position, username:cu.username || '', password:'', role:cu.role || 'super_user' }, saving:false, error:'' };
+      render();
+    } else if(act === 'cancel-contact-form'){
+      S.contactForm = null;
+      render();
+    } else if(act === 'new-renew'){
+      if(!S.packagesLoaded) await loadPackages();
+      const sub = S.companyDetail.subscription;
+      const pkg = S.packages.find(p => String(p.id) === String(S.companyDetail.company.package_id));
+      S.renewForm = {
+        values: {
+          customPrice: pkg ? pkg.price : 0,
+          customSeatPrice: sub && sub.custom_seat_price != null ? sub.custom_seat_price : 0,
+          baseUsers: pkg ? pkg.max_users : 1,
+          additionalUsers: 0,
+          months: 1,
+        },
+        saving: false, error: '',
+      };
+      render();
+    } else if(act === 'cancel-renew-form'){
+      S.renewForm = null;
+      render();
+    } else if(act === 'renew-duration'){
+      S.renewForm.values.months = parseInt(el.dataset.months, 10);
+      render();
+    } else if(act === 'renew-step'){
+      const field = el.dataset.field;
+      const dir = parseInt(el.dataset.dir, 10);
+      const v = S.renewForm.values;
+      v[field] = Math.max(0, (Number(v[field]) || 0) + dir);
+      render();
+    } else if(act === 'suspend-contact'){
+      await api('POST', `/api/admin/customers/${id}/suspend`);
+      await loadCompanyDetail(S.detailCompanyId);
+      await loadStats();
+      showToast('อัปเดตสถานะผู้ติดต่อแล้ว', 'ok');
+    } else if(act === 'delete-contact'){
+      if(!confirm('ยืนยันการลบผู้ติดต่อนี้?')) return;
+      await api('DELETE', `/api/admin/customers/${id}`);
+      await loadCompanyDetail(S.detailCompanyId);
+      await loadCompanies();
+      await loadStats();
+      showToast('ลบผู้ติดต่อแล้ว', 'ok');
+    } else if(act === 'new-account'){
+      S.modal = 'account';
+      S.accountForm = { mode:'new', values:{ email:'', name:'', password:'', role:'staff' }, saving:false, error:'' };
+      render();
+    } else if(act === 'edit-account'){
+      const acc = S.accounts.find(x => x.id === id);
+      S.accountForm = { mode:'edit', id, values:{ email:acc.email, name:acc.name, role:acc.role }, saving:false, error:'' };
+      S.modal = 'account';
+      render();
+    } else if(act === 'toggle-active-account'){
+      await api('POST', `/api/admin/accounts/${id}/toggle-active`);
+      await loadAccounts();
+      showToast('อัปเดตสถานะบัญชีแล้ว', 'ok');
+    } else if(act === 'new-package'){
+      S.modal = 'package';
+      S.packageForm = { mode:'new', values:{ name:'', price:'', billingCycle:'monthly', billingDays:1, description:'', maxUsers:1 }, saving:false, error:'' };
+      render();
+    } else if(act === 'edit-package'){
+      const pkg = S.packages.find(x => x.id === id);
+      S.packageForm = { mode:'edit', id, values:{ name:pkg.name, price:pkg.price, billingCycle:pkg.billing_cycle, billingDays:pkg.billing_days || 1, description:pkg.description, maxUsers:pkg.max_users }, saving:false, error:'' };
+      S.modal = 'package';
+      render();
+    } else if(act === 'toggle-active-package'){
+      await api('POST', `/api/admin/packages/${id}/toggle-active`);
+      await loadPackages();
+      showToast('อัปเดตสถานะแพ็กเกจแล้ว', 'ok');
+    } else if(act === 'new-coa-account'){
+      S.modal = 'coaAccount';
+      S.coaForm = { mode:'new', values:{ code:'', name:'', category:'asset', parentCode:'' }, saving:false, error:'' };
+      render();
+    } else if(act === 'edit-coa-account'){
+      const a = S.coaAccounts.find(x => x.id === id);
+      S.coaForm = { mode:'edit', id, values:{ code:a.code, name:a.name, category:a.category, parentCode:a.parent_code || '' }, saving:false, error:'' };
+      S.modal = 'coaAccount';
+      render();
+    } else if(act === 'toggle-active-coa-account'){
+      await api('POST', `/api/admin/chart-of-accounts/${id}/toggle-active`);
+      await loadCoaAccounts();
+      showToast('อัปเดตสถานะบัญชีแล้ว', 'ok');
+    } else if(act === 'new-expense'){
+      S.modal = 'expense';
+      S.expenseForm = { mode:'new', values:{ categoryCode:'', description:'', amount:'', expenseDate:new Date().toISOString().slice(0,10), paymentStatus:'paid', hasReceipt:false }, saving:false, error:'' };
+      render();
+    } else if(act === 'edit-expense'){
+      const ex = S.expenses.find(x => x.id === id);
+      S.expenseForm = { mode:'edit', id, values:{ categoryCode:ex.categoryCode || '', description:ex.description, amount:ex.amount, expenseDate:ex.expenseDate, paymentStatus:ex.paymentStatus || 'paid', hasReceipt:!!ex.receiptFile }, saving:false, error:'' };
+      S.modal = 'expense';
+      render();
+    } else if(act === 'pay-expense'){
+      await api('POST', `/api/admin/expenses/${id}/mark-paid`);
+      await loadExpenses();
+      showToast('บันทึกการจ่ายชำระเจ้าหนี้แล้ว', 'ok');
+    } else if(act === 'delete-expense'){
+      if(!confirm('ยืนยันการลบรายการรายจ่ายนี้?')) return;
+      await api('DELETE', `/api/admin/expenses/${id}`);
+      await loadExpenses();
+      showToast('ลบรายการรายจ่ายแล้ว', 'ok');
+    } else if(act === 'report-tab'){
+      S.reportTab = el.dataset.tab;
+      render();
+      if(S.reportTab === 'pl' && !S.plReport) await loadPLReport();
+      else if(S.reportTab === 'ar' && !S.arReport) await loadARReport();
+      else if(S.reportTab === 'vat' && !S.vatReport) await loadVATReport();
+    } else if(act === 'apply-report-filter'){
+      const fromEl = document.querySelector('[data-report-filter="from"]');
+      const toEl = document.querySelector('[data-report-filter="to"]');
+      S.reportFilters = { from: fromEl ? fromEl.value : '', to: toEl ? toEl.value : '' };
+      if(S.reportTab === 'pl') await loadPLReport();
+      else if(S.reportTab === 'vat') await loadVATReport();
+    } else if(act === 'apply-journal-filter'){
+      const fromEl = document.querySelector('[data-journal-filter="from"]');
+      const toEl = document.querySelector('[data-journal-filter="to"]');
+      const typeEl = document.querySelector('[data-journal-filter="sourceType"]');
+      S.journalFilters = { from: fromEl ? fromEl.value : '', to: toEl ? toEl.value : '', sourceType: typeEl ? typeEl.value : '' };
+      await loadJournalEntries();
+    } else if(act === 'new-product'){
+      S.modal = 'product';
+      S.productForm = { mode:'new', values:{ name:'', unit:'', price:'', description:'' }, saving:false, error:'' };
+      render();
+    } else if(act === 'edit-product'){
+      const p = S.products.find(x => x.id === id);
+      S.productForm = { mode:'edit', id, values:{ name:p.name, unit:p.unit, price:p.price, description:p.description }, saving:false, error:'' };
+      S.modal = 'product';
+      render();
+    } else if(act === 'toggle-active-product'){
+      await api('POST', `/api/admin/products/${id}/toggle-active`);
+      await loadProducts();
+      showToast('อัปเดตสถานะสินค้า/บริการแล้ว', 'ok');
+    } else if(act === 'new-quotation'){
+      S.modal = 'quotation';
+      S.quotationForm = { mode:'new', values:{ companyId:'', contactName:'', companyName:'', address:'', phone:'', fax:'', email:'', status:'draft', issueDate:new Date().toISOString().slice(0,10), validUntil:'', note:'', convertedInvoiceId:null, items:[{ productId:'', description:'', qty:1, unit:'', unitPrice:0, discount:0 }] }, saving:false, error:'' };
+      render();
+    } else if(act === 'edit-quotation'){
+      S.modal = 'quotation';
+      S.quotationForm = { mode:'edit', id, values:null, saving:false, error:'' };
+      render();
+      await loadQuotationDetailIntoForm(id);
+    } else if(act === 'add-quotation-item'){
+      S.quotationForm.values.items.push({ productId:'', description:'', qty:1, unit:'', unitPrice:0, discount:0 });
+      render();
+    } else if(act === 'lookup-company-for-quotation'){
+      const input = document.querySelector('[data-company-code-input]');
+      const code = input ? input.value.trim() : '';
+      if(!code){ showToast('กรุณากรอกรหัสบริษัท', 'err'); return; }
+      const data = await api('GET', `/api/admin/companies/by-code/${encodeURIComponent(code)}`);
+      const c = data.company;
+      Object.assign(S.quotationForm.values, {
+        companyId: c.id, companyName: c.name, address: c.address, phone: c.phone, fax: c.fax,
+        email: c.email, contactName: data.contactName || '',
+      });
+      render();
+      showToast('ดึงข้อมูลจากรหัสบริษัทแล้ว', 'ok');
+    } else if(act === 'remove-quotation-item'){
+      S.quotationForm.values.items.splice(parseInt(el.dataset.idx, 10), 1);
+      render();
+    } else if(act === 'print-quotation'){
+      await printQuotation(id);
+    } else if(act === 'convert-quotation'){
+      if(!confirm('ยืนยันแปลงใบเสนอราคานี้เป็นใบแจ้งหนี้?')) return;
+      await api('POST', `/api/admin/quotations/${id}/convert-to-invoice`);
+      await loadQuotations();
+      await loadStats();
+      showToast('แปลงเป็นใบแจ้งหนี้แล้ว', 'ok');
+    } else if(act === 'delete-quotation'){
+      if(!confirm('ยืนยันการลบใบเสนอราคานี้?')) return;
+      await api('DELETE', `/api/admin/quotations/${id}`);
+      await loadQuotations();
+      showToast('ลบใบเสนอราคาแล้ว', 'ok');
+    } else if(act === 'new-invoice'){
+      if(!S.companiesLoaded) await loadCompanies();
+      S.modal = 'invoice';
+      S.invoiceForm = { values:{ companyId:'', packageId:'', amount:'', dueDate:'', note:'' }, saving:false, error:'' };
+      render();
+    } else if(act === 'go-receive-payment'){
+      S.page = 'receivePayment';
+      S.receivePaymentForm = { invoiceId: String(id), amount:'', paymentDate:new Date().toISOString().slice(0,10), note:'', saving:false, error:'' };
+      S.receivePaymentHistory = null;
+      render();
+      await loadInvoicePayments(id);
+    } else if(act === 'mark-paid-invoice'){
+      await api('POST', `/api/admin/invoices/${id}/mark-paid`);
+      await loadInvoices();
+      await loadStats();
+      showToast('บันทึกการชำระเงินแล้ว', 'ok');
+    } else if(act === 'cancel-invoice'){
+      if(!confirm('ยืนยันการยกเลิกใบแจ้งหนี้นี้?')) return;
+      await api('POST', `/api/admin/invoices/${id}/cancel`);
+      await loadInvoices();
+      await loadStats();
+      showToast('ยกเลิกใบแจ้งหนี้แล้ว', 'ok');
+    } else if(act === 'view-slips'){
+      S.modal = 'slips'; S.slipsModal = { invoiceId: id, slips: [], loading: true, uploading: false, error: '' };
+      render();
+      await loadSlips(id);
+    } else if(act === 'delete-slip'){
+      if(!confirm('ยืนยันการลบไฟล์หลักฐานนี้?')) return;
+      await api('DELETE', `/api/admin/slips/${id}`);
+      await loadSlips(S.slipsModal.invoiceId);
+      await loadInvoices();
+      showToast('ลบไฟล์แล้ว', 'ok');
+    } else if(act === 'print-invoice'){
+      S.modal = 'printTax'; S.printTaxModal = { invoiceId: id };
+      render();
+    } else if(act === 'confirm-print-invoice'){
+      const rate = parseInt(el.dataset.rate, 10);
+      const invoiceId = S.printTaxModal.invoiceId;
+      S.modal = null; S.printTaxModal = null;
+      render();
+      await printInvoice(invoiceId, rate);
+    }
+  } catch(err){
+    showToast(err.message, 'err');
+  }
+}
+
+async function onLoginSubmit(e){
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  S.loginBusy = true; S.loginError = '';
+  render();
+  try {
+    const data = await api('POST', '/api/admin/login', { email: fd.get('email'), password: fd.get('password') });
+    S.currentAdmin = data.admin;
+    S.view = 'dashboard';
+    S.loginBusy = false;
+    render();
+    await loadStats();
+    await loadPackages();
+  } catch(err){
+    S.loginBusy = false;
+    S.loginError = err.message;
+    render();
+  }
+}
+
+async function onCompanyFormSubmit(e){
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const f = S.companyForm;
+  const body = { code: fd.get('code'), name: fd.get('name'), taxId: fd.get('taxId'), phone: fd.get('phone'), email: fd.get('email'), address: fd.get('address'), packageId: fd.get('packageId') || null, fax: fd.get('fax') };
+  Object.assign(f.values, { code: body.code, name: body.name, taxId: body.taxId, phone: body.phone, email: body.email, address: body.address, packageId: body.packageId, fax: body.fax });
+  f.saving = true; f.error = '';
+  render();
+  try {
+    if(f.mode === 'edit'){
+      const data = await api('PUT', `/api/admin/companies/${f.id}`, body);
+      if(S.companyDetail && S.companyDetail.company.id === f.id) S.companyDetail.company = data.company;
+    } else {
+      await api('POST', '/api/admin/companies', body);
+    }
+    S.modal = S.companyDetail ? 'companyDetail' : null;
+    S.companyForm = null;
+    await loadCompanies();
+    await loadStats();
+    showToast(f.mode === 'edit' ? 'แก้ไขข้อมูลบริษัทแล้ว' : 'เพิ่มบริษัทลูกค้าแล้ว', 'ok');
+  } catch(err){
+    f.saving = false; f.error = err.message;
+    render();
+  }
+}
+
+async function onLeadFormSubmit(e){
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const f = S.leadForm;
+  const body = {
+    refCode: fd.get('refCode'),
+    companyName: fd.get('companyName'), taxId: fd.get('taxId'), address: fd.get('address'),
+    companyPhone: fd.get('companyPhone'), companyEmail: fd.get('companyEmail'), website: fd.get('website'),
+    contactName: fd.get('contactName'), contactPosition: fd.get('contactPosition'),
+    contactEmail: fd.get('contactEmail'), contactPhone: fd.get('contactPhone'),
+    username: fd.get('username'),
+    status: fd.get('status'), note: fd.get('note'),
+  };
+  Object.assign(f.values, body);
+  f.saving = true; f.error = '';
+  render();
+  try {
+    if(f.mode === 'edit') await api('PUT', `/api/admin/leads/${f.id}`, body);
+    else await api('POST', '/api/admin/leads', body);
+    S.modal = null;
+    S.leadForm = null;
+    await loadLeads();
+    showToast(f.mode === 'edit' ? 'แก้ไขรายชื่อแล้ว' : 'เพิ่มรายชื่อแล้ว', 'ok');
+  } catch(err){
+    f.saving = false; f.error = err.message;
+    render();
+  }
+}
+
+async function onContactFormSubmit(e){
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const f = S.contactForm;
+  const body = { name: fd.get('name'), email: fd.get('email'), phone: fd.get('phone'), position: fd.get('position'), username: fd.get('username'), password: fd.get('password'), role: fd.get('role') };
+  Object.assign(f.values, { name: body.name, email: body.email, phone: body.phone, position: body.position, username: body.username, role: body.role });
+  f.saving = true; f.error = '';
+  render();
+  try {
+    if(f.mode === 'edit') await api('PUT', `/api/admin/customers/${f.id}`, body);
+    else await api('POST', `/api/admin/companies/${S.detailCompanyId}/customers`, body);
+    S.contactForm = null;
+    await loadCompanyDetail(S.detailCompanyId);
+    await loadCompanies();
+    await loadStats();
+    showToast(f.mode === 'edit' ? 'แก้ไขผู้ติดต่อแล้ว' : 'เพิ่มผู้ติดต่อแล้ว', 'ok');
+  } catch(err){
+    f.saving = false; f.error = err.message;
+    render();
+  }
+}
+
+async function onAccountFormSubmit(e){
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const f = S.accountForm;
+  const body = { name: fd.get('name'), role: fd.get('role') };
+  if(f.mode === 'new'){ body.email = fd.get('email'); body.password = fd.get('password'); }
+  Object.assign(f.values, body);
+  f.saving = true; f.error = '';
+  render();
+  try {
+    if(f.mode === 'edit') await api('PUT', `/api/admin/accounts/${f.id}`, body);
+    else await api('POST', '/api/admin/accounts', body);
+    S.modal = null; S.accountForm = null;
+    await loadAccounts();
+    showToast(f.mode === 'edit' ? 'แก้ไขบัญชีแล้ว' : 'เพิ่มบัญชีแล้ว', 'ok');
+  } catch(err){
+    f.saving = false; f.error = err.message;
+    render();
+  }
+}
+
+function renderRenewSummaryRows(t){
+  const addUsers = Number(S.renewForm.values.additionalUsers) || 0;
+  const rows = [
+    `<div class="row"><span>แพ็กเกจ (${t.days} วัน)</span><span>฿${t.packageCost.toLocaleString('th-TH')}</span></div>`,
+    `<div class="row"><span>เพิ่มคนใช้งาน (${addUsers}คน)</span><span>฿${t.addUsersCost.toLocaleString('th-TH')}</span></div>`,
+  ];
+  if(t.discountAmount > 0){
+    rows.push(`<div class="row discount"><span>ส่วนลด (${Math.round(t.discount * 100)}%)</span><span>-฿${t.discountAmount.toLocaleString('th-TH')}</span></div>`);
+  }
+  rows.push(`<div class="row total"><span>ยอดรวม</span><span>฿${t.total.toLocaleString('th-TH')}</span></div>`);
+  return rows.join('');
+}
+
+function onRenewCalcInput(e){
+  const f = S.renewForm;
+  if(!f) return;
+  f.values[e.target.name] = e.target.value;
+  const out = document.querySelector('[data-calc-out="renew-summary"]');
+  if(out) out.innerHTML = renderRenewSummaryRows(computeRenewTotals(f.values));
+}
+
+function onQuotationItemInput(e){
+  const f = S.quotationForm;
+  if(!f || !f.values) return;
+  const idx = parseInt(e.target.dataset.idx, 10);
+  const field = e.target.dataset.field;
+  f.values.items[idx][field] = e.target.value;
+  const lineTotal = it => (Number(it.qty) || 0) * (Number(it.unitPrice) || 0) - (Number(it.discount) || 0);
+  const fmt = n => n.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const lineOut = document.querySelector(`[data-line-total="${idx}"]`);
+  if(lineOut) lineOut.textContent = '฿' + fmt(lineTotal(f.values.items[idx]));
+  const totalOut = document.querySelector('[data-calc-out="quotation-total"]');
+  if(totalOut) totalOut.textContent = 'รวมทั้งสิ้น: ฿' + fmt(f.values.items.reduce((sum, it) => sum + lineTotal(it), 0));
+}
+
+function onQuotationItemProductChange(e){
+  const f = S.quotationForm;
+  if(!f || !f.values) return;
+  const idx = parseInt(e.target.dataset.idx, 10);
+  const productId = e.target.value;
+  const product = S.products.find(p => String(p.id) === String(productId));
+  f.values.items[idx].productId = productId;
+  if(product){
+    f.values.items[idx].description = product.name;
+    f.values.items[idx].unitPrice = product.price;
+    f.values.items[idx].unit = product.unit || '';
+  }
+  render();
+}
+
+async function onRenewFormSubmit(e){
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const f = S.renewForm;
+  const body = {
+    customPrice: fd.get('customPrice'),
+    customSeatPrice: fd.get('customSeatPrice'),
+    baseUsers: f.values.baseUsers,
+    additionalUsers: f.values.additionalUsers,
+    months: f.values.months,
+  };
+  Object.assign(f.values, { customPrice: body.customPrice, customSeatPrice: body.customSeatPrice });
+  f.saving = true; f.error = '';
+  render();
+  try {
+    await api('POST', `/api/admin/companies/${S.detailCompanyId}/renew`, body);
+    S.renewForm = null;
+    await loadCompanyDetail(S.detailCompanyId);
+    await loadCompanies();
+    showToast('ต่ออายุแพ็กเกจแล้ว', 'ok');
+  } catch(err){
+    f.saving = false; f.error = err.message;
+    render();
+  }
+}
+
+async function onSlipUploadSubmit(e){
+  e.preventDefault();
+  const sm = S.slipsModal;
+  const fd = new FormData(e.target);
+  sm.uploading = true; sm.error = '';
+  render();
+  try {
+    const res = await fetch(`/api/admin/invoices/${sm.invoiceId}/slips`, { method: 'POST', credentials: 'include', body: fd });
+    const data = await res.json().catch(() => ({}));
+    if(!res.ok) throw new Error(data.error || 'อัปโหลดไม่สำเร็จ');
+    sm.uploading = false;
+    await loadSlips(sm.invoiceId);
+    await loadInvoices();
+    showToast('แนบไฟล์หลักฐานแล้ว', 'ok');
+  } catch(err){
+    sm.uploading = false; sm.error = err.message;
+    render();
+  }
+}
+
+async function onExpenseFormSubmit(e){
+  e.preventDefault();
+  const f = S.expenseForm;
+  const fd = new FormData(e.target);
+  f.values.categoryCode = fd.get('categoryCode');
+  f.values.description = fd.get('description');
+  f.values.amount = fd.get('amount');
+  f.values.expenseDate = fd.get('expenseDate');
+  // paymentStatus is disabled (not submitted) in edit mode, so fd.get() returns null there —
+  // keep the existing displayed value instead of overwriting it with null.
+  if(fd.get('paymentStatus') !== null) f.values.paymentStatus = fd.get('paymentStatus');
+  f.saving = true; f.error = '';
+  render();
+  try {
+    const url = f.mode === 'edit' ? `/api/admin/expenses/${f.id}` : '/api/admin/expenses';
+    const method = f.mode === 'edit' ? 'PUT' : 'POST';
+    const res = await fetch(url, { method, credentials: 'include', body: fd });
+    const data = await res.json().catch(() => ({}));
+    if(!res.ok) throw new Error(data.error || 'บันทึกไม่สำเร็จ');
+    S.modal = null; S.expenseForm = null;
+    await loadExpenses();
+    showToast(f.mode === 'edit' ? 'แก้ไขรายจ่ายแล้ว' : 'บันทึกรายจ่ายแล้ว', 'ok');
+  } catch(err){
+    f.saving = false; f.error = err.message;
+    render();
+  }
+}
+
+async function onPackageFormSubmit(e){
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const f = S.packageForm;
+  const body = { name: fd.get('name'), price: fd.get('price'), billingCycle: fd.get('billingCycle'), billingDays: fd.get('billingDays'), description: fd.get('description'), maxUsers: fd.get('maxUsers') };
+  Object.assign(f.values, body);
+  f.saving = true; f.error = '';
+  render();
+  try {
+    if(f.mode === 'edit') await api('PUT', `/api/admin/packages/${f.id}`, body);
+    else await api('POST', '/api/admin/packages', body);
+    S.modal = null; S.packageForm = null;
+    await loadPackages();
+    showToast(f.mode === 'edit' ? 'แก้ไขแพ็กเกจแล้ว' : 'เพิ่มแพ็กเกจแล้ว', 'ok');
+  } catch(err){
+    f.saving = false; f.error = err.message;
+    render();
+  }
+}
+
+async function onCoaFormSubmit(e){
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const f = S.coaForm;
+  const body = { code: fd.get('code'), name: fd.get('name'), category: fd.get('category'), parentCode: fd.get('parentCode') };
+  Object.assign(f.values, body);
+  f.saving = true; f.error = '';
+  render();
+  try {
+    if(f.mode === 'edit') await api('PUT', `/api/admin/chart-of-accounts/${f.id}`, body);
+    else await api('POST', '/api/admin/chart-of-accounts', body);
+    S.modal = null; S.coaForm = null;
+    await loadCoaAccounts();
+    showToast(f.mode === 'edit' ? 'แก้ไขบัญชีแล้ว' : 'เพิ่มบัญชีแล้ว', 'ok');
+  } catch(err){
+    f.saving = false; f.error = err.message;
+    render();
+  }
+}
+
+async function onProductFormSubmit(e){
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const f = S.productForm;
+  const body = { name: fd.get('name'), unit: fd.get('unit'), price: fd.get('price'), description: fd.get('description') };
+  Object.assign(f.values, body);
+  f.saving = true; f.error = '';
+  render();
+  try {
+    if(f.mode === 'edit') await api('PUT', `/api/admin/products/${f.id}`, body);
+    else await api('POST', '/api/admin/products', body);
+    S.modal = null; S.productForm = null;
+    await loadProducts();
+    showToast(f.mode === 'edit' ? 'แก้ไขสินค้า/บริการแล้ว' : 'เพิ่มสินค้า/บริการแล้ว', 'ok');
+  } catch(err){
+    f.saving = false; f.error = err.message;
+    render();
+  }
+}
+
+async function onQuotationFormSubmit(e){
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const f = S.quotationForm;
+  const body = {
+    companyId: fd.get('companyId'), contactName: fd.get('contactName'), companyName: fd.get('companyName'),
+    address: fd.get('address'), phone: fd.get('phone'), fax: fd.get('fax'), email: fd.get('email'),
+    status: fd.get('status'), issueDate: fd.get('issueDate'), validUntil: fd.get('validUntil'), note: fd.get('note'),
+    items: f.values.items.map(it => ({ productId: it.productId || null, description: it.description, qty: it.qty, unit: it.unit, unitPrice: it.unitPrice, discount: it.discount })),
+  };
+  Object.assign(f.values, {
+    companyId: body.companyId, contactName: body.contactName, companyName: body.companyName,
+    address: body.address, phone: body.phone, fax: body.fax, email: body.email,
+    status: body.status, issueDate: body.issueDate, validUntil: body.validUntil, note: body.note,
+  });
+  f.saving = true; f.error = '';
+  render();
+  try {
+    if(f.mode === 'edit') await api('PUT', `/api/admin/quotations/${f.id}`, body);
+    else await api('POST', '/api/admin/quotations', body);
+    S.modal = null; S.quotationForm = null;
+    await loadQuotations();
+    showToast(f.mode === 'edit' ? 'แก้ไขใบเสนอราคาแล้ว' : 'สร้างใบเสนอราคาแล้ว', 'ok');
+  } catch(err){
+    f.saving = false; f.error = err.message;
+    render();
+  }
+}
+
+async function onInvoiceFormSubmit(e){
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const f = S.invoiceForm;
+  const body = { companyId: fd.get('companyId'), packageId: fd.get('packageId') || null, amount: fd.get('amount'), dueDate: fd.get('dueDate'), note: fd.get('note') };
+  Object.assign(f.values, body);
+  f.saving = true; f.error = '';
+  render();
+  try {
+    await api('POST', '/api/admin/invoices', body);
+    S.modal = null; S.invoiceForm = null;
+    S.invoicesLoaded = false;
+    await loadInvoices();
+    await loadStats();
+    showToast('บันทึกใบแจ้งหนี้แล้ว', 'ok');
+  } catch(err){
+    f.saving = false; f.error = err.message;
+    render();
+  }
+}
+
+async function onSelectPaymentInvoiceChange(e){
+  const invoiceId = e.target.value;
+  S.receivePaymentForm.invoiceId = invoiceId;
+  S.receivePaymentForm.amount = '';
+  S.receivePaymentForm.error = '';
+  S.receivePaymentHistory = null;
+  render();
+  if(invoiceId) await loadInvoicePayments(invoiceId);
+}
+
+async function onReceivePaymentFormSubmit(e){
+  e.preventDefault();
+  const f = S.receivePaymentForm;
+  const fd = new FormData(e.target);
+  const invoiceId = fd.get('invoiceId');
+  const body = { amount: fd.get('amount'), paymentDate: fd.get('paymentDate'), note: fd.get('note') };
+  f.amount = body.amount; f.paymentDate = body.paymentDate; f.note = body.note;
+  f.saving = true; f.error = '';
+  render();
+  try {
+    await api('POST', `/api/admin/invoices/${invoiceId}/payments`, body);
+    await loadInvoices();
+    await loadInvoicePayments(invoiceId);
+    await loadStats();
+    S.receivePaymentForm = { invoiceId, amount:'', paymentDate:new Date().toISOString().slice(0,10), note:'', saving:false, error:'' };
+    render();
+    showToast('บันทึกรับชำระเงินแล้ว', 'ok');
+  } catch(err){
+    f.saving = false; f.error = err.message;
+    render();
+  }
+}
+
+async function onSettingsFormSubmit(e){
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const f = S.settingsForm;
+  const body = { companyName: fd.get('companyName'), logoUrl: fd.get('logoUrl'), address: fd.get('address'), contactEmail: fd.get('contactEmail'), contactPhone: fd.get('contactPhone'), taxId: fd.get('taxId'), contactFax: fd.get('contactFax') };
+  Object.assign(f.values, body);
+  f.saving = true; f.error = '';
+  render();
+  try {
+    await api('PUT', '/api/admin/settings', body);
+    f.saving = false;
+    showToast('บันทึกข้อมูลบริษัทแล้ว', 'ok');
+    render();
+  } catch(err){
+    f.saving = false; f.error = err.message;
+    render();
+  }
+}
+
+async function onMyAccountFormSubmit(e){
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const f = S.myAccountForm;
+  f.values.name = fd.get('name');
+  f.saving = true; f.error = '';
+  render();
+  try {
+    const data = await api('PUT', '/api/admin/account', { name: f.values.name });
+    S.currentAdmin = data.admin;
+    f.saving = false;
+    showToast('บันทึกชื่อแล้ว', 'ok');
+    render();
+  } catch(err){
+    f.saving = false; f.error = err.message;
+    render();
+  }
+}
+
+async function onPasswordFormSubmit(e){
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const f = S.passwordForm;
+  const currentPassword = fd.get('currentPassword');
+  const newPassword = fd.get('newPassword');
+  const confirmNewPassword = fd.get('confirmNewPassword');
+  f.values = { currentPassword, newPassword, confirmNewPassword };
+  if(newPassword !== confirmNewPassword){
+    f.error = 'รหัสผ่านใหม่ไม่ตรงกัน';
+    render();
+    return;
+  }
+  f.saving = true; f.error = '';
+  render();
+  try {
+    await api('POST', '/api/admin/account/password', { currentPassword, newPassword });
+    f.saving = false;
+    f.values = { currentPassword:'', newPassword:'', confirmNewPassword:'' };
+    showToast('เปลี่ยนรหัสผ่านแล้ว', 'ok');
+    render();
+  } catch(err){
+    f.saving = false; f.error = err.message;
+    render();
+  }
+}
+
+function onPackageCycleChange(e){
+  S.packageForm.values.billingCycle = e.target.value;
+  render();
+}
+
+function onCoaCategoryChange(e){
+  S.coaForm.values.category = e.target.value;
+  S.coaForm.values.parentCode = '';
+  render();
+}
+
+async function onInvoiceFilterChange(){
+  const companySel = document.querySelector('[data-filter="invoice-company"]');
+  const statusSel = document.querySelector('[data-filter="invoice-status"]');
+  S.invoiceFilters = { companyId: companySel.value, status: statusSel.value };
+  try { await loadInvoices(); } catch(err){ showToast(err.message, 'err'); }
+}
+
+function onInvoicePackageChange(e){
+  const pkg = S.packages.find(p => String(p.id) === String(e.target.value));
+  const amountInput = document.querySelector('[data-form="invoice"] [name="amount"]');
+  if(pkg && amountInput) amountInput.value = pkg.price;
+}
+
+async function onInvoiceCompanyChange(e){
+  const companyId = e.target.value;
+  if(!companyId) return;
+  const packageSelect = document.querySelector('[data-form="invoice"] [name="packageId"]');
+  const amountInput = document.querySelector('[data-form="invoice"] [name="amount"]');
+  const dueDateInput = document.querySelector('[data-form="invoice"] [name="dueDate"]');
+  try {
+    const data = await api('GET', `/api/admin/companies/${companyId}`);
+    const pkg = S.packages.find(p => String(p.id) === String(data.company.package_id));
+    if(packageSelect) packageSelect.value = data.company.package_id ? String(data.company.package_id) : '';
+    if(amountInput){
+      const sub = data.subscription;
+      const price = sub && sub.total_amount != null ? sub.total_amount : (sub && sub.custom_price != null ? sub.custom_price : (pkg ? pkg.price : ''));
+      amountInput.value = price;
+    }
+    if(dueDateInput){
+      dueDateInput.value = data.subscription && data.subscription.expires_at ? data.subscription.expires_at.slice(0, 10) : '';
+    }
+  } catch(err){
+    showToast(err.message, 'err');
+  }
+}
+
+/* ---------- boot ---------- */
+I18N.onChange(render);
+(async function boot(){
+  await I18N.init();
+  try {
+    const data = await api('GET', '/api/admin/me');
+    S.currentAdmin = data.admin;
+    S.view = 'dashboard';
+    render();
+    await loadStats();
+    await loadPackages();
+  } catch(err){
+    render();
+  }
+})();
+</script>
+</body>
+</html>

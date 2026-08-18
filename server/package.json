@@ -1,0 +1,36 @@
+{
+  "name": "sitereq-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SiteReq PR module backend (Express + PostgreSQL)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "seed": "node seed.js",
+    "seed:geo": "node seed-geo.js",
+    "test:boq-import": "node tests/boq-import.regression.js",
+    "test:boq-scroll": "node tests/boq-scroll.regression.js",
+    "test:tender-double-submit": "node tests/tender-double-submit.regression.js",
+    "test:tender-no-sequence": "node tests/tender-no-sequence.regression.js",
+    "test:tender-detail-fields": "node tests/tender-detail-fields.regression.js",
+    "test:tender-initial-retention": "node tests/tender-initial-retention.regression.js",
+    "test:project-menu-move": "node tests/project-menu-move.regression.js",
+    "test:project-detail-fields": "node tests/project-detail-fields.regression.js",
+    "test:permission-flags": "node tests/permission-flags.regression.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "compression": "^1.8.1",
+    "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
+    "express": "^4.19.2",
+    "express-session": "^1.18.0",
+    "multer": "^2.2.0",
+    "node-cron": "^4.6.0",
+    "nodemailer": "^9.0.3",
+    "pg": "^8.11.5"
+  },
+  "devDependencies": {
+    "playwright": "^1.61.1"
+  }
+}

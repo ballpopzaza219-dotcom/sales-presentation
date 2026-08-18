@@ -1,0 +1,17 @@
+<svg viewBox="40 30 140 140" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<pattern id="grid" width="12" height="12" patternUnits="userSpaceOnUse">
+<path d="M12 0L0 0L0 12" fill="none" stroke="#D85A30" stroke-width="0.5" stroke-opacity="0.35"/>
+</pattern>
+</defs>
+<rect x="60" y="50" width="100" height="100" rx="20" fill="#F1EFE8"/>
+<rect x="60" y="50" width="100" height="100" rx="20" fill="url(#grid)"/>
+<line x1="70" y1="134" x2="150" y2="134" stroke="#D85A30" stroke-width="1.5" stroke-opacity="0.6"/>
+<rect x="88" y="100" width="14" height="34" fill="#D85A30"/>
+<rect x="107" y="86" width="14" height="48" fill="#D85A30"/>
+<rect x="126" y="70" width="14" height="64" fill="#D85A30"/>
+<polygon points="126,70 133,60 140,70" fill="#D85A30"/>
+<line x1="95" y1="108" x2="95" y2="126" stroke="#4A1B0C" stroke-width="1" stroke-opacity="0.4"/>
+<line x1="114" y1="94" x2="114" y2="126" stroke="#4A1B0C" stroke-width="1" stroke-opacity="0.4"/>
+<line x1="133" y1="78" x2="133" y2="126" stroke="#4A1B0C" stroke-width="1" stroke-opacity="0.4"/>
+</svg>

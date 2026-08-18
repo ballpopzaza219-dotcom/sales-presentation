@@ -1,0 +1,8 @@
+node_modules/
+.env
+*.log
+server/logs/
+PGSQL.sql
+PGSQL1.sql
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
