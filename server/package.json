@@ -22,7 +22,8 @@
     "test:advance": "node tests/advance.regression.js",
     "test:advance-clearance": "node tests/advance-clearance.regression.js",
     "test:external-payment": "node tests/external-payment.regression.js",
-    "test:client-ledger": "npm run test:pr && npm run test:petty-cash && npm run test:advance && npm run test:advance-clearance && npm run test:external-payment"
+    "test:pr-approval-rules": "node tests/pr-approval-rules.regression.js",
+    "test:client-ledger": "npm run test:pr && npm run test:petty-cash && npm run test:advance && npm run test:advance-clearance && npm run test:external-payment && npm run test:pr-approval-rules"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
