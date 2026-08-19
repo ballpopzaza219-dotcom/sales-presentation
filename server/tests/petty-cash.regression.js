@@ -56,6 +56,7 @@ async function submitVoucher(username, id) {
 (async () => {
   const createdVoucherIds = [];
   const createdFundIds = [];
+  const createdReplenishmentIds = [];
   try {
     console.log('Ensuring fixtures...');
     await setup();
@@ -160,12 +161,28 @@ async function submitVoucher(username, id) {
     // 60,000 - 5,000 - 2,000 - 40,000(ใบเดียวที่ผ่าน) = 13,000
     assert(Number(fundNow.balance) === 13000, `ยอดคงเหลือกองทุนหลัง race ถูกต้องเป๊ะ = 13,000 ไม่ใช่ -27,000 (ได้ ${fundNow.balance})`);
 
+    // ================= 8) เติมเงินกองทุน — reject ต้องเขียน rejected_reason ลงคอลัมน์บนแถวจริง =================
+    // เดิม (known-limitations ข้อ ข.4): column มีอยู่แล้วตั้งแต่ migration 0003 แต่ route ไม่เคยเขียนลงไป
+    // เลย พึ่ง audit log อย่างเดียว — แก้แล้ว เทสนี้ยืนยันว่าคอลัมน์บนแถวเอกสารเองก็มีค่าจริงด้วย
+    const replRes = await call('fx_maker', 'POST', '/api/customer/petty-cash-replenishments', { fundId, amount: 3000, note: 'regression reject test' }, idemKey('pcr-create'));
+    createdReplenishmentIds.push(replRes.replenishment.id);
+    await call('fx_maker', 'POST', `/api/customer/petty-cash-replenishments/${replRes.replenishment.id}/submit`, {}, idemKey('pcr-submit'));
+    const rejectReason = 'ยอดไม่ตรงกับใบเสร็จ regression test';
+    const rejected = await call('fx_approver_mid', 'POST', `/api/customer/petty-cash-replenishments/${replRes.replenishment.id}/reject`, { reason: rejectReason }, idemKey('pcr-reject'));
+    assert(rejected.replenishment.status === 'rejected', 'ปฏิเสธใบเติมเงินกองทุนสำเร็จ');
+    const replRow = await pool.query('SELECT rejected_reason FROM client_petty_cash_replenishments WHERE id=$1', [replRes.replenishment.id]);
+    assert(replRow.rows[0].rejected_reason === rejectReason, `rejected_reason เขียนลงคอลัมน์บนแถวเอกสารจริง (ได้ "${replRow.rows[0].rejected_reason}" คาดหวัง "${rejectReason}")`);
+
     console.log(`\nALL ${passed} CHECKS PASSED`);
   } catch (err) {
     console.error('\nTEST FAILED:', err.message, err.body ? JSON.stringify(err.body) : '');
     process.exitCode = 1;
   } finally {
     try {
+      if (createdReplenishmentIds.length) {
+        await pool.query('DELETE FROM client_document_audit_log WHERE doc_type=\'petty_cash_replenishment\' AND doc_id = ANY($1)', [createdReplenishmentIds]);
+        await pool.query('DELETE FROM client_petty_cash_replenishments WHERE id = ANY($1)', [createdReplenishmentIds]);
+      }
       if (createdVoucherIds.length) {
         await pool.query(`DELETE FROM client_journal_entry_lines WHERE journal_entry_id IN (SELECT id FROM client_journal_entries WHERE source_type='payment_voucher' AND source_id = ANY($1))`, [createdVoucherIds]);
         await pool.query(`DELETE FROM client_journal_entries WHERE source_type='payment_voucher' AND source_id = ANY($1)`, [createdVoucherIds]);
@@ -175,7 +192,7 @@ async function submitVoucher(username, id) {
       if (createdFundIds.length) {
         await pool.query('DELETE FROM client_petty_cash_funds WHERE id = ANY($1)', [createdFundIds]);
       }
-      await pool.query(`DELETE FROM client_idempotency_keys WHERE company_id=$1 AND idempotency_key LIKE 'pcv-%'`, [COMPANY_A_ID]);
+      await pool.query(`DELETE FROM client_idempotency_keys WHERE company_id=$1 AND (idempotency_key LIKE 'pcv-%' OR idempotency_key LIKE 'pcr-%')`, [COMPANY_A_ID]);
     } catch (cleanupErr) { console.error('CLEANUP FAILED (manual cleanup needed):', cleanupErr.message); }
     await pool.end();
   }

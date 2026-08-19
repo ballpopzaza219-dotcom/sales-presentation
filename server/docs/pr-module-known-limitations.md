@@ -24,18 +24,23 @@
 `updateUserPermissionFlag()` เดียวกับ `approval-permission`/`budget-approval-permission` (2 endpoint
 เดิมที่แก้ให้ตรงกันแล้วในรอบเดียวกัน)
 
-**ยังไม่มีหน้า UI สำหรับมอบ/ถอน 3 flag นี้** (มีแต่ API) — หน้า `approval-permission` เดิมใน
-pr-system.html แก้ให้ตรงกับกฎ backend ใหม่แล้ว (super_user เท่านั้น + ซ่อนปุ่มแถวตัวเอง) แต่ยังไม่มีหน้า
-เทียบเท่าสำหรับ 3 flag ใหม่ — ต้องสร้างเพิ่มถ้าจะให้ใช้งานผ่าน UI ได้จริง
+**UI สำหรับมอบ/ถอนทั้ง 9 flag (6 เดิม + 3 ใหม่) เสร็จแล้ว** (2026-08-18) — หน้า `approval_permissions`
+เดียวกัน ตารางเดิมขยายคอลัมน์ครบทั้ง `can_manage_po`/`can_manage_petty_cash_fund`/`can_settle_cash`
+พร้อมปุ่มมอบ/ถอนต่อแถว (`permFlagCell()`) — ทดสอบผ่าน browser จริงแล้ว
 
-### ก.2 `client_subcontractors` ยังไม่มีอยู่จริง — บล็อกหัวข้อ 2 ทั้งหมด
+### ก.2 หัวข้อ 2 (ผู้รับเหมาช่วง) — master data เสร็จแล้ว ส่วนบัญชี/สัญญา/เบิกจ่าย ยังบล็อกรออยู่
 
-**ปัญหา**: ไม่มีตาราง `client_subcontractors`/`client_subcontract_terms` เลย ทั้งที่
+**เสร็จแล้ว (migration 0009+0010, 2026-08-19)**: `client_subcontractors` (ชื่อ/เลขผู้เสียภาษี/ติดต่อ/
+บัญชีธนาคาร) + `GET/POST/PUT /api/customer/subcontractors` + UI เต็ม — ไม่แตะบัญชี/ภาษีเลย จึงทำได้โดยไม่
+ต้องรอฝ่ายบัญชี ดู `server/docs/subcontractor-module-plan.md` สำหรับแผนเต็ม
+
+**ยังบล็อกอยู่**: `client_subcontract_terms` (สัญญา — มี `retention_percent`/`wht_rate`) และ
+`client_subcontract_billings` (เงินล่วงหน้า/งวดงาน/คืนประกันผลงาน) ยังไม่เริ่ม — รอฝ่ายบัญชียืนยัน 4 จุด
+⚠️ ในแผน (ฐาน WHT, WHT/VAT บนเงินล่วงหน้า, ชื่อบัญชี 1160, จุดเช็คกันเบิกเกิน) ก่อนร่าง DDL จริง
+
 `client_wht_certificates.source_type` (migration 0001) เตรียม `'subcontractor_payment'` ไว้ล่วงหน้า
-แล้วใน CHECK constraint — ถ้ามีโค้ดออก WHT cert ด้วย `source_type='subcontractor_payment'` ก่อนสร้าง
-ตารางจริง `source_id` จะชี้ไปยังตารางที่ไม่มีอยู่ (polymorphic reference ไม่มี FK คุ้มกันได้)
-
-**สถานะ**: ยังไม่เริ่ม รอคิวหัวข้อ 2
+แล้วใน CHECK constraint สำหรับตอนที่ `client_subcontract_billings` ออก 50 ทวิจริง — ยังไม่ถูกใช้จริง
+จนกว่าจะมีตารางนั้น
 
 ### ก.3 `client_payment_vouchers` ไม่มี `/void` — ใบเบิกที่อนุมัติแล้วย้อนกลับไม่ได้
 
@@ -70,16 +75,15 @@ items เป็น JSONB ก้อนเดียว — ยังใช้ง�
 ยังไม่มีอะไรอื่นในระบบไปพึ่งพา schema ของมัน (PR ยังไม่เชื่อมกับ PO จริงในโค้ดปัจจุบัน) — เวลาจะทำหัวข้อ
 5 จริงต้องเขียนใหม่ทั้งหมด ไม่ใช่ต่อยอด ส่วน WO (หนังสือสั่งจ้าง) ไม่มีอะไรเลย
 
-### ข.2 `client_progress_claims` — เอกสารเก่าอ้างถึงแต่ไม่มีโค้ดจริง (ต้องถามผู้ใช้)
+### ข.2 `client_progress_claims` — หัวข้อ 3 ในอนาคต ยังไม่เริ่มทำ (ยืนยันจากผู้ใช้แล้ว 2026-08-19)
 
 เอกสาร known-limitations เวอร์ชันก่อนเซสชันนี้ (2026-07-29) มีข้อ "1. client_progress_claims
 cannot be voided after status='converted'" ที่อ้างถึงตาราง/endpoint นี้อย่างละเอียด แต่ตรวจสอบแล้ว
 **ไม่มีอยู่จริงในโค้ดปัจจุบันเลย** — grep ทั้ง `server.js`, `schema.sql`, migration ทุกไฟล์ พบเพียง
 ค่า `'progress_claim'` ที่เตรียมไว้ล่วงหน้าใน CHECK constraint ของ
-`client_document_audit_log.doc_type` (migration 0001 บรรทัด 320) เท่านั้น ไม่มีตารางจริง ไม่มี route
-จริง จึงลบเนื้อหาเก่าที่อ้างถึงฟีเจอร์ที่ไม่มีอยู่ออกจากไฟล์นี้ — **คำถามนี้อยู่ในรายการคำถามท้าย
-รายงานหลัก** (ไม่ใช่ yes/no ตอบเองไม่ได้ว่าเป็นเอกสารที่เขียนล่วงหน้าไว้ก่อนสร้างจริงแล้วยังไม่ได้ทำ
-หรือเคยมีแล้วถูกย้อนกลับไปในบางจุดของประวัติโปรเจกต์)
+`client_document_audit_log.doc_type` (migration 0001 บรรทัด 320) เท่านั้น — **ถามผู้ใช้แล้ว ยืนยันว่า
+เป็นเอกสารแผนที่เขียนล่วงหน้าไว้ก่อนสร้างจริง (หัวข้อ 3) ไม่เคยมีอยู่จริงมาก่อนแล้วหาย** ยังไม่เริ่มทำ
+รอคิวเหมือนหัวข้อ 2 (ผู้รับเหมาช่วง)
 
 ### ข.3 `client_purchase_request_item_adjustments` ไม่มี `uncancel`
 
@@ -87,14 +91,11 @@ cannot be voided after status='converted'" ที่อ้างถึงตา�
 ที่มี release ย้อนกลับได้ — ถ้าต้องการ uncancel ในอนาคตต้องเพิ่ม `adjustment_type='uncancel'` ผ่าน
 migration ใหม่ ยังไม่ได้ทำและไม่ได้วางแผนไว้
 
-### ข.4 `client_petty_cash_replenishments` มีคอลัมน์ `rejected_reason` แล้วแต่ route ยังไม่เขียนลงคอลัมน์
+### ข.4 ~~`client_petty_cash_replenishments` มีคอลัมน์ `rejected_reason` แล้วแต่ route ยังไม่เขียนลงคอลัมน์~~ — แก้แล้ว (2026-08-19)
 
-Migration 0003 เพิ่มคอลัมน์ `rejected_reason TEXT NOT NULL DEFAULT ''` ให้แล้ว แต่
-`POST /petty-cash-replenishments/:id/reject` (`server.js:10129`) ยัง `UPDATE ... SET status='rejected'`
-เฉยๆ ไม่ได้เขียน `reason` ลงคอลัมน์นี้ (มีคอมเมนต์เตือนไว้ในโค้ดแล้ว) — เหตุผลที่ยังไม่บล็อก:
-`writeAuditLog` บันทึกเหตุผลไว้ใน `client_document_audit_log` ครบอยู่แล้วเสมอ ดูผ่าน audit trail ได้
-เพียงแต่ไม่มีคอลัมน์ผูกตรงบนแถวเอกสารเหมือนใบเบิกเงิน (`client_payment_vouchers.rejected_reason`)
-— แก้ไขง่าย (แค่เพิ่ม 1 บรรทัดในโค้ด ไม่ต้อง migration ใหม่) แต่ยังไม่ได้แก้เพราะไม่กระทบข้อมูลจริง
+**แก้แล้ว**: `POST /petty-cash-replenishments/:id/reject` เขียน `rejected_reason` ลงคอลัมน์บนแถวเอกสารเอง
+แล้ว (เดิมพึ่ง `writeAuditLog`/`client_document_audit_log` อย่างเดียว) — เพิ่มเทสถาวรยืนยันแล้วใน
+`server/tests/petty-cash.regression.js` (ส่วนที่ 8)
 
 ### ข.5 เคลียร์เงินทดรองจ่ายที่อนุมัติแล้ว (advance clearance) ไม่มี `/void`
 
@@ -161,16 +162,16 @@ buffer bounds check **เมื่อมีการส่ง `buf` param เข
 
 | ID | เรื่อง | ระดับ |
 |---|---|---|
-| ก.1 | ~~สิทธิ์ super_user ชั่วคราว 3 จุด~~ | แก้แล้ว (0007) |
-| ก.2 | client_subcontractors ไม่มีอยู่จริง | บล็อก (หัวข้อ 2) |
+| ก.1 | ~~สิทธิ์ super_user ชั่วคราว 3 จุด~~ | แก้แล้ว (0007) + UI แล้ว (2026-08-18) |
+| ก.2 | client_subcontractors (master) เสร็จแล้ว — terms/billings ยังบล็อก | บางส่วนแก้แล้ว (0009+0010) |
 | ก.3 | payment voucher ไม่มี /void | บล็อก |
 | ก.4 | ไม่มีกระบวนการนำส่ง ภ.ง.ด. (2120 สะสมไม่มีวันลด) | บล็อก |
 | ข.1 | PO เดิมไม่ผ่านมาตรฐาน, ไม่มี WO | ไม่สะดวก |
-| ข.2 | client_progress_claims เอกสารอ้างถึงแต่ไม่มีจริง | ไม่สะดวก + ต้องถาม |
+| ข.2 | client_progress_claims = หัวข้อ 3 อนาคต ยังไม่เริ่ม (ยืนยันแล้ว) | รอคิว |
 | ข.3 | PR item adjustment ไม่มี uncancel (ตั้งใจ) | ไม่สะดวก |
-| ข.4 | replenishment reject ไม่เขียน rejected_reason column | ไม่สะดวก |
+| ข.4 | ~~replenishment reject ไม่เขียน rejected_reason column~~ | แก้แล้ว (2026-08-19) |
 | ข.5 | advance clearance ไม่มี /void + ยกเลิก 50 ทวิ | ไม่สะดวก (รอบัญชี) |
 | ข.6 | payment voucher (other) รองรับ 1 บรรทัด/ใบ | ไม่สะดวก |
 | ข.7 | payee_tax_id พนักงานไม่ผูก master data | ไม่สะดวก |
-| ข.8 | ไม่มี automated test suite | หนี้เทคนิค |
+| ข.8 | ~~ไม่มี automated test suite~~ | แก้แล้ว — 8 ไฟล์ `server/tests/*.regression.js`, `npm run test:client-ledger` |
 | ข.9 | npm audit เหลือ 2 (moderate, exceljs/uuid) — 10 อื่นแก้แล้ว 2026-08-06 | หนี้เทคนิค (ยอมรับแล้ว) |

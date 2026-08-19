@@ -10627,7 +10627,10 @@ app.post('/api/customer/petty-cash-replenishments/:id/reject', requireCustomerAu
     }, { enforceAmountLimit: false });
     if (!permCheck.allowed) { await client.query('ROLLBACK'); return res.status(403).json({ error: permCheck.message, code: permCheck.code }); }
 
-    await client.query(`UPDATE client_petty_cash_replenishments SET status='rejected' WHERE id=$1`, [id]);
+    // เขียน rejected_reason ลงคอลัมน์บนแถวเอกสารเองด้วย (เดิมพึ่ง audit log อย่างเดียว — มีอยู่จริงแต่ไม่
+    // สะดวกเท่าคอลัมน์ตรงบนแถวเหมือน client_payment_vouchers.rejected_reason) — column นี้มีอยู่แล้วตั้งแต่
+    // migration 0003 (`rejected_reason TEXT NOT NULL DEFAULT ''`) แค่ไม่เคยมี route ไหนเขียนลงไปเลย
+    await client.query(`UPDATE client_petty_cash_replenishments SET status='rejected', rejected_reason=$1 WHERE id=$2`, [reason.trim(), id]);
     await writeAuditLog(client, {
       companyId, docType: 'petty_cash_replenishment', docId: id, action: 'reject',
       fromStatus: 'submitted', toStatus: 'rejected', performedBy: req.customer.id,
