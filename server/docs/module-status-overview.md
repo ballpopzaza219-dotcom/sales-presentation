@@ -1,10 +1,16 @@
 # สถานะรวมโมดูล client ledger / PR — ณ จบหัวข้อ 1
 
-อัปเดตล่าสุด: 2026-08-06 (จบหัวข้อ 1: 1.1-1.4 ครบ, หัวข้อ 4: PR ครบ)
+อัปเดตล่าสุด: 2026-08-06 (จบหัวข้อ 1: 1.1-1.4 ครบ, หัวข้อ 4: PR ครบ) · แก้ไข: 2026-08-19
+
+⚠️ **"เสร็จสมบูรณ์" ในเอกสารนี้หมายถึง backend/endpoint เท่านั้น ไม่รวม UI** — สำรวจจริงตอนเริ่มทำ UI
+(2026-08-19) พบว่า **ทั้งหัวข้อ 1 (1.1-1.4) และหัวข้อ 4 (PR) ไม่มี UI ที่ต่อ API จริงเลยสักหน้า** — หน้า
+`pagePRList`/`pageCreatePR` ที่มีอยู่ในโค้ดเป็น **demo-mode ล้วนๆ** อ่าน/เขียนแค่ `DB.prs` (array เดโม
+hardcode) ไม่เคยเรียก endpoint จริงข้างล่างนี้เลยแม้แต่ครั้งเดียว — กำลังสร้าง UI จริงอยู่ (ดู
+`server/docs/README.md` สำหรับสถานะล่าสุด)
 
 ## Endpoint ทั้งหมดที่มีจริง แยกตามหัวข้อ
 
-### หัวข้อ 1 — Client ledger (เงินสด/เงินทดรองจ่าย/จ่ายภายนอก) — **เสร็จสมบูรณ์**
+### หัวข้อ 1 — Client ledger (เงินสด/เงินทดรองจ่าย/จ่ายภายนอก) — **Backend เสร็จสมบูรณ์ / UI กำลังทำ**
 
 **1.1 เงินสดย่อย**
 - `GET/POST/PUT /api/customer/petty-cash-funds`, `/:id`
@@ -24,7 +30,7 @@
 - `GET/POST/PUT /api/customer/payment-vouchers` + `/submit /approve /reject /cancel`
 - `GET /api/customer/payment-vouchers/:id/wht-certificates`
 
-### หัวข้อ 4 — ใบขอซื้อ (PR) — **เสร็จสมบูรณ์** (ทำก่อนหัวข้อ 1 ในเซสชันก่อนหน้า)
+### หัวข้อ 4 — ใบขอซื้อ (PR) — **Backend เสร็จสมบูรณ์ / UI ยังไม่มี (ทำก่อนหัวข้อ 1 ในเซสชันก่อนหน้า)**
 - `GET/POST/PUT /api/customer/purchase-requests`, `/:id` + `/submit /approve /reject /cancel`
 - `POST /api/customer/purchase-requests/:id/items/:itemId/consume /release /cancel-qty`
 - `GET /api/customer/purchase-requests/:id/items/:itemId/adjustments`

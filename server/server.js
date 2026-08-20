@@ -9101,6 +9101,19 @@ async function fetchPettyCashFund(dbClient, id, companyId) {
   return serializePettyCashFund(r.rows[0]);
 }
 
+// ยังไม่เคยมี endpoint นี้เลยจนถึงตอนนี้ (client_chart_of_accounts มีแต่ seed อัตโนมัติ ไม่มีใครเคย query
+// ออกมาแสดงผลตรงๆ) — ต้องใช้เป็น dropdown เลือกรหัสบัญชีค่าใช้จ่ายในฟอร์มใบเบิกเงิน (1.1/1.2/1.4) จึงเพิ่ม
+// ให้ตอนนี้ — read-only ไม่ gate สิทธิ์เพิ่มเติมนอกจาก company scope (ตรงกับ pattern ของ GET อื่นในระบบ)
+app.get('/api/customer/chart-of-accounts', requireCustomerAuth, async (req, res) => {
+  const companyId = req.customer.company_id;
+  const r = await pool.query(
+    `SELECT code, name, category, parent_code, is_active FROM client_chart_of_accounts
+     WHERE company_id=$1 AND is_active=true ORDER BY code`,
+    [companyId]
+  );
+  res.json({ accounts: r.rows.map(a => ({ code: a.code, name: a.name, category: a.category, parentCode: a.parent_code })) });
+});
+
 app.get('/api/customer/petty-cash-funds', requireCustomerAuth, async (req, res) => {
   const companyId = req.customer.company_id;
   const r = await pool.query(
@@ -10886,12 +10899,16 @@ app.delete('/api/customer/documents/:id', requireCustomerAuth, async (req, res) 
 // other route in this section relies on.
 app.get('/api/customer/journal-entries', requireCustomerAuth, async (req, res) => {
   const companyId = req.customer.company_id;
-  const { from, to, sourceType, projectId } = req.query || {};
+  const { from, to, sourceType, sourceId, projectId } = req.query || {};
   const clauses = ['je.company_id=$1'];
   const vals = [companyId];
   if (from) { vals.push(from); clauses.push(`je.entry_date >= $${vals.length}`); }
   if (to) { vals.push(to); clauses.push(`je.entry_date <= $${vals.length}`); }
   if (sourceType) { vals.push(sourceType); clauses.push(`je.source_type = $${vals.length}`); }
+  // sourceId ใช้คู่กับ sourceType เสมอ (ไม่กรองแค่ sourceId เดี่ยวๆ เพราะ id ไม่ unique ข้าม source_type
+  // ต่างตาราง — เอกสารคนละประเภทเป็น id ซ้ำกันได้) — ใช้ตอนหน้า detail เอกสารหนึ่งใบต้องการดู journal
+  // เฉพาะของใบนั้น ไม่ใช่ทุกใบของ source_type เดียวกัน
+  if (sourceId && sourceType) { vals.push(parseInt(sourceId, 10)); clauses.push(`je.source_id = $${vals.length}`); }
   if (projectId) { vals.push(parseInt(projectId, 10)); clauses.push(`je.project_id = $${vals.length}`); }
   const where = clauses.join(' AND ');
 
@@ -10927,6 +10944,26 @@ app.get('/api/customer/journal-entries', requireCustomerAuth, async (req, res) =
     return { ...e, lines, totalDebit, totalCredit };
   });
   res.json({ entries });
+});
+
+// ทั่วไปข้ามทุก doc_type — หน้า detail ของเอกสารไหนก็เรียกใช้ endpoint เดียวกันนี้ได้เสมอ (docType+docId
+// คู่เดียวกับที่ writeAuditLog() ใช้เขียนตอนแรก) ไม่มี endpoint เฉพาะทางแยกรายเอกสารมาก่อนเลย — ไม่ gate
+// สิทธิ์เพิ่มเติมนอกจาก company scope (ดู audit trail ได้ทุกคนที่ login แล้ว เหมือน GET เอกสารเอง)
+app.get('/api/customer/audit-log', requireCustomerAuth, async (req, res) => {
+  const companyId = req.customer.company_id;
+  const { docType, docId } = req.query || {};
+  if (!docType || !docId) return res.status(400).json({ error: 'ต้องระบุ docType และ docId' });
+  const r = await pool.query(
+    `SELECT l.id, l.action, l.from_status AS "fromStatus", l.to_status AS "toStatus",
+       l.performed_by AS "performedBy", c.name AS "performedByName", l.is_override AS "isOverride",
+       l.reason, l.created_at AS "createdAt"
+     FROM client_document_audit_log l
+     LEFT JOIN customers c ON c.id = l.performed_by
+     WHERE l.company_id=$1 AND l.doc_type=$2 AND l.doc_id=$3
+     ORDER BY l.id`,
+    [companyId, docType, parseInt(docId, 10)]
+  );
+  res.json({ logs: r.rows });
 });
 
 // ---------------- Customer: client ledger — financial statements (phase 3) ----------------

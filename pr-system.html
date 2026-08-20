@@ -748,6 +748,18 @@ let S = {
   subcontractors:[],
   subcontractorsLoaded:false,
   subcontractorForm:null,
+  pettyCashFunds:[],
+  pettyCashFundsLoaded:false,
+  pettyCashFundForm:null,
+  chartOfAccounts:[],
+  chartOfAccountsLoaded:false,
+  paymentVouchersByType:{petty_cash:[], advance:[], other:[]},
+  paymentVouchersLoadedByType:{petty_cash:false, advance:false, other:false},
+  voucherListFilter:{status:'', projectId:'', dateFrom:'', dateTo:''},
+  selectedVoucherId:null,
+  selectedVoucherDetail:null, // { voucher, auditLog, journalEntries } — fetched fresh each time (ไม่ cache)
+  voucherForm:null,
+  voucherRejectForm:null,
   geoProvinces:[],
   geoProvincesLoaded:false,
   jobPositionsLoaded:false,
@@ -830,6 +842,76 @@ async function loadSubcontractors(){
   render();
 }
 
+// .catch(()=>({})) หลัง res.json() เสมอในฟังก์ชันกลุ่มนี้ (ต่างจาก loader เดิมหลายจุดในไฟล์นี้ที่ไม่มี) —
+// กัน error message ดิบของ JS เอง (เช่น "Unexpected token '<'" ตอน response เป็นหน้า HTML error แทน
+// JSON จริง — เจอจริงตอนทดสอบ endpoint ที่ยังไม่ได้ deploy) หลุดออกไปโชว์ผู้ใช้ตรงๆ แทนข้อความไทยที่ตั้งใจ
+// ไว้ apiCall() ที่มีอยู่แล้วก็ป้องกันแบบเดียวกันนี้อยู่แล้ว (บรรทัด "res.json().catch(()=>({}))" ด้านล่าง)
+async function loadChartOfAccounts(){
+  try {
+    const res = await fetch('/api/customer/chart-of-accounts');
+    const data = await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(data.error || 'โหลดผังบัญชีไม่สำเร็จ');
+    S.chartOfAccounts = data.accounts;
+    S.chartOfAccountsLoaded = true;
+  } catch(e){
+    toast(e.message || 'โหลดผังบัญชีไม่สำเร็จ', 'err');
+  }
+  render();
+}
+
+async function loadPettyCashFunds(){
+  try {
+    const res = await fetch('/api/customer/petty-cash-funds');
+    const data = await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(data.error || 'โหลดข้อมูลกองทุนเงินสดย่อยไม่สำเร็จ');
+    S.pettyCashFunds = data.funds;
+    S.pettyCashFundsLoaded = true;
+  } catch(e){
+    toast(e.message || 'โหลดข้อมูลกองทุนเงินสดย่อยไม่สำเร็จ', 'err');
+  }
+  render();
+}
+
+async function loadPaymentVouchers(voucherType){
+  try {
+    const res = await fetch(`/api/customer/payment-vouchers?voucherType=${encodeURIComponent(voucherType)}`);
+    const data = await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(data.error || 'โหลดข้อมูลใบเบิกเงินไม่สำเร็จ');
+    S.paymentVouchersByType[voucherType] = data.vouchers;
+    S.paymentVouchersLoadedByType[voucherType] = true;
+  } catch(e){
+    toast(e.message || 'โหลดข้อมูลใบเบิกเงินไม่สำเร็จ', 'err');
+  }
+  render();
+}
+
+// โหลดรายละเอียดใบเบิกเงิน + audit log + journal entry ของใบนั้นพร้อมกัน — ไม่ cache เลย โหลดสดทุกครั้ง
+// ที่เข้าหน้านี้ (กันเห็นสถานะ/ยอดเก่าค้างหลัง action เปลี่ยนสถานะจากที่อื่น)
+async function loadVoucherDetail(id){
+  S.selectedVoucherDetail = null;
+  render();
+  try {
+    const [voucherRes, auditRes, journalRes] = await Promise.all([
+      fetch(`/api/customer/payment-vouchers/${id}`),
+      fetch(`/api/customer/audit-log?docType=payment_voucher&docId=${id}`),
+      fetch(`/api/customer/journal-entries?sourceType=payment_voucher&sourceId=${id}`),
+    ]);
+    const voucherData = await voucherRes.json().catch(()=>({}));
+    if(!voucherRes.ok) throw new Error(voucherData.error || 'โหลดข้อมูลใบเบิกเงินไม่สำเร็จ');
+    const auditData = await auditRes.json().catch(()=>({}));
+    const journalData = await journalRes.json().catch(()=>({}));
+    S.selectedVoucherDetail = {
+      voucher: voucherData.voucher,
+      auditLog: (auditRes.ok && auditData.logs) ? auditData.logs : [],
+      journalEntries: (journalRes.ok && journalData.entries) ? journalData.entries : [],
+    };
+  } catch(e){
+    toast(e.message || 'โหลดข้อมูลใบเบิกเงินไม่สำเร็จ', 'err');
+    S.selectedVoucherDetail = {error:true};
+  }
+  render();
+}
+
 async function loadApprovalConditions(){
   try {
     const res = await fetch('/api/customer/approval-conditions');
@@ -851,12 +933,12 @@ async function loadApprovalConditions(){
 // tie the request to an AbortController so a stalled fetch can be given up on client-side instead
 // of leaving the caller (and any skeleton/loading UI built on it) waiting forever — see the "Tender
 // List never loads" investigation. Every existing call site omits it and is unaffected.
-async function apiCall(method, path, body, signal){
+async function apiCall(method, path, body, signal, extraHeaders){
   let res;
   try{
     res = await fetch(path, {
       method,
-      headers: {'Content-Type':'application/json'},
+      headers: Object.assign({'Content-Type':'application/json'}, extraHeaders||{}),
       body: body!==undefined ? JSON.stringify(body) : undefined,
       signal,
     });
@@ -2370,7 +2452,15 @@ function biddingNavFor(){
     {key:'fin_tenders', label:tr('nav.fin_tenders'), icon:'flag'},
   ];
 }
-function financeNavFor(){
+function financeNavFor(u){
+  if(u && u.role!=='super_user'){
+    // Non-super_user roles only ever get the petty-cash section — see FINANCE_PETTY_CASH_ONLY_PAGES.
+    return [
+      {key:'section', label:tr('nav.section_petty_cash')},
+      {key:'fin_petty_cash_funds', label:tr('nav.fin_petty_cash_funds'), icon:'wallet'},
+      {key:'fin_vouchers_petty_cash', label:tr('nav.fin_vouchers_petty_cash'), icon:'wallet'},
+    ];
+  }
   return [
     {key:'fin_overview', label:tr('nav.fin_overview'), icon:'overview'},
     {key:'section', label:tr('nav.section_revenue_cost')},
@@ -2382,6 +2472,9 @@ function financeNavFor(){
     {key:'fin_receivables', label:tr('nav.fin_receivables'), icon:'userPlus'},
     {key:'fin_payables', label:tr('nav.fin_payables'), icon:'userMinus'},
     {key:'fin_retention', label:tr('nav.fin_retention'), icon:'wallet'},
+    {key:'section', label:tr('nav.section_petty_cash')},
+    {key:'fin_petty_cash_funds', label:tr('nav.fin_petty_cash_funds'), icon:'wallet'},
+    {key:'fin_vouchers_petty_cash', label:tr('nav.fin_vouchers_petty_cash'), icon:'wallet'},
     {key:'section', label:tr('nav.section_treasury')},
     {key:'fin_stock', label:tr('nav.fin_stock'), icon:'boxes'},
     {key:'fin_cashbank', label:tr('nav.fin_cashbank'), icon:'bank'},
@@ -2465,10 +2558,18 @@ function navFor(role){
   return items;
 }
 
+// Finance pages any role can reach (not just super_user) — everything else in financeNavFor()
+// stays super_user-only. Anyone can submit their own petty-cash reimbursement claim; approval and
+// fund-limit management within these pages is still gated per-action by the existing flags
+// (canApprovePettyCash/canManagePettyCashFund etc.), same as before this list existed.
+const FINANCE_PETTY_CASH_ONLY_PAGES = ['fin_petty_cash_funds','fin_vouchers_petty_cash','fin_voucher_detail'];
+
 function renderDashboard(){
   const u = S.currentUser;
   const role = ROLES[u.role];
-  const canFinance = u.role==='super_user';
+  // Everyone can open the Finance module switcher now — financeNavFor() itself narrows what a
+  // non-super_user actually sees in the sidebar to the petty-cash section only.
+  const canFinance = true;
   // Independent of role — anyone granted can_approve_applications (see "จัดการสิทธิ์ผู้พิจารณาใบสมัคร")
   // needs to reach เมนู "พนักงาน > ใบสมัครงาน" regardless of which role they're otherwise on, since
   // that permission is deliberately not tied to a fixed role (see maybeAutoGrantApprovalPermission
@@ -2481,14 +2582,19 @@ function renderDashboard(){
   if(S.module==='finance' && !canFinance) S.module='pr';
   if(S.module==='employees' && !canEmployees) S.module='pr';
   if(S.module==='bidding' && !canBidding) S.module='pr';
-  const nav = S.module==='finance' ? financeNavFor() : S.module==='employees' ? employeesNavFor() : S.module==='bidding' ? biddingNavFor() : navFor(u.role);
+  // A non-super_user landing (or left over from a previous session) on a finance page outside the
+  // petty-cash allow-list must not see it — redirect to the one page they're guaranteed to have.
+  if(S.module==='finance' && u.role!=='super_user' && !FINANCE_PETTY_CASH_ONLY_PAGES.includes(S.page)){
+    S.page = 'fin_vouchers_petty_cash';
+  }
+  const nav = S.module==='finance' ? financeNavFor(u) : S.module==='employees' ? employeesNavFor() : S.module==='bidding' ? biddingNavFor() : navFor(u.role);
   // ผู้ใช้ role อื่นที่ไม่ใช่ super_user แต่มี can_manage_po (เช่น ฝ่ายจัดซื้อ role='maker') ต้องเห็นเมนู
   // จัดการผู้รับเหมาช่วงด้วย — navFor(role) branch ตาม role string ล้วนๆ ไม่รู้จัก flag นี้ (super_user
   // ได้ผ่าน navFor ไปแล้วข้างบน ไม่ต้องเพิ่มซ้ำ)
   if(u.role!=='super_user' && u.canManagePo && S.module==='pr' && !nav.find(n=>n.key==='subcontractors')){
     nav.push({key:'subcontractors', label:tr('nav.subcontractors'), icon:'users'});
   }
-  const hiddenPages = ['emp_app_form','emp_app_print','fin_tender_add','fin_tender_detail','fin_budget_detail','fin_project_add','fin_project_detail','fin_project_schedule','fin_po_add','fin_quotation_add','fin_document_add']; // reachable only via buttons, not listed in any sidebar nav
+  const hiddenPages = ['emp_app_form','emp_app_print','fin_tender_add','fin_tender_detail','fin_budget_detail','fin_project_add','fin_project_detail','fin_project_schedule','fin_po_add','fin_quotation_add','fin_document_add','fin_voucher_detail']; // reachable only via buttons, not listed in any sidebar nav
   if(!hiddenPages.includes(S.page) && !nav.find(n=>n.key===S.page && n.key!=='section')) S.page = S.module==='finance' ? 'fin_overview' : S.module==='employees' ? 'emp_overview' : S.module==='bidding' ? 'fin_tender_overview' : 'overview';
 
   return `
@@ -2624,6 +2730,9 @@ function renderPage(){
     case 'fin_receivables': return pageLedger('receivables');
     case 'fin_payables': return pageLedger('payables');
     case 'fin_retention': return pageFinRetention();
+    case 'fin_petty_cash_funds': return pageFinPettyCashFunds();
+    case 'fin_vouchers_petty_cash': return pageFinPaymentVouchers('petty_cash');
+    case 'fin_voucher_detail': return pageFinPaymentVoucherDetail();
     case 'fin_stock': return pageFinStock();
     case 'fin_cashbank': return pageLedger('cashbank');
     case 'fin_po': return pageFinPurchaseOrders();
@@ -8034,6 +8143,300 @@ function pageLedger(key){
   </div>`;
 }
 
+// ================= หัวข้อ 1 — เงินสดย่อย/เงินทดรองจ่าย/จ่ายเจ้าหนี้ภายนอก =================
+// ขั้น 1: เฉพาะ petty_cash เท่านั้นที่ต่อ API ครบ (fund + voucher list/detail) — โครงฟังก์ชันรองรับ
+// voucherType อื่น (advance/other) ไว้แล้วสำหรับขั้นถัดไป แต่ field เฉพาะของ other (payeeExternalId)
+// ยังใช้ไม่ได้จริงเพราะ client_external_payees ยังไม่มี CRUD endpoint (จะทำในขั้น 3 ตามแผน)
+
+function voucherStatusLabels(){
+  return {
+    draft: tr('voucher.status_draft'), submitted: tr('voucher.status_submitted'),
+    approved: tr('voucher.status_approved'), rejected: tr('voucher.status_rejected'),
+    cancelled: tr('voucher.status_cancelled'), voided: tr('voucher.status_voided'),
+  };
+}
+function voucherStatusBadgeClass(status){
+  return status==='approved' ? 'badge-approved' : status==='submitted' ? 'badge-pending'
+    : status==='rejected' ? 'badge-rejected' : status==='draft' ? 'badge-draft' : 'badge-suspended';
+}
+// ข้อความ/label เฉพาะแต่ละประเภท ตามที่กำหนดไว้ — "1.2 ใช้คำว่า 'ผู้ขอเบิก' ไม่ใช่ 'ผู้รับเงิน'" ฯลฯ
+function voucherTypeConfig(voucherType){
+  const configs = {
+    petty_cash: {
+      navTitle: tr('nav.fin_vouchers_petty_cash'), listSub: tr('voucher.pc_list_sub'),
+      payeeLabel: tr('voucher.pc_payee_label'), addButton: tr('voucher.pc_add_button'),
+      formTitle: tr('voucher.pc_form_title'), needsFund: true, needsExpenseAccount: true, needsExternalPayee: false,
+    },
+    advance: {
+      navTitle: tr('nav.fin_vouchers_advance'), listSub: tr('voucher.adv_list_sub'),
+      payeeLabel: tr('voucher.adv_payee_label'), addButton: tr('voucher.adv_add_button'),
+      formTitle: tr('voucher.adv_form_title'), needsFund: false, needsExpenseAccount: false, needsExternalPayee: false,
+    },
+    other: {
+      navTitle: tr('nav.fin_vouchers_other'), listSub: tr('voucher.oth_list_sub'),
+      payeeLabel: tr('voucher.oth_payee_label'), addButton: tr('voucher.oth_add_button'),
+      formTitle: tr('voucher.oth_form_title'), needsFund: false, needsExpenseAccount: true, needsExternalPayee: true,
+    },
+  };
+  return configs[voucherType] || configs.petty_cash;
+}
+
+function pageFinPettyCashFunds(){
+  if(S.dataMode==='demo'){
+    return `<div class="page-head"><div><h2>${tr('nav.fin_petty_cash_funds')}</h2><div class="sub">${tr('voucher.fund_list_sub')}</div></div></div>
+    <div class="card" style="padding:20px 22px;"><div class="empty">${tr('approval_permissions.demo_not_available')}</div></div>`;
+  }
+  const canManage = !!(S.currentUser && (S.currentUser.role==='super_user' || S.currentUser.canManagePettyCashFund));
+  const rows = S.pettyCashFunds || [];
+  return `
+  <div class="page-head">
+    <div><h2>${tr('nav.fin_petty_cash_funds')}</h2><div class="sub">${tr('voucher.fund_list_sub')}</div></div>
+    ${canManage ? `<button class="btn btn-primary btn-sm" data-act="open-add-fund">${tr('voucher.fund_add_button')}</button>` : ''}
+  </div>
+  ${!canManage ? permNote(tr('voucher.fund_no_manage_note')) : ''}
+  ${canManage && S.pettyCashFundForm ? renderPettyCashFundForm() : ''}
+  <div class="card" style="padding:20px 22px;">
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>${tr('voucher.fund_col_name')}</th><th>${tr('common.col_project')}</th>
+        <th class="num-cell">${tr('voucher.fund_col_limit')}</th><th class="num-cell">${tr('voucher.fund_col_balance')}</th>
+        <th>${tr('common.col_status')}</th><th></th>
+      </tr></thead>
+      <tbody>
+        ${rows.length===0 ? `<tr><td colspan="6"><div class="empty" style="padding:20px 0;">${tr('voucher.fund_no_funds_yet')}</div></td></tr>` : rows.map(f=>{
+          const low = f.balance < f.fundLimit*0.1;
+          return `
+          <tr style="${f.isActive?'':'opacity:0.55;'}">
+            <td>${esc(f.name)}</td>
+            <td>${f.projectName?esc(f.projectName):'-'}</td>
+            <td class="mono num-cell">${fmtMoney(f.fundLimit)}</td>
+            <td class="mono num-cell" style="${low?'color:var(--red); font-weight:700;':''}">${fmtMoney(f.balance)}</td>
+            <td><span class="badge ${f.isActive?'badge-approved':'badge-suspended'}">${f.isActive?tr('common.status_active'):tr('common.status_inactive')}</span></td>
+            <td>${canManage ? `<button class="btn btn-ghost btn-sm" data-act="open-edit-fund" data-id="${f.id}">${tr('common.action_edit')}</button>` : ''}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table></div>
+  </div>`;
+}
+function renderPettyCashFundForm(){
+  const f = S.pettyCashFundForm;
+  const isEdit = f.mode==='edit';
+  const projectOptions = (DB.projects||[]).map(p=>`<option value="${p.id}" ${String(f.values.projectId)===String(p.id)?'selected':''}>${esc(p.name)}</option>`).join('');
+  return `
+  <div class="card" style="padding:16px; margin-bottom:16px; background:var(--surface-muted,#f7f8fa); border:1px solid var(--border);">
+    <div style="font-weight:600; margin-bottom:10px;">${isEdit?tr('voucher.fund_edit_title'):tr('voucher.fund_add_title')}</div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:10px;">
+      <div class="field"><label>${tr('voucher.fund_field_name')} *</label><input id="f-fundName" value="${esc(f.values.name)}"></div>
+      <div class="field"><label>${tr('common.col_project')}</label>
+        <select id="f-fundProject"><option value="">— ${tr('common.col_project')} —</option>${projectOptions}</select>
+      </div>
+      <div class="field"><label>${tr('voucher.fund_field_limit')} *</label><input id="f-fundLimit" type="number" min="0.01" step="0.01" value="${esc(f.values.fundLimit)}"></div>
+      ${isEdit ? `<div class="field"><label>${tr('common.col_status')}</label>
+        <select id="f-fundIsActive">
+          <option value="1" ${f.values.isActive?'selected':''}>${tr('common.status_active')}</option>
+          <option value="0" ${!f.values.isActive?'selected':''}>${tr('common.status_inactive')}</option>
+        </select>
+      </div>` : ''}
+    </div>
+    <div style="display:flex; gap:8px; margin-top:14px;">
+      <button type="button" class="btn btn-primary btn-sm" data-act="submit-fund">${tr('common.save')}</button>
+      <button type="button" class="btn btn-ghost btn-sm" data-act="cancel-fund-form">${tr('approval_permissions.cancel')}</button>
+    </div>
+  </div>`;
+}
+
+function pageFinPaymentVouchers(voucherType){
+  const cfg = voucherTypeConfig(voucherType);
+  if(S.dataMode==='demo'){
+    return `<div class="page-head"><div><h2>${cfg.navTitle}</h2><div class="sub">${cfg.listSub}</div></div></div>
+    <div class="card" style="padding:20px 22px;"><div class="empty">${tr('approval_permissions.demo_not_available')}</div></div>`;
+  }
+  const allRows = S.paymentVouchersByType[voucherType] || [];
+  const filt = S.voucherListFilter;
+  let rows = allRows;
+  if(filt.status) rows = rows.filter(v=>v.status===filt.status);
+  if(filt.projectId) rows = rows.filter(v=>String(v.projectId)===String(filt.projectId));
+  if(filt.dateFrom) rows = rows.filter(v=>v.requestDate>=filt.dateFrom);
+  if(filt.dateTo) rows = rows.filter(v=>v.requestDate<=filt.dateTo);
+
+  const pageSize = 20;
+  const page = S.voucherListPage || 1;
+  const totalPages = Math.max(1, Math.ceil(rows.length/pageSize));
+  const pageRows = rows.slice((page-1)*pageSize, page*pageSize);
+
+  const projectOptions = (DB.projects||[]).map(p=>`<option value="${p.id}" ${String(filt.projectId)===String(p.id)?'selected':''}>${esc(p.name)}</option>`).join('');
+  const statusLabels = voucherStatusLabels();
+  const statusOptions = Object.keys(statusLabels).map(k=>`<option value="${k}" ${filt.status===k?'selected':''}>${statusLabels[k]}</option>`).join('');
+
+  return `
+  <div class="page-head">
+    <div><h2>${cfg.navTitle}</h2><div class="sub">${cfg.listSub}</div></div>
+    <button class="btn btn-primary btn-sm" data-act="open-add-voucher" data-voucher-type="${voucherType}">${cfg.addButton}</button>
+  </div>
+  ${S.voucherForm && S.voucherForm.voucherType===voucherType ? renderVoucherCreateForm(voucherType) : ''}
+  <div class="card" style="padding:16px 20px; margin-bottom:16px;">
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; align-items:end;">
+      <div class="field"><label>${tr('common.col_status')}</label>
+        <select data-act="filter-voucher-status" data-voucher-type="${voucherType}"><option value="">— ${tr('voucher.filter_all_status')} —</option>${statusOptions}</select>
+      </div>
+      <div class="field"><label>${tr('common.col_project')}</label>
+        <select data-act="filter-voucher-project" data-voucher-type="${voucherType}"><option value="">— ${tr('voucher.filter_all_project')} —</option>${projectOptions}</select>
+      </div>
+      <div class="field"><label>${tr('voucher.filter_date_from')}</label><input type="date" value="${esc(filt.dateFrom)}" onchange="S.voucherListFilter.dateFrom=this.value; S.voucherListPage=1; render();"></div>
+      <div class="field"><label>${tr('voucher.filter_date_to')}</label><input type="date" value="${esc(filt.dateTo)}" onchange="S.voucherListFilter.dateTo=this.value; S.voucherListPage=1; render();"></div>
+    </div>
+  </div>
+  <div class="card" style="padding:20px 22px;">
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>${tr('voucher.col_voucher_no')}</th><th>${tr('voucher.col_date')}</th><th>${cfg.payeeLabel}</th>
+        <th>${tr('common.col_project')}</th><th class="num-cell">${tr('voucher.col_amount')}</th><th>${tr('common.col_status')}</th>
+      </tr></thead>
+      <tbody>
+        ${pageRows.length===0 ? `<tr><td colspan="6"><div class="empty" style="padding:20px 0;">${tr('voucher.no_vouchers_yet')}</div></td></tr>` : pageRows.map(v=>`
+          <tr data-act="nav" data-page="fin_voucher_detail" data-id="${v.id}" data-id-field="selectedVoucherId" style="cursor:pointer;">
+            <td class="mono">${v.voucherNo?esc(v.voucherNo):`<span class="hint">${tr('voucher.no_number_yet')}</span>`}</td>
+            <td>${v.requestDate||'-'}</td>
+            <td>${esc(v.payeeName)||'-'}</td>
+            <td>${v.projectName?esc(v.projectName):'-'}</td>
+            <td class="mono num-cell" style="font-weight:600;">${fmtMoney(v.amount)}</td>
+            <td><span class="badge ${voucherStatusBadgeClass(v.status)}">${statusLabels[v.status]||v.status}</span></td>
+          </tr>`).join('')}
+      </tbody>
+    </table></div>
+    ${totalPages>1 ? `
+    <div class="small-btn-row" style="justify-content:center; margin-top:14px; gap:12px;">
+      <button class="btn btn-ghost btn-sm" data-act="voucher-page-prev" data-voucher-type="${voucherType}" ${page<=1?'disabled':''}>${ICN.chevronLeft}</button>
+      <span class="hint">${tr('voucher.page_of', {page, total: totalPages})}</span>
+      <button class="btn btn-ghost btn-sm" data-act="voucher-page-next" data-voucher-type="${voucherType}" ${page>=totalPages?'disabled':''}>${ICN.chevronRight}</button>
+    </div>` : ''}
+  </div>`;
+}
+
+function renderVoucherCreateForm(voucherType){
+  const cfg = voucherTypeConfig(voucherType);
+  const f = S.voucherForm;
+  const fundOptions = (S.pettyCashFunds||[]).filter(x=>x.isActive).map(x=>`<option value="${x.id}" ${String(f.values.pettyCashFundId)===String(x.id)?'selected':''}>${esc(x.name)}</option>`).join('');
+  const employeeOptions = (DB.employees||[]).filter(x=>x.status==='active').map(x=>`<option value="${x.id}" ${String(f.values.payeeEmployeeId)===String(x.id)?'selected':''}>${esc(x.fullName)}</option>`).join('');
+  const projectOptions = (DB.projects||[]).map(p=>`<option value="${p.id}" ${String(f.values.projectId)===String(p.id)?'selected':''}>${esc(p.name)}</option>`).join('');
+  const accountOptions = (S.chartOfAccounts||[]).filter(a=>a.category==='expense').map(a=>`<option value="${a.code}" ${f.values.expenseAccountCode===a.code?'selected':''}>${a.code} ${esc(a.name)}</option>`).join('');
+  return `
+  <div class="card" style="padding:16px; margin-bottom:16px; background:var(--surface-muted,#f7f8fa); border:1px solid var(--border);">
+    <div style="font-weight:600; margin-bottom:10px;">${cfg.formTitle}</div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:10px;">
+      ${cfg.needsFund ? `<div class="field"><label>${tr('voucher.field_fund')} *</label>
+        <select id="f-vFund"><option value="">— ${tr('voucher.field_fund')} —</option>${fundOptions}</select>
+      </div>` : ''}
+      <div class="field"><label>${cfg.payeeLabel} *</label>
+        <select id="f-vEmployee"><option value="">— ${cfg.payeeLabel} —</option>${employeeOptions}</select>
+      </div>
+      <div class="field"><label>${tr('common.col_project')}</label>
+        <select id="f-vProject"><option value="">— ${tr('voucher.field_no_project')} —</option>${projectOptions}</select>
+      </div>
+      <div class="field"><label>${tr('voucher.field_amount')} *</label><input id="f-vAmount" type="number" min="0.01" step="0.01" value="${esc(f.values.amount)}"></div>
+      ${cfg.needsExpenseAccount ? `<div class="field"><label>${tr('voucher.field_expense_account')}</label>
+        <select id="f-vExpenseAccount"><option value="">— ${tr('voucher.field_expense_account_optional')} —</option>${accountOptions}</select>
+      </div>` : ''}
+      <div class="field" style="grid-column:1/-1;"><label>${tr('voucher.field_purpose')} *</label><input id="f-vPurpose" value="${esc(f.values.purpose)}"></div>
+    </div>
+    <div style="display:flex; gap:8px; margin-top:14px;">
+      <button type="button" class="btn btn-primary btn-sm" data-act="submit-voucher-create" data-voucher-type="${voucherType}">${tr('common.save')}</button>
+      <button type="button" class="btn btn-ghost btn-sm" data-act="cancel-voucher-form">${tr('approval_permissions.cancel')}</button>
+    </div>
+  </div>`;
+}
+
+function pageFinPaymentVoucherDetail(){
+  const d = S.selectedVoucherDetail;
+  if(!d || d.error){
+    return `<div class="page-head"><div><h2>${tr('voucher.detail_title')}</h2></div></div>
+    <div class="card" style="padding:20px 22px;"><div class="empty">${d&&d.error?tr('voucher.detail_load_error'):tr('common.loading')}</div></div>`;
+  }
+  const v = d.voucher;
+  const cfg = voucherTypeConfig(v.voucherType);
+  const statusLabels = voucherStatusLabels();
+  const u = S.currentUser;
+  const isCreator = u && v.createdBy===u.id;
+  const isDraft = v.status==='draft';
+  const isSubmitted = v.status==='submitted';
+  const canApproveFlag = u && (u.role==='super_user' || (v.voucherType==='petty_cash'&&u.canApprovePettyCash) || (v.voucherType==='advance'&&u.canApproveAdvance) || (v.voucherType==='other'&&u.canApproveOther));
+  const backPageMap = {petty_cash:'fin_vouchers_petty_cash', advance:'fin_vouchers_advance', other:'fin_vouchers_other'};
+
+  const auditActionLabels = {create:tr('voucher.audit_create'), submit:tr('voucher.audit_submit'), approve:tr('voucher.audit_approve'), reject:tr('voucher.audit_reject'), cancel:tr('voucher.audit_cancel'), edit:tr('voucher.audit_edit')};
+
+  return `
+  <div class="page-head">
+    <div>
+      <button class="btn btn-ghost btn-sm" data-act="nav" data-page="${backPageMap[v.voucherType]||'fin_vouchers_petty_cash'}" style="margin-bottom:8px;">${ICN.chevronLeft} ${tr('common.back')}</button>
+      <h2>${v.voucherNo?esc(v.voucherNo):tr('voucher.no_number_yet')} <span class="badge ${voucherStatusBadgeClass(v.status)}">${statusLabels[v.status]||v.status}</span></h2>
+      <div class="sub">${cfg.navTitle}</div>
+    </div>
+  </div>
+  ${v.status==='rejected' && v.rejectedReason ? `<div class="callout callout-error" style="margin-bottom:16px;">${tr('voucher.rejected_reason_label')}: ${esc(v.rejectedReason)}</div>` : ''}
+  ${isDraft && isCreator && S.voucherForm && S.voucherForm.mode==='edit' && S.voucherForm.id===v.id ? renderVoucherCreateForm(v.voucherType) : `
+  <div class="card" style="padding:20px 22px; margin-bottom:16px;">
+    <div class="section-title" style="margin-top:0;">${tr('voucher.detail_info_section')}</div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:14px; font-size:13px;">
+      <div><div class="hint">${cfg.payeeLabel}</div><div>${esc(v.payeeName)||'-'}</div></div>
+      <div><div class="hint">${tr('common.col_project')}</div><div>${v.projectName?esc(v.projectName):'-'}</div></div>
+      ${v.pettyCashFundName ? `<div><div class="hint">${tr('voucher.field_fund')}</div><div>${esc(v.pettyCashFundName)}</div></div>` : ''}
+      <div><div class="hint">${tr('voucher.field_amount')}</div><div class="mono" style="font-weight:600;">${fmtMoney(v.amount)}</div></div>
+      <div><div class="hint">${tr('voucher.field_purpose')}</div><div>${esc(v.purpose)||'-'}</div></div>
+      ${v.expenseAccountCode ? `<div><div class="hint">${tr('voucher.field_expense_account')}</div><div class="mono">${esc(v.expenseAccountCode)}</div></div>` : ''}
+      <div><div class="hint">${tr('voucher.col_date')}</div><div>${v.requestDate||'-'}</div></div>
+    </div>
+  </div>`}
+  <div class="card" style="padding:20px 22px; margin-bottom:16px;">
+    <div class="small-btn-row" style="justify-content:flex-end;">
+      ${isDraft && isCreator ? `<button class="btn btn-ghost btn-sm" data-act="open-edit-voucher" data-id="${v.id}">${tr('common.action_edit')}</button>` : ''}
+      ${isDraft && isCreator ? `<button class="btn btn-navy btn-sm" data-act="submit-voucher" data-id="${v.id}">${tr('voucher.action_submit')}</button>` : ''}
+      ${isSubmitted && canApproveFlag && !isCreator ? `
+        <button class="btn btn-danger btn-sm" data-act="open-reject-voucher" data-id="${v.id}">${tr('voucher.action_reject')}</button>
+        <button class="btn btn-primary btn-sm" data-act="approve-voucher" data-id="${v.id}">${tr('voucher.action_approve')}</button>` : ''}
+      ${isSubmitted && !canApproveFlag && !isCreator ? `<div class="hint">${tr('voucher.awaiting_approval_hint')}</div>` : ''}
+      ${(isDraft||isSubmitted) && (isCreator||canApproveFlag) ? `<button class="btn btn-ghost btn-sm" data-act="cancel-voucher" data-id="${v.id}">${tr('voucher.action_cancel')}</button>` : ''}
+    </div>
+    ${S.voucherRejectForm && S.voucherRejectForm.id===v.id ? `
+    <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border);">
+      <div class="field"><label>${tr('voucher.reject_reason_label')} *</label><textarea id="f-vRejectReason" rows="2">${esc(S.voucherRejectForm.reason)}</textarea></div>
+      <div class="small-btn-row" style="margin-top:8px;">
+        <button class="btn btn-danger btn-sm" data-act="submit-reject-voucher" data-id="${v.id}">${tr('voucher.action_reject')}</button>
+        <button class="btn btn-ghost btn-sm" data-act="cancel-reject-voucher-form">${tr('approval_permissions.cancel')}</button>
+      </div>
+    </div>` : ''}
+  </div>
+  <div class="card" style="padding:20px 22px; margin-bottom:16px;">
+    <div class="section-title" style="margin-top:0;">${tr('voucher.audit_log_section')}</div>
+    ${(d.auditLog||[]).length===0 ? `<div class="empty" style="padding:10px 0;">${tr('voucher.no_audit_log')}</div>` : `
+    <div class="table-wrap"><table>
+      <thead><tr><th>${tr('voucher.audit_col_when')}</th><th>${tr('voucher.audit_col_action')}</th><th>${tr('voucher.audit_col_who')}</th><th>${tr('voucher.audit_col_reason')}</th></tr></thead>
+      <tbody>${d.auditLog.map(l=>`
+        <tr>
+          <td style="font-size:12px;">${new Date(l.createdAt).toLocaleString('th-TH')}</td>
+          <td>${auditActionLabels[l.action]||l.action}</td>
+          <td>${esc(l.performedByName)||'-'}</td>
+          <td style="font-size:12px;">${esc(l.reason)||'-'}</td>
+        </tr>`).join('')}</tbody>
+    </table></div>`}
+  </div>
+  <div class="card" style="padding:20px 22px;">
+    <div class="section-title" style="margin-top:0;">${tr('voucher.journal_section')}</div>
+    ${(d.journalEntries||[]).length===0 ? `<div class="empty" style="padding:10px 0;">${tr('voucher.no_journal_yet')}</div>` : d.journalEntries.map(e=>`
+      <div style="margin-bottom:14px;">
+        <div class="hint">${e.entryDate} — ${esc(e.description)}</div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>${tr('voucher.journal_col_account')}</th><th class="num-cell">${tr('voucher.journal_col_debit')}</th><th class="num-cell">${tr('voucher.journal_col_credit')}</th></tr></thead>
+          <tbody>${e.lines.map(l=>`
+            <tr><td class="mono">${l.accountCode} ${l.accountName?esc(l.accountName):''}</td>
+              <td class="mono num-cell">${Number(l.debitAmount)>0?fmtMoney(l.debitAmount):''}</td>
+              <td class="mono num-cell">${Number(l.creditAmount)>0?fmtMoney(l.creditAmount):''}</td></tr>`).join('')}
+          </tbody>
+        </table></div>
+      </div>`).join('')}
+  </div>`;
+}
+
 function pageFinStock(){
   const balances = stockBalance();
   const moves = DB.stockMoves.slice().reverse();
@@ -9423,6 +9826,11 @@ async function handleAction(act, el){
         canApproveApplications: !!data.customer.can_approve_applications,
         canApproveBudget: !!data.customer.can_approve_budget,
         canManagePo: !!data.customer.can_manage_po,
+        canApprovePettyCash: !!data.customer.can_approve_petty_cash,
+        canApproveAdvance: !!data.customer.can_approve_advance,
+        canApproveOther: !!data.customer.can_approve_other,
+        canManagePettyCashFund: !!data.customer.can_manage_petty_cash_fund,
+        canSettleCash: !!data.customer.can_settle_cash,
       };
       S.view='dashboard'; S.page='overview';
       render();
@@ -9433,7 +9841,7 @@ async function handleAction(act, el){
     }
     return;
   }
-  if(act==='logout'){ S.currentUser=null; S.view='login'; S.customerUsersLoaded=false; S.approvalRulesLoaded=false; S.subcontractorsLoaded=false; S.approvalConditionsLoaded=false; S.jobPositionsLoaded=false; S.employeesLoaded=false; S.jobApplicationsLoaded=false; S.foreignWorkerDocumentsLoaded=false; S.tendersLoaded=false; S.notifications=[]; S.notificationsUnread=0; S.notifDropdownOpen=false; render(); return; }
+  if(act==='logout'){ S.currentUser=null; S.view='login'; S.customerUsersLoaded=false; S.approvalRulesLoaded=false; S.subcontractorsLoaded=false; S.pettyCashFundsLoaded=false; S.paymentVouchersLoadedByType={petty_cash:false, advance:false, other:false}; S.approvalConditionsLoaded=false; S.jobPositionsLoaded=false; S.employeesLoaded=false; S.jobApplicationsLoaded=false; S.foreignWorkerDocumentsLoaded=false; S.tendersLoaded=false; S.notifications=[]; S.notificationsUnread=0; S.notifDropdownOpen=false; render(); return; }
   if(act==='toggle-notif-dropdown'){ S.notifDropdownOpen = !S.notifDropdownOpen; render(); return; }
   if(act==='set-locale'){ await I18N.setLocale(el.dataset.locale); return; }
   if(act==='open-notification'){
@@ -9490,7 +9898,7 @@ async function handleAction(act, el){
     // โครงการ (client_projects) backs the project pickers on cost/revenue/labor forms, budget-vs-
     // actual, and the project list/detail pages themselves — load it once, on first visit to any
     // of them, rather than duplicating the load call in every single one of those page branches.
-    const PROJECT_DEPENDENT_PAGES = ['fin_projects','fin_project_add','fin_project_detail','fin_costs','fin_revenue','fin_retention','fin_receive_payment','fin_labor','fin_labor_pay','create_pr','fin_po','fin_po_add','fin_quotations','fin_quotation_add','fin_documents','fin_document_add'];
+    const PROJECT_DEPENDENT_PAGES = ['fin_projects','fin_project_add','fin_project_detail','fin_costs','fin_revenue','fin_retention','fin_receive_payment','fin_labor','fin_labor_pay','create_pr','fin_po','fin_po_add','fin_quotations','fin_quotation_add','fin_documents','fin_document_add','fin_petty_cash_funds','fin_vouchers_petty_cash','fin_voucher_detail'];
     if(PROJECT_DEPENDENT_PAGES.includes(S.page) && S.dataMode!=='demo' && !S.projectsLoaded) await loadRealProjects();
     if(S.page==='fin_tender_overview' && S.dataMode!=='demo' && !S.tenderOverviewLoaded) await loadTenderOverview();
     if(S.page==='fin_project_schedule' && S.dataMode!=='demo') await loadProjectTasks(S.selectedProjectId);
@@ -9555,6 +9963,17 @@ async function handleAction(act, el){
     if(S.page==='approval_permissions' && S.dataMode!=='demo' && !S.customerUsersLoaded) await loadCustomerUsers();
     if(S.page==='approval_permissions' && S.dataMode!=='demo' && !S.approvalRulesLoaded) await loadApprovalRules();
     if(S.page==='subcontractors' && S.dataMode!=='demo' && !S.subcontractorsLoaded) await loadSubcontractors();
+    if(S.page==='fin_petty_cash_funds' && S.dataMode!=='demo' && !S.pettyCashFundsLoaded) await loadPettyCashFunds();
+    if(S.page==='fin_vouchers_petty_cash' && S.dataMode!=='demo'){
+      if(!S.pettyCashFundsLoaded) await loadPettyCashFunds(); // ฟอร์มสร้างใบเบิกต้องเลือกกองทุน
+      if(!S.employeesLoaded) await loadRealEmployees(); // ฟอร์มสร้างใบเบิกต้องเลือกพนักงานผู้รับเงิน
+      if(!S.chartOfAccountsLoaded) await loadChartOfAccounts();
+      if(!S.paymentVouchersLoadedByType.petty_cash) await loadPaymentVouchers('petty_cash');
+    }
+    if(S.page==='fin_voucher_detail' && S.dataMode!=='demo'){
+      if(!S.chartOfAccountsLoaded) await loadChartOfAccounts();
+      if(S.selectedVoucherId) await loadVoucherDetail(S.selectedVoucherId);
+    }
     if((S.page==='foreign_worker_docs' || S.page==='foreign_worker_expiry') && S.dataMode!=='demo'){
       if(!S.employeesLoaded) await loadRealEmployees();
       if(!S.foreignWorkerDocumentsLoaded) await loadRealForeignWorkerDocuments();
@@ -9566,7 +9985,7 @@ async function handleAction(act, el){
   }
   if(act==='switch-module'){
     S.module = el.dataset.module;
-    S.page = S.module==='finance' ? 'fin_overview' : S.module==='employees' ? 'emp_overview' : S.module==='bidding' ? 'fin_tender_overview' : 'overview';
+    S.page = S.module==='finance' ? (S.currentUser.role==='super_user' ? 'fin_overview' : 'fin_vouchers_petty_cash') : S.module==='employees' ? 'emp_overview' : S.module==='bidding' ? 'fin_tender_overview' : 'overview';
     render();
     // Every OTHER module's default landing page reads straight from already-populated DB.* arrays
     // (no S.xLoaded gate), so switch-module never needed to fetch anything before. fin_tender_overview
@@ -9575,6 +9994,16 @@ async function handleAction(act, el){
     // trigger loaders — see the big if(S.page===...) chain below) would leave the skeleton showing
     // forever until the user happened to click something else in the sidebar.
     if(S.module==='bidding' && S.dataMode!=='demo' && !S.tenderOverviewLoaded) await loadTenderOverview();
+    // Non-super_user roles land directly on fin_vouchers_petty_cash (see S.page assignment above) —
+    // same loaders the 'nav' handler runs when clicking that page from the sidebar, needed here too
+    // since switch-module bypasses that handler entirely.
+    if(S.page==='fin_vouchers_petty_cash' && S.dataMode!=='demo'){
+      if(!S.pettyCashFundsLoaded) await loadPettyCashFunds();
+      if(!S.employeesLoaded) await loadRealEmployees();
+      if(!S.chartOfAccountsLoaded) await loadChartOfAccounts();
+      if(!S.paymentVouchersLoadedByType.petty_cash) await loadPaymentVouchers('petty_cash');
+      render();
+    }
     return;
   }
   if(act==='report-tab'){ S.reportTab = el.dataset.key; render(); return; }
@@ -9871,6 +10300,125 @@ async function handleAction(act, el){
     render(); return;
   }
   if(act==='cancel-subcontractor-form'){ S.subcontractorForm = null; render(); return; }
+  // ---------- กองทุนเงินสดย่อย ----------
+  if(act==='open-add-fund'){
+    S.pettyCashFundForm = { mode:'new', values:{ name:'', projectId:'', fundLimit:'' } };
+    render(); return;
+  }
+  if(act==='open-edit-fund'){
+    const id = parseInt(el.dataset.id);
+    const f = (S.pettyCashFunds||[]).find(x=>x.id===id);
+    if(!f){ toast('ไม่พบกองทุนนี้','err'); return; }
+    S.pettyCashFundForm = { mode:'edit', id, values:{ name:f.name, projectId:f.projectId||'', fundLimit:f.fundLimit, isActive:f.isActive } };
+    render(); return;
+  }
+  if(act==='cancel-fund-form'){ S.pettyCashFundForm = null; render(); return; }
+  if(act==='submit-fund'){
+    const f = S.pettyCashFundForm;
+    const body = {
+      name: document.getElementById('f-fundName').value.trim(),
+      projectId: document.getElementById('f-fundProject').value || null,
+      fundLimit: document.getElementById('f-fundLimit').value,
+    };
+    if(!body.name || !body.fundLimit){ toast('กรุณากรอกชื่อกองทุนและวงเงิน','err'); return; }
+    if(f.mode==='edit') body.isActive = document.getElementById('f-fundIsActive').value==='1';
+    try{
+      if(f.mode==='edit') await apiCall('PUT', `/api/customer/petty-cash-funds/${f.id}`, body);
+      else await apiCall('POST', '/api/customer/petty-cash-funds', body);
+      await loadPettyCashFunds();
+      S.pettyCashFundForm = null;
+      toast(f.mode==='edit'?'บันทึกการแก้ไขเรียบร้อยแล้ว':'เพิ่มกองทุนเรียบร้อยแล้ว');
+    } catch(e){ toast(e.message,'err'); }
+    render(); return;
+  }
+  // ---------- ใบเบิกเงิน (petty_cash/advance/other ใช้ handler ร่วมกัน) ----------
+  if(act==='open-add-voucher'){
+    const voucherType = el.dataset.voucherType;
+    S.voucherForm = { voucherType, values:{ pettyCashFundId:'', payeeEmployeeId:'', projectId:'', amount:'', expenseAccountCode:'', purpose:'' } };
+    render(); return;
+  }
+  if(act==='cancel-voucher-form'){ S.voucherForm = null; render(); return; }
+  if(act==='open-edit-voucher'){
+    const id = parseInt(el.dataset.id);
+    const v = S.selectedVoucherDetail && S.selectedVoucherDetail.voucher;
+    if(!v || v.id!==id){ toast('ไม่พบใบเบิกเงินนี้','err'); return; }
+    S.voucherForm = { mode:'edit', id, voucherType:v.voucherType, values:{
+      pettyCashFundId: v.pettyCashFundId||'', payeeEmployeeId: v.payeeEmployeeId||'', projectId: v.projectId||'',
+      amount: v.amount, expenseAccountCode: v.expenseAccountCode||'', purpose: v.purpose||'',
+    }};
+    render(); return;
+  }
+  if(act==='submit-voucher-create'){
+    const voucherType = el.dataset.voucherType;
+    const cfg = voucherTypeConfig(voucherType);
+    const isEdit = S.voucherForm && S.voucherForm.mode==='edit';
+    const body = { voucherType, projectId: document.getElementById('f-vProject').value || null, amount: document.getElementById('f-vAmount').value, purpose: document.getElementById('f-vPurpose').value.trim() };
+    if(cfg.needsFund) body.pettyCashFundId = document.getElementById('f-vFund').value || null;
+    body.payeeEmployeeId = document.getElementById('f-vEmployee').value || null;
+    if(cfg.needsExpenseAccount) body.expenseAccountCode = document.getElementById('f-vExpenseAccount').value || null;
+    if(!body.amount || !body.purpose || !body.payeeEmployeeId || (cfg.needsFund && !body.pettyCashFundId)){
+      toast('กรุณากรอกข้อมูลที่จำเป็นให้ครบ','err'); return;
+    }
+    try{
+      if(isEdit){
+        await apiCall('PUT', `/api/customer/payment-vouchers/${S.voucherForm.id}`, body);
+        S.voucherForm = null;
+        await loadVoucherDetail(S.selectedVoucherId);
+        toast('บันทึกการแก้ไขเรียบร้อยแล้ว');
+      } else {
+        await apiCall('POST', '/api/customer/payment-vouchers', body, undefined, {'Idempotency-Key': crypto.randomUUID()});
+        await loadPaymentVouchers(voucherType);
+        S.voucherForm = null;
+        toast('สร้างใบเบิกเงินเรียบร้อยแล้ว (ยังเป็นร่าง — ต้องกดยื่นขออนุมัติต่อ)');
+      }
+    } catch(e){ toast(e.message,'err'); }
+    render(); return;
+  }
+  if(act==='filter-voucher-status'){ S.voucherListFilter.status = el.value; S.voucherListPage = 1; render(); return; }
+  if(act==='filter-voucher-project'){ S.voucherListFilter.projectId = el.value; S.voucherListPage = 1; render(); return; }
+  if(act==='voucher-page-prev'){ S.voucherListPage = Math.max(1, (S.voucherListPage||1)-1); render(); return; }
+  if(act==='voucher-page-next'){ S.voucherListPage = (S.voucherListPage||1)+1; render(); return; }
+  if(act==='submit-voucher'){
+    const id = parseInt(el.dataset.id);
+    try{
+      await apiCall('POST', `/api/customer/payment-vouchers/${id}/submit`, {}, undefined, {'Idempotency-Key': crypto.randomUUID()});
+      await loadVoucherDetail(id);
+      toast('ยื่นขออนุมัติเรียบร้อยแล้ว');
+    } catch(e){ toast(e.message,'err'); }
+    render(); return;
+  }
+  if(act==='approve-voucher'){
+    const id = parseInt(el.dataset.id);
+    try{
+      await apiCall('POST', `/api/customer/payment-vouchers/${id}/approve`, {}, undefined, {'Idempotency-Key': crypto.randomUUID()});
+      await loadVoucherDetail(id);
+      toast('อนุมัติเรียบร้อยแล้ว');
+    } catch(e){ toast(e.message,'err'); }
+    render(); return;
+  }
+  if(act==='open-reject-voucher'){ S.voucherRejectForm = { id: parseInt(el.dataset.id), reason:'' }; render(); return; }
+  if(act==='cancel-reject-voucher-form'){ S.voucherRejectForm = null; render(); return; }
+  if(act==='submit-reject-voucher'){
+    const id = parseInt(el.dataset.id);
+    const reason = document.getElementById('f-vRejectReason').value.trim();
+    if(!reason){ toast('กรุณาระบุเหตุผลที่ปฏิเสธ','err'); return; }
+    try{
+      await apiCall('POST', `/api/customer/payment-vouchers/${id}/reject`, {reason});
+      S.voucherRejectForm = null;
+      await loadVoucherDetail(id);
+      toast('ปฏิเสธใบเบิกเรียบร้อยแล้ว');
+    } catch(e){ toast(e.message,'err'); }
+    render(); return;
+  }
+  if(act==='cancel-voucher'){
+    const id = parseInt(el.dataset.id);
+    try{
+      await apiCall('POST', `/api/customer/payment-vouchers/${id}/cancel`, {});
+      await loadVoucherDetail(id);
+      toast('ยกเลิกใบเบิกเรียบร้อยแล้ว');
+    } catch(e){ toast(e.message,'err'); }
+    render(); return;
+  }
   if(act==='submit-subcontractor'){
     const f = S.subcontractorForm;
     const body = {
