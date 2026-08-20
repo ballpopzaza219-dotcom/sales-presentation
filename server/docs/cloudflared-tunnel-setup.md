@@ -14,6 +14,21 @@
 
 **ถ้าจะตั้ง tunnel ใหม่ในอนาคต ให้สร้างผ่าน dashboard เสมอ** (Networks → Tunnels → Create a tunnel) จะได้เป็นแบบ remotely-managed ตั้งแต่ต้น ไม่เจอปัญหาเดียวกันซ้ำ — **หลีกเลี่ยงการสร้างด้วย `cloudflared tunnel create` ผ่าน CLI** (ได้ tunnel แบบ locally-managed โดยปริยาย)
 
+## ⚠️ Error 1033 = Cloudflared service ไม่ได้รันอยู่ — เช็คจุดนี้ก่อนเสมอ
+
+`build-con.com` ขึ้น **Error 1033** (Argo Tunnel error) แทบทุกครั้งแปลว่า Windows Service `Cloudflared`
+บนเครื่องนี้ไม่ได้ทำงานอยู่ (ไม่ใช่ปัญหาที่ dashboard/DNS/route เลย) — เช็คก่อนอันดับแรกเสมอ:
+```powershell
+Get-Service Cloudflared
+```
+ถ้า `Status` ไม่ใช่ `Running` ให้ `Start-Service Cloudflared` แล้วรอสัก 10 วินาทีเหมือน `SiteReqServer`
+(ดู `nssm-service-setup.md`) แล้วลองเปิดเว็บใหม่
+
+**สาเหตุที่พบจริงแล้ว**: รัน foreground debug (ดูหัวข้อ Debug ด้านล่าง) แล้ว `Stop-Service Cloudflared`
+ก่อนเริ่ม แต่ลืม `Start-Service Cloudflared` กลับหลังดู log เสร็จ — service เลยค้างสถานะ Stopped ไปเรื่อยๆ
+จนกว่าจะมีคนสังเกต **ใช้ `server/scripts/health-check.ps1` เช็คทั้งระบบทีเดียวหลังทำอะไรกับ service
+ไหนก็ตาม จะจับเคสนี้ได้ทันที**
+
 ## ติดตั้ง cloudflared (เครื่องใหม่/reinstall)
 
 ```cmd
@@ -38,6 +53,32 @@ installer ในตัว)
 **ตรวจสถานะ**:
 ```powershell
 Get-Service Cloudflared
+```
+
+## ตั้ง restart-on-failure (เพิ่งตั้งแล้ว 2026-08-19)
+
+`cloudflared service install` **ไม่ได้ตั้ง recovery action ให้อัตโนมัติ** ต่างจาก `SiteReqServer` ที่ตั้ง
+`AppExit Default Restart` ไว้ผ่าน NSSM ตั้งแต่ต้น — cloudflared เป็น native Windows Service ธรรมดา
+(ไม่ผ่าน NSSM) ต้องตั้งผ่านกลไก Recovery ของ Windows Service Control Manager เอง โดยใช้ `sc.exe
+failure` (ต้อง Administrator เสมอ — และสังเกตว่า `sc.exe` บังคับต้องมีช่องว่างหลัง `reset=`/`actions=`
+เป๊ะๆ ไม่งั้นจะ error):
+```powershell
+sc.exe failure Cloudflared reset= 86400 actions= restart/5000/restart/5000/restart/5000
+```
+- `reset= 86400` — นับ failure ใหม่ (รีเซ็ตกลับไปนับจากครั้งที่ 1) ถ้าไม่มี failure ใหม่เกิดขึ้นภายใน
+  86400 วินาที (24 ชม.) หลัง failure ล่าสุด
+- `actions= restart/5000/restart/5000/restart/5000` — failure ครั้งที่ 1/2/3 ทั้งหมด restart หลังรอ
+  5000ms (5 วินาที) เหมือนกัน (ตรงกับ `AppRestartDelay 5000` ที่ตั้งไว้กับ `SiteReqServer`)
+
+**⚠️ ข้อจำกัดสำคัญ — recovery action นี้ป้องกันได้แค่ "crash" ไม่ใช่ "ถูกสั่งหยุดเอง"**: Windows SCM
+จงใจไม่ trigger recovery action เมื่อมีคนสั่ง `Stop-Service`/`net stop` ตรงๆ (ถือเป็นการหยุดที่ตั้งใจ ไม่ใช่
+ความผิดปกติ) — **เคสที่เกิดขึ้นจริง (ลืม start กลับหลัง debug foreground) จะไม่ถูกป้องกันโดย `sc failure`
+เลย** เพราะเป็นการสั่งหยุดตรงๆ ไม่ใช่ crash — วิธีป้องกันเคสนี้จริงๆ คือระเบียบปฏิบัติ (เตือนไว้ในหัวข้อ
+Error 1033 ด้านบนแล้ว) + รัน `health-check.ps1` ตรวจซ้ำหลังทำอะไรกับ service เสมอ
+
+ตรวจว่าตั้งสำเร็จ:
+```powershell
+sc.exe qfailure Cloudflared
 ```
 
 ## Rotate token (ถ้า token เดิมหลุด/ใช้ไม่ได้)

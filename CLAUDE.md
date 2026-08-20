@@ -27,6 +27,17 @@
 - **กำกวมว่าอยู่ในกลุ่มยกเว้น (4 กลุ่มข้างบน) หรือไม่**: ให้ถือว่าอยู่ในกลุ่มยกเว้นไว้ก่อนเสมอ แล้วถาม
   (fail-safe ไปทางถาม ไม่ใช่ทางเดาเอง)
 
+## กฎการจัดการ process/service บนเครื่อง Windows
+
+**ห้ามแนะนำหรือรัน `Stop-Process`/`taskkill` แบบกรองด้วยชื่อ (`-Name node`, `-Name java` ฯลฯ) เด็ดขาด
+ไม่ว่าจะดูปลอดภัยแค่ไหนก็ตาม** — ต้อง filter ด้วย **Path เต็มของ exe** หรือระบุ **PID เจาะจง** เท่านั้น
+(เช่น `Get-Process -Id <pid> | Stop-Process` หรือเช็ค `.Path` ก่อนกรองด้วยชื่อไฟล์ทุกครั้ง) เหตุผล:
+ชื่อ process อย่าง `node` ใช้ร่วมกันได้กับซอฟต์แวร์อื่นที่ไม่เกี่ยวข้องเลย (พบจริง: `node.exe` ของ Adobe
+Creative Cloud Experience รันอยู่คู่กับ `node.exe` ของโปรเจกต์นี้บนเครื่องเดียวกัน — แนะนำ `Stop-Process
+-Name node -Force` แบบเหมาชื่อไปครั้งหนึ่ง ทำให้ process ของ Adobe ถูกฆ่าไปด้วยโดยไม่ตั้งใจ ทั้งที่ไม่ได้
+เกี่ยวอะไรกับโปรเจกต์เลย) — ก่อนฆ่า process ใดๆ ต้อง `Select-Object Id, Path` (หรือ `Path`/
+`MainModule.FileName`) ยืนยันเสมอว่าเป็นตัวที่ตั้งใจจริง ไม่ใช่เดาจากชื่อเฉยๆ
+
 ## กฎการเขียน backend สำหรับโมดูล client ledger / PR (server/server.js, server/migrations/)
 
 กฎเหล่านี้สรุปจากรอบตรวจของผู้ใช้ตลอดโมดูล "ใบขอซื้อ" (ข้อ 4) และ "เงินสดย่อย" (ข้อ 1.1) — ใช้กับ
@@ -146,3 +157,14 @@
     join ดึงชื่อตอนออก 50 ทวิ) พังด้วย `permission denied for table client_wht_income_types` ทันทีที่มี
     ยอดหัก ณ ที่จ่าย > 0 — บั๊กนี้ตรวจไม่เจอจากการอ่านโค้ดเลย เจอจากการเขียน regression test จริงเท่านั้น
     (`server/tests/advance-clearance.regression.js`)
+21. **ไฟล์ `.ps1` ที่มีข้อความภาษาไทย ต้องบันทึกเป็น UTF-8 พร้อม BOM เสมอ (ไม่ใช่ UTF-8 เฉยๆ)** — Windows
+    PowerShell 5.1 (ค่าเริ่มต้นของเครื่องนี้) อ่านไฟล์ `.ps1` ที่ไม่มี BOM โดยตีความตาม system codepage
+    (locale ไทยมักเป็น WIN874) ไม่ใช่ UTF-8 ทำให้ตัวอักษรไทยใน string literal เพี้ยนแล้ว parser งงว่าเป็น
+    token แปลกๆ พังด้วย error `Unexpected token 'เน' in expression...`/`Missing closing '}'...`/`The
+    string is missing the terminator` (พบจริงจาก `server/scripts/health-check.ps1` — เนื้อหาถูกต้องทุก
+    ตัวอักษร แค่ encoding ของไฟล์ผิด) เครื่องมือเขียนไฟล์ทั่วไป (รวม Write tool ของ Claude Code) มักบันทึก
+    เป็น UTF-8 ไม่มี BOM โดยปริยาย — ถ้าเขียนไฟล์ `.ps1` ที่มีภาษาไทยแล้วรันไม่ผ่านด้วย error ลักษณะนี้ ให้
+    บันทึกซ้ำด้วย BOM ก่อนเสมอ (เช่น `[System.IO.File]::WriteAllText($path, $content, (New-Object
+    System.Text.UTF8Encoding($true)))` — `$true` คือใส่ BOM) แล้วค่อยรันใหม่ ไม่ต้องแก้เนื้อหาสคริปต์เลย
+    (ปัญหาเดียวกับ psql/WIN874 ในข้อ 18 เชิงหลักการ แต่เป็นคนละ layer — ข้อ 18 คือ psql ตีความ input
+    stream ผิด encoding, ข้อนี้คือ PowerShell parser เองตีความไฟล์ผิด encoding)

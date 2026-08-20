@@ -63,6 +63,12 @@ $nssm = "<path เต็มของ nssm.exe จากขั้นตอนต�
 nssm start SiteReqServer
 ```
 
+**⚠️ หลัง start/restart ต้องรอสัก 10 วินาทีก่อนเช็คว่าใช้งานได้จริง** — NSSM รายงาน `Status: Running`
+ทันทีที่ launch process สำเร็จ (แค่ process เริ่มรัน ไม่ได้แปลว่าแอปพร้อมใช้งานแล้ว) แต่ Node ยังต้องโหลด
+โค้ด + เชื่อมต่อ PostgreSQL ก่อนถึงจะ `app.listen()` จริง — ถ้าทดสอบ `Invoke-WebRequest
+http://localhost:3000` ทันทีหลัง start อาจเจอ connection refused ทั้งที่ service กำลังขึ้นอยู่จริง
+(พบจริงจากการทดสอบ — ไม่ใช่ error ต้อง panic รอสักครู่แล้วลองใหม่ก่อน)
+
 **ถ้า `nssm install` บอกว่า service มีอยู่แล้ว** (`already exists` — เช่นเคยรันค้างจากรอบก่อนที่ล้มเหลว
 กลางทาง) ข้ามบรรทัด `install` ไปเลย รันแค่บรรทัด `set`/`start` ที่เหลือทั้งหมดต่อได้ปกติ (พบจริงตอนติดตั้ง
 ครั้งนี้ — install ครั้งแรกน่าจะสร้าง service เปล่าไว้ได้ก่อนจะ error ตอน set เพราะสิทธิ์ไม่พอ)
