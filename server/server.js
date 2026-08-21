@@ -6253,10 +6253,13 @@ app.put('/api/customer/tenders/:id', requireCustomerAuth, async (req, res) => {
   if (own.rowCount === 0) return res.status(404).json({ error: 'ไม่พบ Tender' });
   const { name, projectOwner, submissionDeadline, estimatedValue, note } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'กรุณากรอกชื่อ Tender' });
-  const r = await pool.query(
-    `UPDATE client_tenders SET name=$1, project_owner=$2, submission_deadline=$3, estimated_value=$4, note=$5 WHERE id=$6 RETURNING *`,
+  await pool.query(
+    `UPDATE client_tenders SET name=$1, project_owner=$2, submission_deadline=$3, estimated_value=$4, note=$5 WHERE id=$6`,
     [name.trim(), (projectOwner || '').trim(), submissionDeadline || null, Number(estimatedValue) || 0, (note || '').trim(), id]
   );
+  // Re-query ผ่าน CLIENT_TENDER_SELECT แทนการใช้ RETURNING * ตรงๆ — RETURNING * คืนคอลัมน์ DATE ดิบ
+  // (submission_deadline) ที่ยังไม่ผ่าน to_char() เหมือนที่ SELECT นี้ทำ ดู CLAUDE.md ข้อ 22
+  const r = await pool.query(`${CLIENT_TENDER_SELECT} WHERE id=$1`, [id]);
   res.json({ tender: serializeTender(r.rows[0]) });
 });
 
@@ -6272,13 +6275,15 @@ app.post('/api/customer/tenders/:id/status', requireCustomerAuth, async (req, re
   const own = await pool.query('SELECT * FROM client_tenders WHERE id=$1 AND company_id=$2', [id, companyId]);
   if (own.rowCount === 0) return res.status(404).json({ error: 'ไม่พบ Tender' });
   const wasWon = own.rows[0].status === 'won';
-  const r = await pool.query('UPDATE client_tenders SET status=$1 WHERE id=$2 RETURNING *', [status, id]);
+  await pool.query('UPDATE client_tenders SET status=$1 WHERE id=$2', [status, id]);
   if (!wasWon && status === 'won') {
     const linked = await pool.query('SELECT id FROM client_projects WHERE company_id=$1 AND tender_id=$2', [companyId, id]);
     for (const p of linked.rows) {
       await copyBiddingBudgetToProjectBudget(companyId, id, p.id, req.customer.id);
     }
   }
+  // Re-query ผ่าน CLIENT_TENDER_SELECT แทนการใช้ RETURNING * ตรงๆ — เหตุผลเดียวกับ PUT ด้านบน
+  const r = await pool.query(`${CLIENT_TENDER_SELECT} WHERE id=$1`, [id]);
   res.json({ tender: serializeTender(r.rows[0]) });
 });
 

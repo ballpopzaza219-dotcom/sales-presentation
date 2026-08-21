@@ -168,3 +168,39 @@ Creative Cloud Experience รันอยู่คู่กับ `node.exe` ข
     System.Text.UTF8Encoding($true)))` — `$true` คือใส่ BOM) แล้วค่อยรันใหม่ ไม่ต้องแก้เนื้อหาสคริปต์เลย
     (ปัญหาเดียวกับ psql/WIN874 ในข้อ 18 เชิงหลักการ แต่เป็นคนละ layer — ข้อ 18 คือ psql ตีความ input
     stream ผิด encoding, ข้อนี้คือ PowerShell parser เองตีความไฟล์ผิด encoding)
+22. **คอลัมน์ type `DATE` ทุกคอลัมน์ ห้ามส่งค่าดิบออกจาก query ไปให้ client เด็ดขาด — ต้องผ่าน
+    `to_char(col,'YYYY-MM-DD') AS col` ใน SQL เสมอ (หรือแปลงด้วย local-timezone getters ในโค้ด JS
+    ก็ได้ถ้าไม่สะดวกแก้ SQL ตรงนั้น เช่น `dt.getFullYear()`/`getMonth()`/`getDate()` ไม่ใช่
+    `getUTCFullYear()` — ห้ามใช้ `new Date(d).toISOString()` หรือปล่อยให้ `JSON.stringify` แปลงเองเด็ดขาด
+    ทั้งสองแบบ)** เหตุผล: `pg` parse คอลัมน์ `DATE` เป็น JS `Date` โดยตีความเป็นเที่ยงคืน**ตาม timezone
+    เครื่อง server** (เครื่องนี้ Asia/Bangkok, UTC+7) ไม่ใช่ UTC แล้ว `res.json()` (ผ่าน
+    `JSON.stringify`) เรียก `.toISOString()` ซึ่งแปลงกลับเป็น UTC เสมอ ทำให้ค่าถอยหลังไป 7 ชั่วโมง —
+    พอชนกับเที่ยงคืนพอดี วันที่ที่ client เห็นจะผิดไปหนึ่งวันเสมอ (เช่น DB เก็บ `2026-08-21` แต่ client
+    เห็น `2026-08-20T17:00:00.000Z`) พบจริงครั้งแรกจาก `client_advance_clearances.clearance_date`/
+    `settlement_date` และ `client_wht_certificates.payment_date` (แก้แล้วในเซสชันที่พบ) — ตอนไล่ตรวจทั้ง
+    ระบบตามคำสั่งผู้ใช้หลังจากนั้น พบเพิ่มอีกจุดที่ `client_tenders`: endpoint `PUT
+    /api/customer/tenders/:id` และ `POST /api/customer/tenders/:id/status` ใช้
+    `UPDATE ... RETURNING *` แล้วส่งแถวดิบเข้า `serializeTender()` ตรงๆ — ทั้งที่ `CLIENT_TENDER_SELECT`
+    (ใช้ตอน GET/list) cast `submission_deadline`/`submission_open_date` ด้วย `to_char()` ถูกต้องอยู่แล้ว
+    ทำให้ endpoint สอง endpoint เดียวกันของเอกสารเดียวกันเห็นวันที่ไม่ตรงกันคนละแบบ (GET ถูก, PUT/
+    status ผิด) — **บทเรียนสำคัญ: `SELECT` ผ่าน constant กลาง (เช่น `CLIENT_XXX_SELECT`) ที่ cast
+    ถูกต้องแล้ว ไม่ได้แปลว่าทุก endpoint ของตารางนั้นปลอดภัย ต้องเช็ค `RETURNING *` ทุกจุดแยกต่างหากด้วย
+    เพราะ `UPDATE`/`INSERT ... RETURNING *` ไม่ได้ผ่าน SELECT constant นั้นเลย** (แก้แล้วโดยเปลี่ยนให้
+    re-query ผ่าน `CLIENT_TENDER_SELECT` แทน `RETURNING *` ตรงๆ เหมือน endpoint สร้างใหม่ที่ทำถูกอยู่แล้ว)
+23. **เมื่อ migration ใดก็ตาม `DROP CONSTRAINT`/`ADD CONSTRAINT` ขยาย CHECK ของคอลัมน์ `status` ให้
+    รับค่าใหม่เพิ่ม ต้องไล่ grep โค้ดทั้งไฟล์ทันทีหลังจากนั้นหา hardcoded status list เดิมที่อาจตกหล่น
+    ค่าใหม่** — ค้นด้วย pattern `status IN (`, `status NOT IN (`, `status = '`, `status <> '` ทุกจุดที่
+    อ้างถึงตารางนั้น (ทั้งฝั่ง `server.js` และ `pr-system.html`) แล้วพิจารณาทีละจุดว่าค่าที่เพิ่มมาใหม่
+    ควรถูกนับรวมอยู่ใน "active"/"outstanding"/"blocking" หรือไม่ ตามความหมายทางธุรกิจของสถานะนั้น พบจริง
+    จาก migration 0005 ที่แยกสถานะ `'settled'` ออกจาก `'approved'` ของ
+    `client_advance_clearances.status` (ก่อนหน้านั้นมีแค่ `'approved'` เป็นสถานะจบงานทั้งหมด) — endpoint
+    `GET /api/customer/outstanding-advances` เขียนไว้ตั้งแต่ก่อน 0005 เช็คแค่
+    `c.status = 'approved'` ว่า "เคลียร์แล้วหรือยัง" ไม่รู้จัก `'settled'` เลย ทำให้เงินทดรองจ่ายที่เคลียร์
+    จนจบ (สถานะ `settled`) แสดงเป็น "ยอดคงค้าง" กลับมาอีกครั้งอย่างผิดๆ ทั้งที่จริงไม่ค้างแล้ว (แก้เป็น
+    `c.status IN ('approved','settled')` โดยอ่านทั้งสองสถานะรวมกันว่า "มีการเคลียร์แล้ว") — ตรวจสอบเพิ่ม
+    ในรอบเดียวกัน: `status NOT IN ('rejected','cancelled','voided')` (endpoint สร้างใบเคลียร์ใหม่ กัน
+    สร้างซ้ำ) ไม่ต้องแก้ เพราะ `'settled'` ไม่อยู่ในรายการที่ถูก exclude อยู่แล้ว (สื่อความถูกต้องว่ายัง
+    "active/ครองสิทธิ์อยู่" โดยไม่ต้องเพิ่มชื่อ status ใหม่ทุกครั้งที่เพิ่มสถานะ — pattern แบบ NOT IN
+    ด้วยรายการสถานะ "จบแบบล้มเหลว" ปลอดภัยต่อการเพิ่มสถานะใหม่มากกว่า pattern แบบ IN ด้วยรายการสถานะ
+    "จบแบบสำเร็จ" เพราะสถานะสำเร็จใหม่ที่ถูกลืมจะหลุดไปอยู่ฝั่ง "ยังไม่จบ" แทน ซึ่งมักปลอดภัยกว่าไปฝั่ง
+    "จบแล้ว" แบบผิดๆ — พิจารณาเลือก pattern นี้เมื่อออกแบบเช็คสถานะใหม่ในอนาคตด้วย)
