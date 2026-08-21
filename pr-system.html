@@ -755,7 +755,15 @@ let S = {
   chartOfAccountsLoaded:false,
   paymentVouchersByType:{petty_cash:[], advance:[], other:[]},
   paymentVouchersLoadedByType:{petty_cash:false, advance:false, other:false},
-  voucherListFilter:{status:'', projectId:'', dateFrom:'', dateTo:''},
+  // Namespaced per voucherType — a filter/page picked on the petty-cash list must not leak onto the
+  // advance list when switching between them (found while wiring the advance list in on top of the
+  // shared pageFinPaymentVouchers(); a single shared filter object would have made e.g. "page 2" or
+  // a status filter set on one type silently apply to the other type's list too).
+  voucherListState:{
+    petty_cash:{filter:{status:'', projectId:'', dateFrom:'', dateTo:''}, page:1},
+    advance:{filter:{status:'', projectId:'', dateFrom:'', dateTo:''}, page:1},
+    other:{filter:{status:'', projectId:'', dateFrom:'', dateTo:''}, page:1},
+  },
   selectedVoucherId:null,
   selectedVoucherDetail:null, // { voucher, auditLog, journalEntries } — fetched fresh each time (ไม่ cache)
   voucherForm:null,
@@ -768,6 +776,8 @@ let S = {
   // Parallel map, same keys — true while that action's request is in flight. Checked to disable the
   // triggering button and to make a stray extra click a no-op instead of firing a second request.
   voucherActionPending:{},
+  outstandingAdvances:[], // จาก GET /api/customer/outstanding-advances — รีเฟรชทุกครั้งที่เข้าหน้ารายงาน (ไม่ cache แบบ xLoaded)
+  outstandingAdvancesFilter:{employeeId:''},
   geoProvinces:[],
   geoProvincesLoaded:false,
   jobPositionsLoaded:false,
@@ -916,6 +926,22 @@ async function loadVoucherDetail(id){
   } catch(e){
     toast(e.message || 'โหลดข้อมูลใบเบิกเงินไม่สำเร็จ', 'err');
     S.selectedVoucherDetail = {error:true};
+  }
+  render();
+}
+
+// ไม่มี xLoaded flag ตั้งใจ — รีเฟรชทุกครั้งที่เข้าหน้ารายงานนี้หรือเปลี่ยน filter (ยอดคงค้างเปลี่ยนได้
+// บ่อยจากการอนุมัติ/เคลียร์เงินทดรองจ่ายที่อื่นในระบบ ไม่ควร cache ค้าง)
+async function loadOutstandingAdvances(employeeId){
+  try {
+    const qs = employeeId ? `?employeeId=${encodeURIComponent(employeeId)}` : '';
+    const res = await fetch(`/api/customer/outstanding-advances${qs}`);
+    const data = await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(data.error || 'โหลดยอดเงินทดรองจ่ายคงค้างไม่สำเร็จ');
+    S.outstandingAdvances = data.outstandingAdvances;
+  } catch(e){
+    toast(e.message || 'โหลดยอดเงินทดรองจ่ายคงค้างไม่สำเร็จ', 'err');
+    S.outstandingAdvances = [];
   }
   render();
 }
@@ -2462,11 +2488,12 @@ function biddingNavFor(){
 }
 function financeNavFor(u){
   if(u && u.role!=='super_user'){
-    // Non-super_user roles only ever get the petty-cash section — see FINANCE_PETTY_CASH_ONLY_PAGES.
+    // Non-super_user roles only ever get the petty-cash/advance section — see FINANCE_NON_SUPER_PAGES.
     return [
       {key:'section', label:tr('nav.section_petty_cash')},
       {key:'fin_petty_cash_funds', label:tr('nav.fin_petty_cash_funds'), icon:'wallet'},
       {key:'fin_vouchers_petty_cash', label:tr('nav.fin_vouchers_petty_cash'), icon:'wallet'},
+      {key:'fin_vouchers_advance', label:tr('nav.fin_vouchers_advance'), icon:'wallet'},
     ];
   }
   return [
@@ -2483,6 +2510,7 @@ function financeNavFor(u){
     {key:'section', label:tr('nav.section_petty_cash')},
     {key:'fin_petty_cash_funds', label:tr('nav.fin_petty_cash_funds'), icon:'wallet'},
     {key:'fin_vouchers_petty_cash', label:tr('nav.fin_vouchers_petty_cash'), icon:'wallet'},
+    {key:'fin_vouchers_advance', label:tr('nav.fin_vouchers_advance'), icon:'wallet'},
     {key:'section', label:tr('nav.section_treasury')},
     {key:'fin_stock', label:tr('nav.fin_stock'), icon:'boxes'},
     {key:'fin_cashbank', label:tr('nav.fin_cashbank'), icon:'bank'},
@@ -2496,6 +2524,7 @@ function financeNavFor(u){
     {key:'fin_income_statement', label:tr('nav.fin_income_statement'), icon:'trendUp'},
     {key:'fin_balance_sheet', label:tr('nav.fin_balance_sheet'), icon:'briefcase'},
     {key:'fin_reports', label:tr('nav.fin_reports'), icon:'barChart'},
+    {key:'fin_advance_outstanding', label:tr('nav.fin_advance_outstanding'), icon:'barChart'},
     {key:'fin_yearend', label:tr('nav.fin_yearend'), icon:'lock'},
   ];
 }
@@ -2567,10 +2596,12 @@ function navFor(role){
 }
 
 // Finance pages any role can reach (not just super_user) — everything else in financeNavFor()
-// stays super_user-only. Anyone can submit their own petty-cash reimbursement claim; approval and
+// stays super_user-only. Anyone can submit their own petty-cash/advance claim; approval and
 // fund-limit management within these pages is still gated per-action by the existing flags
-// (canApprovePettyCash/canManagePettyCashFund etc.), same as before this list existed.
-const FINANCE_PETTY_CASH_ONLY_PAGES = ['fin_petty_cash_funds','fin_vouchers_petty_cash','fin_voucher_detail'];
+// (canApprovePettyCash/canApproveAdvance/canManagePettyCashFund etc.), same as before this list
+// existed. Reports (e.g. fin_advance_outstanding) stay super_user-only, same as the other report
+// pages in financeNavFor() — reading is not the same right as filing your own claim.
+const FINANCE_NON_SUPER_PAGES = ['fin_petty_cash_funds','fin_vouchers_petty_cash','fin_vouchers_advance','fin_voucher_detail'];
 
 function renderDashboard(){
   const u = S.currentUser;
@@ -2591,8 +2622,8 @@ function renderDashboard(){
   if(S.module==='employees' && !canEmployees) S.module='pr';
   if(S.module==='bidding' && !canBidding) S.module='pr';
   // A non-super_user landing (or left over from a previous session) on a finance page outside the
-  // petty-cash allow-list must not see it — redirect to the one page they're guaranteed to have.
-  if(S.module==='finance' && u.role!=='super_user' && !FINANCE_PETTY_CASH_ONLY_PAGES.includes(S.page)){
+  // allow-list must not see it — redirect to the one page they're guaranteed to have.
+  if(S.module==='finance' && u.role!=='super_user' && !FINANCE_NON_SUPER_PAGES.includes(S.page)){
     S.page = 'fin_vouchers_petty_cash';
   }
   const nav = S.module==='finance' ? financeNavFor(u) : S.module==='employees' ? employeesNavFor() : S.module==='bidding' ? biddingNavFor() : navFor(u.role);
@@ -2740,7 +2771,9 @@ function renderPage(){
     case 'fin_retention': return pageFinRetention();
     case 'fin_petty_cash_funds': return pageFinPettyCashFunds();
     case 'fin_vouchers_petty_cash': return pageFinPaymentVouchers('petty_cash');
+    case 'fin_vouchers_advance': return pageFinPaymentVouchers('advance');
     case 'fin_voucher_detail': return pageFinPaymentVoucherDetail();
+    case 'fin_advance_outstanding': return pageFinAdvanceOutstanding();
     case 'fin_stock': return pageFinStock();
     case 'fin_cashbank': return pageLedger('cashbank');
     case 'fin_po': return pageFinPurchaseOrders();
@@ -8184,17 +8217,20 @@ function voucherTypeConfig(voucherType){
     petty_cash: {
       navTitle: tr('nav.fin_vouchers_petty_cash'), listSub: tr('voucher.pc_list_sub'),
       payeeLabel: tr('voucher.pc_payee_label'), addButton: tr('voucher.pc_add_button'),
-      formTitle: tr('voucher.pc_form_title'), needsFund: true, needsExpenseAccount: true, needsExternalPayee: false,
+      formTitle: tr('voucher.pc_form_title'), purposeLabel: tr('voucher.field_purpose'),
+      needsFund: true, needsExpenseAccount: true, needsExternalPayee: false,
     },
     advance: {
       navTitle: tr('nav.fin_vouchers_advance'), listSub: tr('voucher.adv_list_sub'),
       payeeLabel: tr('voucher.adv_payee_label'), addButton: tr('voucher.adv_add_button'),
-      formTitle: tr('voucher.adv_form_title'), needsFund: false, needsExpenseAccount: false, needsExternalPayee: false,
+      formTitle: tr('voucher.adv_form_title'), purposeLabel: tr('voucher.adv_purpose_label'),
+      needsFund: false, needsExpenseAccount: false, needsExternalPayee: false,
     },
     other: {
       navTitle: tr('nav.fin_vouchers_other'), listSub: tr('voucher.oth_list_sub'),
       payeeLabel: tr('voucher.oth_payee_label'), addButton: tr('voucher.oth_add_button'),
-      formTitle: tr('voucher.oth_form_title'), needsFund: false, needsExpenseAccount: true, needsExternalPayee: true,
+      formTitle: tr('voucher.oth_form_title'), purposeLabel: tr('voucher.field_purpose'),
+      needsFund: false, needsExpenseAccount: true, needsExternalPayee: true,
     },
   };
   return configs[voucherType] || configs.petty_cash;
@@ -8272,7 +8308,8 @@ function pageFinPaymentVouchers(voucherType){
     <div class="card" style="padding:20px 22px;"><div class="empty">${tr('approval_permissions.demo_not_available')}</div></div>`;
   }
   const allRows = S.paymentVouchersByType[voucherType] || [];
-  const filt = S.voucherListFilter;
+  const listState = S.voucherListState[voucherType];
+  const filt = listState.filter;
   let rows = allRows;
   if(filt.status) rows = rows.filter(v=>v.status===filt.status);
   if(filt.projectId) rows = rows.filter(v=>String(v.projectId)===String(filt.projectId));
@@ -8280,7 +8317,7 @@ function pageFinPaymentVouchers(voucherType){
   if(filt.dateTo) rows = rows.filter(v=>v.requestDate<=filt.dateTo);
 
   const pageSize = 20;
-  const page = S.voucherListPage || 1;
+  const page = listState.page || 1;
   const totalPages = Math.max(1, Math.ceil(rows.length/pageSize));
   const pageRows = rows.slice((page-1)*pageSize, page*pageSize);
 
@@ -8302,8 +8339,8 @@ function pageFinPaymentVouchers(voucherType){
       <div class="field"><label>${tr('common.col_project')}</label>
         <select data-act="filter-voucher-project" data-voucher-type="${voucherType}"><option value="">— ${tr('voucher.filter_all_project')} —</option>${projectOptions}</select>
       </div>
-      <div class="field"><label>${tr('voucher.filter_date_from')}</label><input type="date" value="${esc(filt.dateFrom)}" onchange="S.voucherListFilter.dateFrom=this.value; S.voucherListPage=1; render();"></div>
-      <div class="field"><label>${tr('voucher.filter_date_to')}</label><input type="date" value="${esc(filt.dateTo)}" onchange="S.voucherListFilter.dateTo=this.value; S.voucherListPage=1; render();"></div>
+      <div class="field"><label>${tr('voucher.filter_date_from')}</label><input type="date" value="${esc(filt.dateFrom)}" onchange="S.voucherListState['${voucherType}'].filter.dateFrom=this.value; S.voucherListState['${voucherType}'].page=1; render();"></div>
+      <div class="field"><label>${tr('voucher.filter_date_to')}</label><input type="date" value="${esc(filt.dateTo)}" onchange="S.voucherListState['${voucherType}'].filter.dateTo=this.value; S.voucherListState['${voucherType}'].page=1; render();"></div>
     </div>
   </div>
   <div class="card" style="padding:20px 22px;">
@@ -8357,7 +8394,7 @@ function renderVoucherCreateForm(voucherType){
       ${cfg.needsExpenseAccount ? `<div class="field"><label>${tr('voucher.field_expense_account')}</label>
         <select id="f-vExpenseAccount"><option value="">— ${tr('voucher.field_expense_account_optional')} —</option>${accountOptions}</select>
       </div>` : ''}
-      <div class="field" style="grid-column:1/-1;"><label>${tr('voucher.field_purpose')} *</label><input id="f-vPurpose" value="${esc(f.values.purpose)}"></div>
+      <div class="field" style="grid-column:1/-1;"><label>${cfg.purposeLabel} *</label><input id="f-vPurpose" value="${esc(f.values.purpose)}"></div>
     </div>
     <div style="display:flex; gap:8px; margin-top:14px;">
       <button type="button" class="btn btn-primary btn-sm" data-act="submit-voucher-create" data-voucher-type="${voucherType}" ${f.saving?'disabled':''}>${tr('common.save')}</button>
@@ -8401,7 +8438,7 @@ function pageFinPaymentVoucherDetail(){
       <div><div class="hint">${tr('common.col_project')}</div><div>${v.projectName?esc(v.projectName):'-'}</div></div>
       ${v.pettyCashFundName ? `<div><div class="hint">${tr('voucher.field_fund')}</div><div>${esc(v.pettyCashFundName)}</div></div>` : ''}
       <div><div class="hint">${tr('voucher.field_amount')}</div><div class="mono" style="font-weight:600;">${fmtMoney(v.amount)}</div></div>
-      <div><div class="hint">${tr('voucher.field_purpose')}</div><div>${esc(v.purpose)||'-'}</div></div>
+      <div><div class="hint">${cfg.purposeLabel}</div><div>${esc(v.purpose)||'-'}</div></div>
       ${v.expenseAccountCode ? `<div><div class="hint">${tr('voucher.field_expense_account')}</div><div class="mono">${esc(v.expenseAccountCode)}</div></div>` : ''}
       <div><div class="hint">${tr('voucher.col_date')}</div><div>${v.requestDate||'-'}</div></div>
     </div>
@@ -8453,6 +8490,54 @@ function pageFinPaymentVoucherDetail(){
           </tbody>
         </table></div>
       </div>`).join('')}
+  </div>`;
+}
+
+// รายงานยอดเงินทดรองจ่ายคงค้างรายบุคคล (ข้อ 1.2) — ข้อมูลจริงจาก GET /api/customer/outstanding-advances
+// เสมอ (ไม่ผ่าน demo mode เหมือนแท็บอื่นใน pageFinReports() ที่ยังเป็น DB.* demo data อยู่ — ทำเป็นหน้า
+// แยกต่างหากแทนที่จะยัดเป็นอีกแท็บในหน้านั้น เพื่อไม่ให้ข้อมูลจริงกับข้อมูล demo ปนกันในหน้าเดียว)
+function pageFinAdvanceOutstanding(){
+  const rows = S.outstandingAdvances || [];
+  const employeeOptions = (DB.employees||[]).filter(x=>x.status==='active')
+    .map(e=>`<option value="${e.id}" ${String(S.outstandingAdvancesFilter.employeeId)===String(e.id)?'selected':''}>${esc(e.fullName)}</option>`).join('');
+  const grandTotal = rows.reduce((sum,r)=>sum+Number(r.outstandingAmount),0);
+  const daysAgo = (isoDate) => Math.max(0, Math.floor((Date.now() - new Date(isoDate).getTime()) / 86400000));
+  return `
+  <div class="page-head"><div><h2>${tr('nav.fin_advance_outstanding')}</h2><div class="sub">${tr('voucher.outstanding_subtitle')}</div></div></div>
+  <div class="card" style="padding:14px 16px; margin-bottom:16px;">
+    <div class="field" style="max-width:280px;"><label>${tr('common.col_employee')}</label>
+      <select data-act="filter-outstanding-advances-employee"><option value="">— ${tr('voucher.outstanding_all_employees')} —</option>${employeeOptions}</select>
+    </div>
+  </div>
+  <div class="card" style="padding:20px 22px;">
+    ${rows.length===0 ? `<div class="empty" style="padding:20px 0;">${tr('voucher.outstanding_empty')}</div>` : `
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>${tr('common.col_employee')}</th>
+        <th class="num-cell">${tr('voucher.outstanding_col_amount')}</th>
+        <th class="num-cell">${tr('voucher.outstanding_col_count')}</th>
+        <th>${tr('voucher.outstanding_col_vouchers')}</th>
+      </tr></thead>
+      <tbody>${rows.map(r=>`
+        <tr>
+          <td>${esc(r.payeeEmployeeName)||'-'}</td>
+          <td class="mono num-cell" style="font-weight:700;">${fmtMoney(r.outstandingAmount)}</td>
+          <td class="mono num-cell">${r.voucherCount}</td>
+          <td>
+            ${r.vouchers.map(v=>`
+              <div style="margin-bottom:4px;">
+                <span style="cursor:pointer; color:var(--navy,#1a2b4a); text-decoration:underline;" data-act="nav" data-page="fin_voucher_detail" data-id="${v.id}" data-id-field="selectedVoucherId">${esc(v.voucherNo)}</span>
+                <span class="hint">${fmtMoney(v.amount)} — ${tr('voucher.outstanding_days_ago', {days: daysAgo(v.approvedAt)})}</span>
+              </div>`).join('')}
+          </td>
+        </tr>`).join('')}
+      </tbody>
+      <tfoot><tr>
+        <td style="font-weight:700;">${tr('voucher.outstanding_grand_total')}</td>
+        <td class="mono num-cell" style="font-weight:700;">${fmtMoney(grandTotal)}</td>
+        <td colspan="2"></td>
+      </tr></tfoot>
+    </table></div>`}
   </div>`;
 }
 
@@ -9917,7 +10002,7 @@ async function handleAction(act, el){
     // โครงการ (client_projects) backs the project pickers on cost/revenue/labor forms, budget-vs-
     // actual, and the project list/detail pages themselves — load it once, on first visit to any
     // of them, rather than duplicating the load call in every single one of those page branches.
-    const PROJECT_DEPENDENT_PAGES = ['fin_projects','fin_project_add','fin_project_detail','fin_costs','fin_revenue','fin_retention','fin_receive_payment','fin_labor','fin_labor_pay','create_pr','fin_po','fin_po_add','fin_quotations','fin_quotation_add','fin_documents','fin_document_add','fin_petty_cash_funds','fin_vouchers_petty_cash','fin_voucher_detail'];
+    const PROJECT_DEPENDENT_PAGES = ['fin_projects','fin_project_add','fin_project_detail','fin_costs','fin_revenue','fin_retention','fin_receive_payment','fin_labor','fin_labor_pay','create_pr','fin_po','fin_po_add','fin_quotations','fin_quotation_add','fin_documents','fin_document_add','fin_petty_cash_funds','fin_vouchers_petty_cash','fin_vouchers_advance','fin_voucher_detail'];
     if(PROJECT_DEPENDENT_PAGES.includes(S.page) && S.dataMode!=='demo' && !S.projectsLoaded) await loadRealProjects();
     if(S.page==='fin_tender_overview' && S.dataMode!=='demo' && !S.tenderOverviewLoaded) await loadTenderOverview();
     if(S.page==='fin_project_schedule' && S.dataMode!=='demo') await loadProjectTasks(S.selectedProjectId);
@@ -9989,9 +10074,19 @@ async function handleAction(act, el){
       if(!S.chartOfAccountsLoaded) await loadChartOfAccounts();
       if(!S.paymentVouchersLoadedByType.petty_cash) await loadPaymentVouchers('petty_cash');
     }
+    if(S.page==='fin_vouchers_advance' && S.dataMode!=='demo'){
+      // เงินทดรองจ่ายไม่มีกองทุน จึงไม่ต้อง loadPettyCashFunds/loadChartOfAccounts (ไม่มีรหัสบัญชี
+      // ค่าใช้จ่ายให้เลือกในฟอร์มนี้ — ดู voucherTypeConfig().advance: needsFund/needsExpenseAccount=false)
+      if(!S.employeesLoaded) await loadRealEmployees(); // ฟอร์มสร้างใบเบิกต้องเลือกพนักงานผู้ขอเบิก
+      if(!S.paymentVouchersLoadedByType.advance) await loadPaymentVouchers('advance');
+    }
     if(S.page==='fin_voucher_detail' && S.dataMode!=='demo'){
       if(!S.chartOfAccountsLoaded) await loadChartOfAccounts();
       if(S.selectedVoucherId) await loadVoucherDetail(S.selectedVoucherId);
+    }
+    if(S.page==='fin_advance_outstanding' && S.dataMode!=='demo'){
+      if(!S.employeesLoaded) await loadRealEmployees(); // dropdown filter ตามพนักงาน
+      await loadOutstandingAdvances(S.outstandingAdvancesFilter.employeeId); // รีเฟรชทุกครั้งที่เข้าหน้า — ยอดเปลี่ยนได้บ่อยจากการอนุมัติ/เคลียร์
     }
     if((S.page==='foreign_worker_docs' || S.page==='foreign_worker_expiry') && S.dataMode!=='demo'){
       if(!S.employeesLoaded) await loadRealEmployees();
@@ -10403,10 +10498,15 @@ async function handleAction(act, el){
     }
     render(); return;
   }
-  if(act==='filter-voucher-status'){ S.voucherListFilter.status = el.value; S.voucherListPage = 1; render(); return; }
-  if(act==='filter-voucher-project'){ S.voucherListFilter.projectId = el.value; S.voucherListPage = 1; render(); return; }
-  if(act==='voucher-page-prev'){ S.voucherListPage = Math.max(1, (S.voucherListPage||1)-1); render(); return; }
-  if(act==='voucher-page-next'){ S.voucherListPage = (S.voucherListPage||1)+1; render(); return; }
+  if(act==='filter-outstanding-advances-employee'){
+    S.outstandingAdvancesFilter.employeeId = el.value;
+    await loadOutstandingAdvances(el.value);
+    return;
+  }
+  if(act==='filter-voucher-status'){ const st=S.voucherListState[el.dataset.voucherType]; st.filter.status = el.value; st.page = 1; render(); return; }
+  if(act==='filter-voucher-project'){ const st=S.voucherListState[el.dataset.voucherType]; st.filter.projectId = el.value; st.page = 1; render(); return; }
+  if(act==='voucher-page-prev'){ const st=S.voucherListState[el.dataset.voucherType]; st.page = Math.max(1, (st.page||1)-1); render(); return; }
+  if(act==='voucher-page-next'){ const st=S.voucherListState[el.dataset.voucherType]; st.page = (st.page||1)+1; render(); return; }
   if(act==='submit-voucher'){
     const id = parseInt(el.dataset.id);
     if(isVoucherActionPending('submit', id)) return; // ปุ่มควร disabled อยู่แล้ว — กันดับเบิลคลิกซ้ำ
