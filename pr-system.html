@@ -785,7 +785,21 @@ let S = {
   whtIncomeTypesLoaded:false,
   whtCertificates:[], // จาก GET /api/customer/wht-certificates — รีเฟรชทุกครั้งที่เข้าหน้า/เปลี่ยน filter (ไม่ cache)
   whtCertificatesFilter:{month:'', payeeName:''},
-  selectedWhtCertificateId:null,
+  // เก็บ object ใบ 50 ทวิเต็มๆ (ไม่ใช่แค่ id) ตอนกด "พิมพ์" เพราะหน้าพิมพ์อาจถูกเปิดจากหลายที่ (หน้ารายการ
+  // 50 ทวิ กลาง S.whtCertificates, หรือจากหน้า detail ใบเคลียร์เงินทดรองจ่าย d.whtCertificates ที่เป็น
+  // array คนละก้อนกัน) — ถ้าเก็บแค่ id แล้วให้หน้าพิมพ์ไป find เอง จะหาไม่เจอถ้าเปิดจากที่ที่ไม่ใช่หน้า
+  // รายการหลัก
+  printingWhtCertificate:null,
+  advanceClearances:[],
+  advanceClearancesLoaded:false,
+  advanceClearanceListFilter:{status:'', employeeId:'', dateFrom:'', dateTo:''},
+  advanceClearanceListPage:1,
+  selectedAdvanceClearanceId:null,
+  selectedAdvanceClearanceDetail:null, // { clearance, auditLog, journalEntries, whtCertificates } — fetched fresh each time (ไม่ cache)
+  advanceClearanceForm:null,
+  advanceClearanceRejectForm:null,
+  advanceClearanceApprovePreview:null, // {id} — เปิด preview journal ก่อนกดยืนยันอนุมัติจริง
+  advanceClearanceSettleForm:null, // {id, settlementDate, settlementChannel, settlementRef}
   geoProvinces:[],
   geoProvincesLoaded:false,
   jobPositionsLoaded:false,
@@ -995,6 +1009,53 @@ async function loadWhtCertificates(month, payeeName){
   } catch(e){
     toast(e.message || 'โหลดรายการหนังสือรับรองหัก ณ ที่จ่ายไม่สำเร็จ', 'err');
     S.whtCertificates = [];
+  }
+  render();
+}
+
+async function loadAdvanceClearances(filter){
+  try {
+    const params = new URLSearchParams();
+    if(filter && filter.status) params.set('status', filter.status);
+    const qs = params.toString();
+    const res = await fetch(`/api/customer/advance-clearances${qs?'?'+qs:''}`);
+    const data = await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(data.error || 'โหลดรายการใบเคลียร์เงินทดรองจ่ายไม่สำเร็จ');
+    S.advanceClearances = data.clearances;
+    S.advanceClearancesLoaded = true;
+  } catch(e){
+    toast(e.message || 'โหลดรายการใบเคลียร์เงินทดรองจ่ายไม่สำเร็จ', 'err');
+  }
+  render();
+}
+
+// โหลดรายละเอียดใบเคลียร์ + audit log + journal entry + 50 ทวิ ของใบนั้นพร้อมกัน — ไม่ cache เลย โหลดสด
+// ทุกครั้งที่เข้าหน้านี้ (เหตุผลเดียวกับ loadVoucherDetail — กันเห็นสถานะ/ยอดเก่าค้างหลัง action เปลี่ยน
+// สถานะจากที่อื่น)
+async function loadAdvanceClearanceDetail(id){
+  S.selectedAdvanceClearanceDetail = null;
+  render();
+  try {
+    const [clearanceRes, auditRes, journalRes, certRes] = await Promise.all([
+      fetch(`/api/customer/advance-clearances/${id}`),
+      fetch(`/api/customer/audit-log?docType=advance_clearance&docId=${id}`),
+      fetch(`/api/customer/journal-entries?sourceType=advance_clearance&sourceId=${id}`),
+      fetch(`/api/customer/advance-clearances/${id}/wht-certificates`),
+    ]);
+    const clearanceData = await clearanceRes.json().catch(()=>({}));
+    if(!clearanceRes.ok) throw new Error(clearanceData.error || 'โหลดข้อมูลใบเคลียร์เงินทดรองจ่ายไม่สำเร็จ');
+    const auditData = await auditRes.json().catch(()=>({}));
+    const journalData = await journalRes.json().catch(()=>({}));
+    const certData = await certRes.json().catch(()=>({}));
+    S.selectedAdvanceClearanceDetail = {
+      clearance: clearanceData.clearance,
+      auditLog: (auditRes.ok && auditData.logs) ? auditData.logs : [],
+      journalEntries: (journalRes.ok && journalData.entries) ? journalData.entries : [],
+      whtCertificates: (certRes.ok && certData.whtCertificates) ? certData.whtCertificates : [],
+    };
+  } catch(e){
+    toast(e.message || 'โหลดข้อมูลใบเคลียร์เงินทดรองจ่ายไม่สำเร็จ', 'err');
+    S.selectedAdvanceClearanceDetail = {error:true};
   }
   render();
 }
@@ -2547,6 +2608,7 @@ function financeNavFor(u){
       {key:'fin_petty_cash_funds', label:tr('nav.fin_petty_cash_funds'), icon:'wallet'},
       {key:'fin_vouchers_petty_cash', label:tr('nav.fin_vouchers_petty_cash'), icon:'wallet'},
       {key:'fin_vouchers_advance', label:tr('nav.fin_vouchers_advance'), icon:'wallet'},
+      {key:'fin_advance_clearances', label:tr('nav.fin_advance_clearances'), icon:'doc'},
       {key:'fin_external_payees', label:tr('nav.fin_external_payees'), icon:'userPlus'},
       {key:'fin_vouchers_other', label:tr('nav.fin_vouchers_other'), icon:'wallet'},
       {key:'fin_wht_certificates', label:tr('nav.fin_wht_certificates'), icon:'doc'},
@@ -2567,6 +2629,7 @@ function financeNavFor(u){
     {key:'fin_petty_cash_funds', label:tr('nav.fin_petty_cash_funds'), icon:'wallet'},
     {key:'fin_vouchers_petty_cash', label:tr('nav.fin_vouchers_petty_cash'), icon:'wallet'},
     {key:'fin_vouchers_advance', label:tr('nav.fin_vouchers_advance'), icon:'wallet'},
+    {key:'fin_advance_clearances', label:tr('nav.fin_advance_clearances'), icon:'doc'},
     {key:'fin_external_payees', label:tr('nav.fin_external_payees'), icon:'userPlus'},
     {key:'fin_vouchers_other', label:tr('nav.fin_vouchers_other'), icon:'wallet'},
     {key:'fin_wht_certificates', label:tr('nav.fin_wht_certificates'), icon:'doc'},
@@ -2660,7 +2723,7 @@ function navFor(role){
 // (canApprovePettyCash/canApproveAdvance/canManagePettyCashFund etc.), same as before this list
 // existed. Reports (e.g. fin_advance_outstanding) stay super_user-only, same as the other report
 // pages in financeNavFor() — reading is not the same right as filing your own claim.
-const FINANCE_NON_SUPER_PAGES = ['fin_petty_cash_funds','fin_vouchers_petty_cash','fin_vouchers_advance','fin_external_payees','fin_vouchers_other','fin_wht_certificates','fin_wht_certificate_print','fin_voucher_detail'];
+const FINANCE_NON_SUPER_PAGES = ['fin_petty_cash_funds','fin_vouchers_petty_cash','fin_vouchers_advance','fin_advance_clearances','fin_advance_clearance_detail','fin_external_payees','fin_vouchers_other','fin_wht_certificates','fin_wht_certificate_print','fin_voucher_detail'];
 
 function renderDashboard(){
   const u = S.currentUser;
@@ -2692,7 +2755,7 @@ function renderDashboard(){
   if(u.role!=='super_user' && u.canManagePo && S.module==='pr' && !nav.find(n=>n.key==='subcontractors')){
     nav.push({key:'subcontractors', label:tr('nav.subcontractors'), icon:'users'});
   }
-  const hiddenPages = ['emp_app_form','emp_app_print','fin_tender_add','fin_tender_detail','fin_budget_detail','fin_project_add','fin_project_detail','fin_project_schedule','fin_po_add','fin_quotation_add','fin_document_add','fin_voucher_detail','fin_wht_certificate_print']; // reachable only via buttons, not listed in any sidebar nav
+  const hiddenPages = ['emp_app_form','emp_app_print','fin_tender_add','fin_tender_detail','fin_budget_detail','fin_project_add','fin_project_detail','fin_project_schedule','fin_po_add','fin_quotation_add','fin_document_add','fin_voucher_detail','fin_wht_certificate_print','fin_advance_clearance_detail']; // reachable only via buttons, not listed in any sidebar nav
   if(!hiddenPages.includes(S.page) && !nav.find(n=>n.key===S.page && n.key!=='section')) S.page = S.module==='finance' ? 'fin_overview' : S.module==='employees' ? 'emp_overview' : S.module==='bidding' ? 'fin_tender_overview' : 'overview';
 
   return `
@@ -2831,6 +2894,8 @@ function renderPage(){
     case 'fin_petty_cash_funds': return pageFinPettyCashFunds();
     case 'fin_vouchers_petty_cash': return pageFinPaymentVouchers('petty_cash');
     case 'fin_vouchers_advance': return pageFinPaymentVouchers('advance');
+    case 'fin_advance_clearances': return pageFinAdvanceClearances();
+    case 'fin_advance_clearance_detail': return pageFinAdvanceClearanceDetail();
     case 'fin_external_payees': return pageFinExternalPayees();
     case 'fin_vouchers_other': return pageFinPaymentVouchers('other');
     case 'fin_wht_certificates': return pageFinWhtCertificates();
@@ -8511,6 +8576,12 @@ function pageFinPaymentVouchers(voucherType){
 // ต้องตรงกับที่ server.js คำนวณจริงตอน INSERT/UPDATE เป๊ะ (ROUND(amount*rate/100,2) แยกกันสำหรับ VAT/WHT
 // แล้วค่อย net = amount+vat-wht) ไม่งั้นตัวเลขพรีวิวจะไม่ตรงกับที่ระบบบันทึกจริงหลัง submit
 function round2(n){ return Math.round((n + Number.EPSILON) * 100) / 100; }
+// "วันนี้" ตาม timezone Asia/Bangkok เสมอ (ไม่ใช่ timezone เครื่อง client) — ใช้เป็น max ของ input
+// วันที่ชำระส่วนต่าง (soft UX hint ฝั่ง client เท่านั้น เทียบเดียวกับ getBangkokDateStr() ฝั่ง server ที่
+// เป็นตัวตัดสินจริง — ดู CLAUDE.md ข้อ 12)
+function bangkokTodayStr(){
+  return new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Bangkok', year:'numeric', month:'2-digit', day:'2-digit'}).format(new Date());
+}
 function updateOtherVoucherSummary(){
   const amountEl = document.getElementById('f-vAmount');
   const hasTaxInvoiceEl = document.getElementById('f-vHasTaxInvoice');
@@ -8831,7 +8902,7 @@ function pageFinWhtCertificates(){
 // ในระบบ (ปิดงบประจำปี ฯลฯ) — พึ่ง @media print ที่ตั้งไว้ระดับ global ซ่อน sidebar/nav ให้อยู่แล้ว ไม่ต้อง
 // ทำ print layout แยกเฉพาะหน้านี้
 function pageFinWhtCertificatePrint(){
-  const cert = (S.whtCertificates||[]).find(c=>c.id===S.selectedWhtCertificateId);
+  const cert = S.printingWhtCertificate;
   if(!cert){
     return `<div class="page-head"><div><h2>${tr('voucher.wht_cert_print_title')}</h2></div></div>
     <div class="card" style="padding:20px 22px;"><div class="empty">${tr('voucher.wht_cert_not_found')}</div></div>`;
@@ -8880,6 +8951,504 @@ function pageFinWhtCertificatePrint(){
         <div>${tr('voucher.wht_cert_print_issue_date')}: ${cert.issuedAt ? String(cert.issuedAt).slice(0,10) : '-'}</div>
       </div>
     </div>
+  </div>`;
+}
+
+// ================= เคลียร์เงินทดรองจ่าย (ข้อ 1.3) — รอบ A: list/create/edit/submit/reject/cancel =================
+// รอบ B (ยังไม่ทำในไฟล์นี้): ปุ่ม approve (พร้อม journal preview) + settle + แสดง 50 ทวิ ที่ออกจากใบนี้
+function clearanceStatusLabels(){
+  return {
+    draft: tr('voucher.status_draft'), submitted: tr('voucher.status_submitted'),
+    approved: tr('voucher.status_approved'), rejected: tr('voucher.status_rejected'),
+    cancelled: tr('voucher.status_cancelled'), settled: tr('clearance.status_settled'),
+  };
+}
+function clearanceStatusBadgeClass(status){
+  // 'approved' ตั้งใจใช้ badge-pending (ไม่ใช่ badge-approved) — ยังไม่จบงานจริงถ้ามีส่วนต่างค้าง รอ /settle
+  // อยู่ ต่างจาก voucher ทั่วไปที่ approved = จบแล้ว ('settled' คือสถานะจบจริงของใบเคลียร์)
+  return status==='settled' ? 'badge-approved' : status==='approved' ? 'badge-pending' : status==='submitted' ? 'badge-pending'
+    : status==='rejected' ? 'badge-rejected' : status==='draft' ? 'badge-draft' : 'badge-suspended';
+}
+// ข้อความสรุปส่วนต่างเป็นภาษาคนอ่านง่าย — สูตรตรงกับ difference_amount = total_expense_amount -
+// advance_amount ที่ DB คำนวณเป็น GENERATED COLUMN เป๊ะ (migration 0001:214): บวก = เบิกไปใช้มากกว่าที่
+// เบิก (บริษัทต้องจ่ายเพิ่ม), ลบ = ใช้ไม่หมด (พนักงานต้องคืนบริษัท), ศูนย์ = พอดี
+function clearanceDifferenceMessage(diff){
+  const d = Number(diff);
+  if(d > 0) return tr('clearance.summary_message_owe_employee', {amount: fmtMoney(d)});
+  if(d < 0) return tr('clearance.summary_message_owe_company', {amount: fmtMoney(Math.abs(d))});
+  return tr('clearance.summary_message_even');
+}
+
+function outstandingAdvanceVoucherOptions(){
+  return (S.outstandingAdvances||[]).flatMap(emp =>
+    (emp.vouchers||[]).map(v => ({ id:v.id, voucherNo:v.voucherNo, amount:v.amount, employeeName:emp.payeeEmployeeName }))
+  );
+}
+function accountLabel(code){
+  const acc = (S.chartOfAccounts||[]).find(a=>a.code===code);
+  return acc ? `${code} ${acc.name}` : code;
+}
+// คำนวณ preview journal ที่ /approve จะโพสต์จริง — สูตรต้องตรงกับ server.js ทุกจุด (ดูคอมเมนต์ที่ endpoint
+// POST .../advance-clearances/:id/approve): Dr ค่าใช้จ่ายทุกบรรทัด + Dr 1170 เฉพาะบรรทัดที่มีใบกำกับและมี
+// VAT / Cr 2120 รวม WHT ทั้งใบ (ถ้ามี) / Cr 1150 = LEAST(advance, expense) เสมอ / Cr 2110 เฉพาะกรณีเบิก
+// เกิน — เป็น "พรีวิว" ที่คำนวณฝั่ง client ล้วนๆ เพื่อโชว์ก่อนกดยืนยันเท่านั้น ไม่ใช่แหล่งความจริง (ตัว
+// journal จริงคำนวณและโพสต์ที่ server เสมอ ตอนกดยืนยันจะเรียก endpoint จริงอีกที ไม่ได้ส่ง preview นี้ไป)
+function computeClearanceApproveJournalPreview(c){
+  const lines = [];
+  (c.items||[]).forEach(it=>{
+    lines.push({ accountCode: it.expenseAccountCode, debit: Number(it.amount), credit: 0, desc: it.description });
+    if(it.hasTaxInvoice && Number(it.vatAmount)>0){
+      lines.push({ accountCode: '1170', debit: Number(it.vatAmount), credit: 0, desc: `${tr('voucher.oth_summary_vat')}: ${it.description}` });
+    }
+  });
+  const totalWht = round2((c.items||[]).reduce((s,it)=>s+Number(it.whtAmount||0),0));
+  if(totalWht>0) lines.push({ accountCode:'2120', debit:0, credit: totalWht, desc: tr('clearance.preview_wht_payable') });
+  const clearAmount = round2(Math.min(Number(c.advanceAmount), Number(c.totalExpenseAmount)));
+  lines.push({ accountCode:'1150', debit:0, credit: clearAmount, desc: tr('clearance.preview_clear_advance', {no: c.clearanceNo||''}) });
+  if(Number(c.differenceAmount)>0){
+    lines.push({ accountCode:'2110', debit:0, credit: round2(Number(c.differenceAmount)), desc: tr('clearance.preview_employee_payable') });
+  }
+  return lines;
+}
+
+// อัปเดตยอดสุทธิต่อบรรทัด + ยอดสรุปรวมสดขณะกรอก — อ่านจาก S.advanceClearanceForm (ไม่ใช่ DOM) เพราะทุก
+// ฟิลด์ของแต่ละ item sync เข้า state ทันทีที่พิมพ์/เลือกอยู่แล้ว (ต่างจากฟอร์ม voucher เดี่ยวที่ sync แค่ตอน
+// submit) — เขียนแค่ text content ของ span เป้าหมายเท่านั้น ไม่เรียก render() กันเสีย focus ระหว่างพิมพ์
+// สูตรต้องตรงกับที่ server.js คำนวณจริงตอน INSERT (insertAdvanceClearanceItems, ROUND(amount*rate/100,2))
+// เป๊ะทุกจุด ไม่งั้นตัวเลขพรีวิวจะไม่ตรงกับที่ระบบบันทึกจริงหลัง submit
+function updateClearanceItemSummary(){
+  const f = S.advanceClearanceForm;
+  if(!f) return;
+  let totalNet = 0;
+  f.items.forEach((it, idx) => {
+    const amount = parseFloat(it.amount) || 0;
+    const vatRate = it.hasTaxInvoice ? (parseFloat(it.vatRate) || 0) : 0;
+    const whtRate = parseFloat(it.whtRate) || 0;
+    const vatAmount = round2(amount * vatRate / 100);
+    const whtAmount = round2(amount * whtRate / 100);
+    const netAmount = round2(amount + vatAmount - whtAmount);
+    totalNet += netAmount;
+    const netEl = document.getElementById(`ci-net-${idx}`);
+    if(netEl) netEl.textContent = fmtMoney(netAmount);
+  });
+  totalNet = round2(totalNet);
+  const advanceAmount = parseFloat(f.advanceAmount) || 0;
+  const difference = round2(totalNet - advanceAmount);
+  const elAdvance = document.getElementById('cSummaryAdvance');
+  const elExpense = document.getElementById('cSummaryExpense');
+  const elDiff = document.getElementById('cSummaryDifference');
+  const elMsg = document.getElementById('cSummaryMessage');
+  if(elAdvance) elAdvance.textContent = fmtMoney(advanceAmount);
+  if(elExpense) elExpense.textContent = fmtMoney(totalNet);
+  if(elDiff){ elDiff.textContent = (difference>0?'+':'') + fmtMoney(difference); elDiff.style.color = difference===0 ? '' : (difference>0 ? 'var(--red)' : 'var(--green)'); }
+  if(elMsg) elMsg.textContent = clearanceDifferenceMessage(difference);
+}
+
+function onClearanceAdvanceVoucherChange(){
+  const val = document.getElementById('c-advanceVoucher').value;
+  const f = S.advanceClearanceForm;
+  f.advanceVoucherId = val;
+  const picked = outstandingAdvanceVoucherOptions().find(v=>String(v.id)===val);
+  if(picked){ f.advanceAmount = picked.amount; f.advanceVoucherNo = picked.voucherNo; f.advanceEmployeeName = picked.employeeName; }
+  else if(!val){ f.advanceAmount = 0; f.advanceVoucherNo = ''; f.advanceEmployeeName = ''; }
+  render(); // ต้องแสดง/อัปเดตแบนเนอร์ยอด advance ที่เบิกไว้ — โครงสร้าง DOM เปลี่ยน ไม่ใช่แค่พิมพ์ตัวอักษร
+}
+function toggleClearanceItemVat(idx){
+  const checked = document.getElementById(`ci-hastax-${idx}`).checked;
+  S.advanceClearanceForm.items[idx].hasTaxInvoice = checked;
+  const vatInput = document.getElementById(`ci-vatrate-${idx}`);
+  vatInput.disabled = !checked;
+  if(!checked){ vatInput.value = '0'; S.advanceClearanceForm.items[idx].vatRate = '0'; }
+  updateClearanceItemSummary();
+}
+function onClearanceItemWhtTypeChange(idx){
+  const code = document.getElementById(`ci-whttype-${idx}`).value;
+  S.advanceClearanceForm.items[idx].whtIncomeTypeCode = code;
+  const type = (S.whtIncomeTypes||[]).find(t=>t.code===code);
+  const warnEl = document.getElementById(`ci-whtwarn-${idx}`);
+  const rateInput = document.getElementById(`ci-whtrate-${idx}`);
+  if(type && type.defaultRate!==null){
+    rateInput.value = type.defaultRate;
+    S.advanceClearanceForm.items[idx].whtRate = String(type.defaultRate);
+    if(warnEl) warnEl.style.display = 'none';
+  } else if(type && type.defaultRate===null){
+    if(warnEl) warnEl.style.display = '';
+  } else if(warnEl) warnEl.style.display = 'none';
+  updateClearanceItemSummary();
+}
+function onClearanceItemPayeeChange(idx){
+  const val = document.getElementById(`ci-payeeselect-${idx}`).value;
+  const it = S.advanceClearanceForm.items[idx];
+  it.payeeExternalId = val;
+  const manualDiv = document.getElementById(`ci-manual-${idx}`);
+  if(manualDiv) manualDiv.style.display = val ? 'none' : 'grid';
+  if(val){
+    const payee = (S.externalPayees||[]).find(p=>String(p.id)===val);
+    if(payee){
+      if(!it.expenseAccountCode && payee.defaultExpenseAccountCode){
+        it.expenseAccountCode = payee.defaultExpenseAccountCode;
+        const accEl = document.getElementById(`ci-account-${idx}`); if(accEl) accEl.value = payee.defaultExpenseAccountCode;
+      }
+      if(Number(it.whtRate||0)===0 && Number(payee.defaultWhtRate)>0){
+        it.whtRate = String(payee.defaultWhtRate);
+        const whtEl = document.getElementById(`ci-whtrate-${idx}`); if(whtEl) whtEl.value = payee.defaultWhtRate;
+      }
+    }
+  }
+  updateClearanceItemSummary();
+}
+
+function renderClearanceItemRow(it, idx){
+  const accountOptions = (S.chartOfAccounts||[]).filter(a=>a.category==='expense').map(a=>`<option value="${a.code}" ${it.expenseAccountCode===a.code?'selected':''}>${a.code} ${esc(a.name)}</option>`).join('');
+  const payeeOptions = (S.externalPayees||[]).filter(p=>p.isActive).map(p=>`<option value="${p.id}" ${String(it.payeeExternalId)===String(p.id)?'selected':''}>${esc(p.name)}${p.taxId?'':` (${tr('voucher.oth_payee_no_taxid_hint')})`}</option>`).join('');
+  const whtTypeOptions = (S.whtIncomeTypes||[]).map(t=>`<option value="${t.code}" ${it.whtIncomeTypeCode===t.code?'selected':''}>${t.code} ${esc(t.nameTh)}</option>`).join('');
+  const isManualPayee = !it.payeeExternalId;
+  const selectedType = (S.whtIncomeTypes||[]).find(t=>t.code===it.whtIncomeTypeCode);
+  const showNullWarning = selectedType && selectedType.defaultRate===null;
+  return `
+  <div class="card" style="padding:14px 16px; margin-bottom:10px; background:var(--surface,#fff); border:1px solid var(--border);">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+      <div style="font-weight:600; font-size:13px;">${tr('clearance.item_row_label', {n: idx+1})}</div>
+      <button type="button" class="btn btn-ghost btn-sm" data-act="remove-clearance-item" data-idx="${idx}">${tr('clearance.remove_item_button')}</button>
+    </div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px;">
+      <div class="field" style="grid-column:1/-1;"><label>${tr('clearance.item_field_description')} *</label>
+        <input id="ci-desc-${idx}" value="${esc(it.description)}" oninput="S.advanceClearanceForm.items[${idx}].description=this.value;">
+      </div>
+      <div class="field"><label>${tr('clearance.item_field_expense_account')} *</label>
+        <select id="ci-account-${idx}" onchange="S.advanceClearanceForm.items[${idx}].expenseAccountCode=this.value;">
+          <option value="">— ${tr('clearance.item_field_expense_account')} —</option>${accountOptions}
+        </select>
+      </div>
+      <div class="field"><label>${tr('clearance.item_field_amount')} *</label>
+        <input id="ci-amount-${idx}" type="number" min="0.01" step="0.01" value="${esc(it.amount)}" oninput="S.advanceClearanceForm.items[${idx}].amount=this.value; updateClearanceItemSummary();">
+      </div>
+      <div class="field">
+        <label><input id="ci-hastax-${idx}" type="checkbox" ${it.hasTaxInvoice?'checked':''} onchange="toggleClearanceItemVat(${idx})"> ${tr('voucher.oth_has_tax_invoice')}</label>
+      </div>
+      <div class="field"><label>${tr('voucher.oth_vat_rate')}</label>
+        <input id="ci-vatrate-${idx}" type="number" min="0" max="100" step="0.01" value="${esc(it.vatRate)}" ${it.hasTaxInvoice?'':'disabled'} oninput="S.advanceClearanceForm.items[${idx}].vatRate=this.value; updateClearanceItemSummary();">
+      </div>
+      <div class="field"><label>${tr('voucher.oth_wht_income_type')}</label>
+        <select id="ci-whttype-${idx}" onchange="onClearanceItemWhtTypeChange(${idx})">
+          <option value="">— ${tr('voucher.oth_wht_no_wht')} —</option>${whtTypeOptions}
+        </select>
+      </div>
+      <div class="field"><label>${tr('voucher.oth_wht_rate')}</label>
+        <input id="ci-whtrate-${idx}" type="number" min="0" max="100" step="0.01" value="${esc(it.whtRate)}" oninput="S.advanceClearanceForm.items[${idx}].whtRate=this.value; updateClearanceItemSummary();">
+      </div>
+      <div class="field"><label>${tr('clearance.item_field_payee')}</label>
+        <select id="ci-payeeselect-${idx}" onchange="onClearanceItemPayeeChange(${idx})">
+          <option value="">— ${tr('clearance.item_payee_manual_option')} —</option>${payeeOptions}
+        </select>
+      </div>
+      <div id="ci-manual-${idx}" style="display:${isManualPayee?'grid':'none'}; grid-column:1/-1; grid-template-columns:1fr 1fr; gap:10px;">
+        <div class="field"><label>${tr('clearance.item_field_payee_name')}</label>
+          <input id="ci-payeename-${idx}" value="${esc(it.payeeName)}" oninput="S.advanceClearanceForm.items[${idx}].payeeName=this.value;">
+        </div>
+        <div class="field"><label>${tr('clearance.item_field_payee_tax_id')}</label>
+          <input id="ci-payeetaxid-${idx}" value="${esc(it.payeeTaxId)}" maxlength="13" oninput="S.advanceClearanceForm.items[${idx}].payeeTaxId=this.value;">
+        </div>
+      </div>
+    </div>
+    <div id="ci-whtwarn-${idx}" class="callout callout-error" style="margin-top:8px; display:${showNullWarning?'':'none'};">${tr('voucher.oth_wht_null_rate_warning')}</div>
+    <div style="margin-top:8px; text-align:right; font-size:13px;"><span class="hint">${tr('clearance.item_net_amount_label')}:</span> <span class="mono" id="ci-net-${idx}" style="font-weight:700;">0.00</span></div>
+  </div>`;
+}
+
+function renderAdvanceClearanceForm(){
+  const f = S.advanceClearanceForm;
+  const outstandingOptions = outstandingAdvanceVoucherOptions();
+  let voucherOptionsList = outstandingOptions;
+  // ถ้าใบ advance ของใบเคลียร์ที่กำลังแก้ไม่อยู่ใน outstanding อีกแล้ว (เช่น edge case ที่สถานะเปลี่ยนไป)
+  // ยังต้องโชว์เป็นตัวเลือกอยู่ได้ ไม่งั้น select จะว่างเปล่าทั้งที่จริงมีค่าอยู่
+  if(f.advanceVoucherId && !outstandingOptions.find(v=>String(v.id)===String(f.advanceVoucherId)) && f.advanceVoucherNo){
+    voucherOptionsList = [{ id:f.advanceVoucherId, voucherNo:f.advanceVoucherNo, amount:f.advanceAmount, employeeName:f.advanceEmployeeName||'' }, ...outstandingOptions];
+  }
+  const voucherOptionsHtml = voucherOptionsList.map(v=>`<option value="${v.id}" ${String(f.advanceVoucherId)===String(v.id)?'selected':''}>${esc(v.voucherNo)} — ${esc(v.employeeName)} — ${fmtMoney(v.amount)}</option>`).join('');
+  return `
+  <div class="card" style="padding:16px 20px; margin-bottom:16px; background:var(--surface-muted,#f7f8fa); border:1px solid var(--border);">
+    <div style="font-weight:600; margin-bottom:10px;">${f.mode==='edit'?tr('clearance.edit_title'):tr('clearance.create_title')}</div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px;">
+      <div class="field"><label>${tr('clearance.field_advance_voucher')} *</label>
+        <select id="c-advanceVoucher" onchange="onClearanceAdvanceVoucherChange()">
+          <option value="">— ${tr('clearance.field_advance_voucher_placeholder')} —</option>${voucherOptionsHtml}
+        </select>
+      </div>
+      <div class="field"><label>${tr('clearance.field_clearance_date')}</label>
+        <input id="c-clearanceDate" type="date" value="${esc(f.clearanceDate)}" onchange="S.advanceClearanceForm.clearanceDate=this.value;">
+      </div>
+      <div class="field" style="grid-column:1/-1;"><label>${tr('clearance.field_note')}</label>
+        <input id="c-note" value="${esc(f.note)}" oninput="S.advanceClearanceForm.note=this.value;">
+      </div>
+    </div>
+    ${f.advanceVoucherId ? `<div class="callout" style="margin-top:10px; background:var(--surface,#fff); border:1px solid var(--border-strong); font-weight:600;">
+      ${tr('clearance.advance_amount_banner', {amount: fmtMoney(f.advanceAmount||0)})}
+    </div>` : ''}
+
+    <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--border);">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <div style="font-weight:600;">${tr('clearance.items_section')}</div>
+        <button type="button" class="btn btn-ghost btn-sm" data-act="add-clearance-item">+ ${tr('clearance.add_item_button')}</button>
+      </div>
+      ${f.items.map((it,idx)=>renderClearanceItemRow(it,idx)).join('')}
+      ${f.items.length===0 ? `<div class="empty" style="padding:14px 0;">${tr('clearance.no_items_yet')}</div>` : ''}
+    </div>
+
+    <div class="card" style="margin-top:14px; padding:14px 18px; background:var(--surface,#fff); border:2px solid var(--border-strong);">
+      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; font-size:14px;">
+        <div><div class="hint">${tr('clearance.summary_advance')}</div><div class="mono" id="cSummaryAdvance" style="font-weight:600;">0.00</div></div>
+        <div><div class="hint">${tr('clearance.summary_expense')}</div><div class="mono" id="cSummaryExpense" style="font-weight:600;">0.00</div></div>
+        <div><div class="hint">${tr('clearance.summary_difference')}</div><div class="mono" id="cSummaryDifference" style="font-weight:700; font-size:16px;">0.00</div></div>
+      </div>
+      <div id="cSummaryMessage" style="margin-top:10px; font-weight:700; font-size:15px;"></div>
+    </div>
+
+    <div style="display:flex; gap:8px; margin-top:14px;">
+      <button type="button" class="btn btn-primary btn-sm" data-act="submit-clearance-form" ${f.saving?'disabled':''}>${tr('common.save')}</button>
+      <button type="button" class="btn btn-ghost btn-sm" data-act="cancel-clearance-form" ${f.saving?'disabled':''}>${tr('approval_permissions.cancel')}</button>
+    </div>
+  </div>`;
+}
+
+function pageFinAdvanceClearances(){
+  if(S.dataMode==='demo'){
+    return `<div class="page-head"><div><h2>${tr('nav.fin_advance_clearances')}</h2><div class="sub">${tr('clearance.list_sub')}</div></div></div>
+    <div class="card" style="padding:20px 22px;"><div class="empty">${tr('approval_permissions.demo_not_available')}</div></div>`;
+  }
+  const filt = S.advanceClearanceListFilter;
+  let rows = S.advanceClearances || [];
+  if(filt.status) rows = rows.filter(c=>c.status===filt.status);
+  if(filt.employeeId) rows = rows.filter(c=>String(c.payeeEmployeeId)===String(filt.employeeId));
+  if(filt.dateFrom) rows = rows.filter(c=>c.clearanceDate>=filt.dateFrom);
+  if(filt.dateTo) rows = rows.filter(c=>c.clearanceDate<=filt.dateTo);
+
+  const pageSize = 20;
+  const page = S.advanceClearanceListPage || 1;
+  const totalPages = Math.max(1, Math.ceil(rows.length/pageSize));
+  const pageRows = rows.slice((page-1)*pageSize, page*pageSize);
+
+  const statusLabels = clearanceStatusLabels();
+  const statusOptions = Object.keys(statusLabels).map(k=>`<option value="${k}" ${filt.status===k?'selected':''}>${statusLabels[k]}</option>`).join('');
+  const employeeOptions = (DB.employees||[]).filter(x=>x.status==='active').map(e=>`<option value="${e.id}" ${String(filt.employeeId)===String(e.id)?'selected':''}>${esc(e.fullName)}</option>`).join('');
+
+  return `
+  <div class="page-head">
+    <div><h2>${tr('nav.fin_advance_clearances')}</h2><div class="sub">${tr('clearance.list_sub')}</div></div>
+    <button class="btn btn-primary btn-sm" data-act="open-add-clearance">${tr('clearance.add_button')}</button>
+  </div>
+  ${S.advanceClearanceForm && S.advanceClearanceForm.mode==='new' ? renderAdvanceClearanceForm() : ''}
+  <div class="card" style="padding:16px 20px; margin-bottom:16px;">
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; align-items:end;">
+      <div class="field"><label>${tr('common.col_status')}</label>
+        <select data-act="filter-clearance-status"><option value="">— ${tr('voucher.filter_all_status')} —</option>${statusOptions}</select>
+      </div>
+      <div class="field"><label>${tr('common.col_employee')}</label>
+        <select data-act="filter-clearance-employee"><option value="">— ${tr('clearance.filter_all_employee')} —</option>${employeeOptions}</select>
+      </div>
+      <div class="field"><label>${tr('voucher.filter_date_from')}</label><input type="date" value="${esc(filt.dateFrom)}" onchange="S.advanceClearanceListFilter.dateFrom=this.value; S.advanceClearanceListPage=1; render();"></div>
+      <div class="field"><label>${tr('voucher.filter_date_to')}</label><input type="date" value="${esc(filt.dateTo)}" onchange="S.advanceClearanceListFilter.dateTo=this.value; S.advanceClearanceListPage=1; render();"></div>
+    </div>
+  </div>
+  <div class="card" style="padding:20px 22px;">
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>${tr('clearance.col_no')}</th><th>${tr('voucher.col_date')}</th><th>${tr('common.col_employee')}</th>
+        <th>${tr('clearance.col_advance_voucher')}</th><th class="num-cell">${tr('clearance.col_advance_amount')}</th>
+        <th class="num-cell">${tr('clearance.col_expense_amount')}</th><th class="num-cell">${tr('clearance.col_difference')}</th>
+        <th>${tr('common.col_status')}</th>
+      </tr></thead>
+      <tbody>
+        ${pageRows.length===0 ? `<tr><td colspan="8"><div class="empty" style="padding:20px 0;">${tr('clearance.no_clearances_yet')}</div></td></tr>` : pageRows.map(c=>`
+          <tr data-act="nav" data-page="fin_advance_clearance_detail" data-id="${c.id}" data-id-field="selectedAdvanceClearanceId" style="cursor:pointer;">
+            <td class="mono">${c.clearanceNo?esc(c.clearanceNo):`<span class="hint">${tr('voucher.no_number_yet')}</span>`}</td>
+            <td>${c.clearanceDate||'-'}</td>
+            <td>${esc(c.payeeEmployeeName)||'-'}</td>
+            <td class="mono">${esc(c.advanceVoucherNo)||'-'}</td>
+            <td class="mono num-cell">${fmtMoney(c.advanceAmount)}</td>
+            <td class="mono num-cell">${fmtMoney(c.totalExpenseAmount)}</td>
+            <td class="mono num-cell" style="${c.differenceAmount!==0?'font-weight:700;':''}">${c.differenceAmount>0?'+':''}${fmtMoney(c.differenceAmount)}</td>
+            <td><span class="badge ${clearanceStatusBadgeClass(c.status)}">${statusLabels[c.status]||c.status}</span></td>
+          </tr>`).join('')}
+      </tbody>
+    </table></div>
+    ${totalPages>1 ? `
+    <div class="small-btn-row" style="justify-content:center; margin-top:14px; gap:12px;">
+      <button class="btn btn-ghost btn-sm" data-act="clearance-page-prev" ${page<=1?'disabled':''}>${ICN.chevronLeft}</button>
+      <span class="hint">${tr('voucher.page_of', {page, total: totalPages})}</span>
+      <button class="btn btn-ghost btn-sm" data-act="clearance-page-next" ${page>=totalPages?'disabled':''}>${ICN.chevronRight}</button>
+    </div>` : ''}
+  </div>`;
+}
+
+function pageFinAdvanceClearanceDetail(){
+  const d = S.selectedAdvanceClearanceDetail;
+  if(!d || d.error){
+    return `<div class="page-head"><div><h2>${tr('clearance.detail_title')}</h2></div></div>
+    <div class="card" style="padding:20px 22px;"><div class="empty">${d&&d.error?tr('voucher.detail_load_error'):tr('common.loading')}</div></div>`;
+  }
+  const c = d.clearance;
+  const statusLabels = clearanceStatusLabels();
+  const u = S.currentUser;
+  const isCreator = u && c.createdBy===u.id;
+  const isDraft = c.status==='draft';
+  const isSubmitted = c.status==='submitted';
+  const isApproved = c.status==='approved'; // ถึงสถานะนี้ได้เฉพาะตอน difference_amount<>0 เท่านั้น (exact match ข้ามไป settled อัตโนมัติตั้งแต่ /approve — ดู server.js)
+  const canApproveFlag = u && (u.role==='super_user' || u.canApproveAdvance); // docType='advance' ใช้ร่วมกับ 1.2 ตามที่ตกลง
+  // can_settle_cash แยกจาก can_approve_advance โดยตั้งใจ (CLAUDE.md ข้อ 14) — คนยืนยันยอดค่าใช้จ่ายถูกต้อง
+  // ไม่ควรเป็นคนเดียวกับคนปล่อย/รับเงินจริงเสมอไป ตรงกับ gate จริงที่ server.js เช็คก่อน /settle
+  const canSettleFlag = u && (u.role==='super_user' || u.canSettleCash);
+  const isEditingThis = isDraft && isCreator && S.advanceClearanceForm && S.advanceClearanceForm.mode==='edit' && S.advanceClearanceForm.id===c.id;
+  const approvePreviewLines = (S.advanceClearanceApprovePreview && S.advanceClearanceApprovePreview.id===c.id) ? computeClearanceApproveJournalPreview(c) : [];
+  const approvePreviewTotalDebit = round2(approvePreviewLines.reduce((s,l)=>s+l.debit,0));
+  const approvePreviewTotalCredit = round2(approvePreviewLines.reduce((s,l)=>s+l.credit,0));
+  const nextApproveStatus = Number(c.differenceAmount)===0 ? 'settled' : 'approved';
+
+  const auditActionLabels = {create:tr('voucher.audit_create'), submit:tr('voucher.audit_submit'), approve:tr('voucher.audit_approve'), reject:tr('voucher.audit_reject'), cancel:tr('voucher.audit_cancel'), edit:tr('voucher.audit_edit'), settle:tr('clearance.audit_settle')};
+
+  return `
+  <div class="page-head">
+    <div>
+      <button class="btn btn-ghost btn-sm" data-act="nav" data-page="fin_advance_clearances" style="margin-bottom:8px;">${ICN.chevronLeft} ${tr('common.back')}</button>
+      <h2>${c.clearanceNo?esc(c.clearanceNo):tr('voucher.no_number_yet')} <span class="badge ${clearanceStatusBadgeClass(c.status)}">${statusLabels[c.status]||c.status}</span></h2>
+      <div class="sub">${tr('nav.fin_advance_clearances')}</div>
+    </div>
+  </div>
+  ${c.status==='rejected' && c.rejectedReason ? `<div class="callout callout-error" style="margin-bottom:16px;">${tr('voucher.rejected_reason_label')}: ${esc(c.rejectedReason)}</div>` : ''}
+  ${isEditingThis ? renderAdvanceClearanceForm() : `
+  <div class="card" style="padding:20px 22px; margin-bottom:16px;">
+    <div class="section-title" style="margin-top:0;">${tr('voucher.detail_info_section')}</div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:14px; font-size:13px;">
+      <div><div class="hint">${tr('common.col_employee')}</div><div>${esc(c.payeeEmployeeName)||'-'}</div></div>
+      <div><div class="hint">${tr('clearance.col_advance_voucher')}</div><div class="mono">${esc(c.advanceVoucherNo)||'-'}</div></div>
+      <div><div class="hint">${tr('voucher.col_date')}</div><div>${c.clearanceDate||'-'}</div></div>
+      <div><div class="hint">${tr('clearance.summary_advance')}</div><div class="mono">${fmtMoney(c.advanceAmount)}</div></div>
+      <div><div class="hint">${tr('clearance.summary_expense')}</div><div class="mono">${fmtMoney(c.totalExpenseAmount)}</div></div>
+      <div><div class="hint" style="font-weight:600;">${tr('clearance.summary_difference')}</div><div class="mono" style="font-weight:700;">${c.differenceAmount>0?'+':''}${fmtMoney(c.differenceAmount)}</div></div>
+    </div>
+    <div style="margin-top:10px; font-weight:700;">${clearanceDifferenceMessage(c.differenceAmount)}</div>
+    ${c.note ? `<div style="margin-top:10px;"><div class="hint">${tr('common.col_note')}</div><div>${esc(c.note)}</div></div>` : ''}
+  </div>
+  <div class="card" style="padding:20px 22px; margin-bottom:16px;">
+    <div class="section-title" style="margin-top:0;">${tr('clearance.items_section')}</div>
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>${tr('clearance.item_field_description')}</th><th>${tr('clearance.item_field_expense_account')}</th>
+        <th class="num-cell">${tr('clearance.item_field_amount')}</th><th class="num-cell">VAT</th>
+        <th class="num-cell">WHT</th><th class="num-cell">${tr('clearance.item_net_amount_label')}</th><th>${tr('clearance.item_field_payee')}</th>
+      </tr></thead>
+      <tbody>${(c.items||[]).map(it=>`
+        <tr>
+          <td>${esc(it.description)}</td>
+          <td class="mono">${esc(it.expenseAccountCode)}</td>
+          <td class="mono num-cell">${fmtMoney(it.amount)}</td>
+          <td class="mono num-cell">${it.vatAmount>0?fmtMoney(it.vatAmount):'-'}</td>
+          <td class="mono num-cell">${it.whtAmount>0?fmtMoney(it.whtAmount):'-'}</td>
+          <td class="mono num-cell" style="font-weight:600;">${fmtMoney(it.netAmount)}</td>
+          <td>${esc(it.payeeName)}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>
+  </div>`}
+  <div class="card" style="padding:20px 22px; margin-bottom:16px;">
+    <div class="small-btn-row" style="justify-content:flex-end;">
+      ${isDraft && isCreator ? `<button class="btn btn-ghost btn-sm" data-act="open-edit-clearance" data-id="${c.id}">${tr('common.action_edit')}</button>` : ''}
+      ${isDraft && isCreator ? `<button class="btn btn-navy btn-sm" data-act="submit-clearance" data-id="${c.id}" ${isVoucherActionPending('clearance-submit',c.id)?'disabled':''}>${tr('voucher.action_submit')}</button>` : ''}
+      ${isSubmitted && canApproveFlag && !isCreator ? `
+        <button class="btn btn-danger btn-sm" data-act="open-reject-clearance" data-id="${c.id}">${tr('voucher.action_reject')}</button>
+        <button class="btn btn-primary btn-sm" data-act="open-approve-clearance-preview" data-id="${c.id}" ${isVoucherActionPending('clearance-approve',c.id)?'disabled':''}>${tr('voucher.action_approve')}</button>` : ''}
+      ${isSubmitted && !canApproveFlag && !isCreator ? `<div class="hint">${tr('voucher.awaiting_approval_hint')}</div>` : ''}
+      ${isApproved && canSettleFlag ? `<button class="btn btn-primary btn-sm" data-act="open-settle-clearance-form" data-id="${c.id}">${tr('clearance.action_settle')}</button>` : ''}
+      ${isApproved && !canSettleFlag ? `<div class="hint">${tr('clearance.settle_awaiting_hint')}</div>` : ''}
+      ${(isDraft||isSubmitted) && (isCreator||canApproveFlag) ? `<button class="btn btn-ghost btn-sm" data-act="cancel-clearance" data-id="${c.id}" ${isVoucherActionPending('clearance-cancel',c.id)?'disabled':''}>${tr('voucher.action_cancel')}</button>` : ''}
+    </div>
+    ${S.advanceClearanceRejectForm && S.advanceClearanceRejectForm.id===c.id ? `
+    <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border);">
+      <div class="field"><label>${tr('voucher.reject_reason_label')} *</label><textarea id="c-vRejectReason" rows="2">${esc(S.advanceClearanceRejectForm.reason)}</textarea></div>
+      <div class="small-btn-row" style="margin-top:8px;">
+        <button class="btn btn-danger btn-sm" data-act="submit-reject-clearance" data-id="${c.id}" ${isVoucherActionPending('clearance-reject',c.id)?'disabled':''}>${tr('voucher.action_reject')}</button>
+        <button class="btn btn-ghost btn-sm" data-act="cancel-reject-clearance-form" ${isVoucherActionPending('clearance-reject',c.id)?'disabled':''}>${tr('approval_permissions.cancel')}</button>
+      </div>
+    </div>` : ''}
+    ${S.advanceClearanceApprovePreview && S.advanceClearanceApprovePreview.id===c.id ? `
+    <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border);">
+      <div style="font-weight:600; margin-bottom:8px;">${tr('clearance.approve_preview_title')}</div>
+      <div class="hint" style="margin-bottom:10px;">${tr(nextApproveStatus==='settled' ? 'clearance.approve_preview_will_settle' : 'clearance.approve_preview_will_stay_approved')}</div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>${tr('voucher.journal_col_account')}</th><th class="num-cell">${tr('voucher.journal_col_debit')}</th><th class="num-cell">${tr('voucher.journal_col_credit')}</th></tr></thead>
+        <tbody>${approvePreviewLines.map(l=>`
+          <tr><td class="mono">${accountLabel(l.accountCode)}<div class="hint">${esc(l.desc)}</div></td>
+            <td class="mono num-cell">${l.debit>0?fmtMoney(l.debit):''}</td>
+            <td class="mono num-cell">${l.credit>0?fmtMoney(l.credit):''}</td></tr>`).join('')}
+        </tbody>
+        <tfoot><tr><td style="font-weight:700; text-align:right;">${tr('voucher.outstanding_grand_total')}</td>
+          <td class="mono num-cell" style="font-weight:700;">${fmtMoney(approvePreviewTotalDebit)}</td>
+          <td class="mono num-cell" style="font-weight:700;">${fmtMoney(approvePreviewTotalCredit)}</td></tr></tfoot>
+      </table></div>
+      <div class="small-btn-row" style="margin-top:10px;">
+        <button class="btn btn-primary btn-sm" data-act="confirm-approve-clearance" data-id="${c.id}" ${isVoucherActionPending('clearance-approve',c.id)?'disabled':''}>${tr('clearance.approve_preview_confirm')}</button>
+        <button class="btn btn-ghost btn-sm" data-act="cancel-approve-clearance-preview" ${isVoucherActionPending('clearance-approve',c.id)?'disabled':''}>${tr('approval_permissions.cancel')}</button>
+      </div>
+    </div>` : ''}
+    ${S.advanceClearanceSettleForm && S.advanceClearanceSettleForm.id===c.id ? `
+    <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border);">
+      <div style="font-weight:600; margin-bottom:8px;">${tr('clearance.settle_form_title')}</div>
+      <div class="callout" style="margin-bottom:10px;">${tr(c.differenceAmount>0 ? 'clearance.settle_hint_overage' : 'clearance.settle_hint_shortfall', {amount: fmtMoney(Math.abs(c.differenceAmount))})}</div>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px;">
+        <div class="field"><label>${tr('clearance.settle_field_date')} *</label>
+          <input id="c-settleDate" type="date" max="${bangkokTodayStr()}" value="${esc(S.advanceClearanceSettleForm.settlementDate)}" onchange="S.advanceClearanceSettleForm.settlementDate=this.value;">
+          <div class="hint">${tr('clearance.settle_date_hint')}</div>
+        </div>
+        <div class="field"><label>${tr('clearance.settle_field_channel')} *</label>
+          <select id="c-settleChannel" onchange="S.advanceClearanceSettleForm.settlementChannel=this.value;">
+            <option value="cash" ${S.advanceClearanceSettleForm.settlementChannel==='cash'?'selected':''}>${tr('clearance.settle_channel_cash')}</option>
+            <option value="transfer" ${S.advanceClearanceSettleForm.settlementChannel==='transfer'?'selected':''}>${tr('clearance.settle_channel_transfer')}</option>
+          </select>
+        </div>
+        <div class="field"><label>${tr('clearance.settle_field_ref')}</label>
+          <input id="c-settleRef" value="${esc(S.advanceClearanceSettleForm.settlementRef)}" oninput="S.advanceClearanceSettleForm.settlementRef=this.value;">
+        </div>
+      </div>
+      <div class="small-btn-row" style="margin-top:10px;">
+        <button class="btn btn-primary btn-sm" data-act="submit-settle-clearance" data-id="${c.id}" ${isVoucherActionPending('clearance-settle',c.id)?'disabled':''}>${tr('clearance.action_settle')}</button>
+        <button class="btn btn-ghost btn-sm" data-act="cancel-settle-clearance-form" ${isVoucherActionPending('clearance-settle',c.id)?'disabled':''}>${tr('approval_permissions.cancel')}</button>
+      </div>
+    </div>` : ''}
+  </div>
+  ${(d.whtCertificates||[]).length>0 ? `
+  <div class="card" style="padding:20px 22px; margin-bottom:16px;">
+    <div class="section-title" style="margin-top:0;">${tr('nav.fin_wht_certificates')}</div>
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>${tr('voucher.wht_cert_col_no')}</th><th>${tr('voucher.wht_cert_col_payee')}</th>
+        <th class="num-cell">${tr('voucher.oth_summary_gross')}</th><th class="num-cell">${tr('voucher.wht_cert_col_rate')}</th>
+        <th class="num-cell">${tr('voucher.oth_summary_wht')}</th><th></th>
+      </tr></thead>
+      <tbody>${d.whtCertificates.map(cert=>`
+        <tr>
+          <td class="mono">${esc(cert.certNo)||'-'}</td>
+          <td>${esc(cert.payeeName)}</td>
+          <td class="mono num-cell">${fmtMoney(cert.grossAmount)}</td>
+          <td class="mono num-cell">${cert.whtRate}%</td>
+          <td class="mono num-cell">${fmtMoney(cert.whtAmount)}</td>
+          <td><button class="btn btn-ghost btn-sm" data-act="print-wht-certificate" data-source="clearance" data-id="${cert.id}">${tr('voucher.wht_cert_print_button')}</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>
+  </div>` : ''}
+  <div class="card" style="padding:20px 22px;">
+    <div class="section-title" style="margin-top:0;">${tr('voucher.audit_log_section')}</div>
+    ${(d.auditLog||[]).length===0 ? `<div class="empty" style="padding:10px 0;">${tr('voucher.no_audit_log')}</div>` : `
+    <div class="table-wrap"><table>
+      <thead><tr><th>${tr('voucher.audit_col_when')}</th><th>${tr('voucher.audit_col_action')}</th><th>${tr('voucher.audit_col_who')}</th><th>${tr('voucher.audit_col_reason')}</th></tr></thead>
+      <tbody>${d.auditLog.map(l=>`
+        <tr>
+          <td style="font-size:12px;">${new Date(l.createdAt).toLocaleString('th-TH')}</td>
+          <td>${auditActionLabels[l.action]||l.action}</td>
+          <td>${esc(l.performedByName)||'-'}</td>
+          <td style="font-size:12px;">${esc(l.reason)||'-'}</td>
+        </tr>`).join('')}</tbody>
+    </table></div>`}
   </div>`;
 }
 
@@ -10106,6 +10675,7 @@ function attachHandlers(){
   wireScheduleScrollSync();
   updateScheduleChartOverlay();
   updateOtherVoucherSummary(); // no-op if the 'other' voucher form (VAT/WHT section) isn't on screen right now
+  updateClearanceItemSummary(); // no-op (internally, via `if(!f) return`) if no advance-clearance form is open
 }
 
 async function handleAction(act, el){
@@ -10435,6 +11005,20 @@ async function handleAction(act, el){
     }
     if(S.page==='fin_wht_certificates' && S.dataMode!=='demo'){
       await loadWhtCertificates(S.whtCertificatesFilter.month, S.whtCertificatesFilter.payeeName); // รีเฟรชทุกครั้งที่เข้าหน้า
+    }
+    if(S.page==='fin_advance_clearances' && S.dataMode!=='demo'){
+      if(!S.employeesLoaded) await loadRealEmployees(); // dropdown filter ตามพนักงาน
+      if(!S.externalPayeesLoaded) await loadExternalPayees(); // ฟอร์มสร้างเลือกผู้รับเงินต่อบรรทัดได้
+      if(!S.chartOfAccountsLoaded) await loadChartOfAccounts();
+      if(!S.whtIncomeTypesLoaded) await loadWhtIncomeTypes();
+      await loadOutstandingAdvances(); // รีเฟรชทุกครั้ง — ต้องใช้เลือกใบ advance ต้นทางตอนสร้างใบเคลียร์ใหม่
+      if(!S.advanceClearancesLoaded) await loadAdvanceClearances(S.advanceClearanceListFilter);
+    }
+    if(S.page==='fin_advance_clearance_detail' && S.dataMode!=='demo'){
+      if(!S.chartOfAccountsLoaded) await loadChartOfAccounts();
+      if(!S.externalPayeesLoaded) await loadExternalPayees();
+      if(!S.whtIncomeTypesLoaded) await loadWhtIncomeTypes();
+      if(S.selectedAdvanceClearanceId) await loadAdvanceClearanceDetail(S.selectedAdvanceClearanceId);
     }
     if(S.page==='fin_voucher_detail' && S.dataMode!=='demo'){
       if(!S.chartOfAccountsLoaded) await loadChartOfAccounts();
@@ -10841,8 +11425,189 @@ async function handleAction(act, el){
     render(); return;
   }
   if(act==='print-wht-certificate'){
-    S.selectedWhtCertificateId = parseInt(el.dataset.id);
+    const id = parseInt(el.dataset.id);
+    // data-source บอกว่าใบนี้มาจาก array ไหน (ดีฟอลต์ = หน้ารายการ 50 ทวิกลาง) — ปุ่มจากหน้า detail
+    // ใบเคลียร์เงินทดรองจ่ายต้องระบุ data-source="clearance" เพื่อค้นใน d.whtCertificates แทน
+    const certPool = el.dataset.source==='clearance'
+      ? (S.selectedAdvanceClearanceDetail && S.selectedAdvanceClearanceDetail.whtCertificates)
+      : S.whtCertificates;
+    const cert = (certPool||[]).find(c=>c.id===id);
+    if(!cert){ toast('ไม่พบหนังสือรับรองนี้','err'); return; }
+    S.printingWhtCertificate = cert;
     S.page = 'fin_wht_certificate_print';
+    render(); return;
+  }
+  // ---------- เคลียร์เงินทดรองจ่าย (ข้อ 1.3) ----------
+  if(act==='open-add-clearance'){
+    S.advanceClearanceForm = {
+      mode:'new', idempotencyKey: crypto.randomUUID(),
+      advanceVoucherId:'', advanceAmount:0, advanceVoucherNo:'', advanceEmployeeName:'',
+      clearanceDate: new Date().toISOString().slice(0,10), note:'', items:[],
+    };
+    render(); return;
+  }
+  if(act==='cancel-clearance-form'){ S.advanceClearanceForm = null; render(); return; }
+  if(act==='open-edit-clearance'){
+    const id = parseInt(el.dataset.id);
+    const c = S.selectedAdvanceClearanceDetail && S.selectedAdvanceClearanceDetail.clearance;
+    if(!c || c.id!==id){ toast('ไม่พบใบเคลียร์นี้','err'); return; }
+    S.advanceClearanceForm = {
+      mode:'edit', id, advanceVoucherId: c.advanceVoucherId, advanceAmount: c.advanceAmount,
+      advanceVoucherNo: c.advanceVoucherNo, advanceEmployeeName: c.payeeEmployeeName,
+      clearanceDate: c.clearanceDate || new Date().toISOString().slice(0,10), note: c.note||'',
+      items: (c.items||[]).map(it=>({
+        description: it.description, expenseAccountCode: it.expenseAccountCode||'', amount: String(it.amount),
+        hasTaxInvoice: !!it.hasTaxInvoice, vatRate: String(it.vatRate||0), whtRate: String(it.whtRate||0),
+        whtIncomeTypeCode: it.whtIncomeTypeCode||'', payeeExternalId: it.payeeExternalId||'',
+        payeeName: it.payeeName||'', payeeTaxId: it.payeeTaxId||'',
+      })),
+    };
+    render(); return;
+  }
+  if(act==='add-clearance-item'){
+    S.advanceClearanceForm.items.push({
+      description:'', expenseAccountCode:'', amount:'', hasTaxInvoice:false, vatRate:'0', whtRate:'0',
+      whtIncomeTypeCode:'', payeeExternalId:'', payeeName:'', payeeTaxId:'',
+    });
+    render(); return;
+  }
+  if(act==='remove-clearance-item'){
+    S.advanceClearanceForm.items.splice(parseInt(el.dataset.idx,10), 1);
+    render(); return;
+  }
+  if(act==='submit-clearance-form'){
+    if(el.disabled) return;
+    const f = S.advanceClearanceForm;
+    const isEdit = f.mode==='edit';
+    if(!f.advanceVoucherId){ toast('กรุณาเลือกใบเบิกเงินทดรองจ่ายต้นทาง','err'); return; }
+    if(f.items.length===0){ toast('กรุณากรอกรายการค่าใช้จ่ายอย่างน้อย 1 รายการ','err'); return; }
+    const body = {
+      advanceVoucherId: f.advanceVoucherId, clearanceDate: f.clearanceDate, note: f.note,
+      items: f.items.map(it=>({
+        description: it.description, expenseAccountCode: it.expenseAccountCode, amount: it.amount,
+        hasTaxInvoice: it.hasTaxInvoice, vatRate: it.vatRate, whtRate: it.whtRate,
+        whtIncomeTypeCode: it.whtIncomeTypeCode || null,
+        payeeExternalId: it.payeeExternalId || null, payeeName: it.payeeName, payeeTaxId: it.payeeTaxId,
+      })),
+    };
+    f.saving = true;
+    render();
+    try{
+      if(isEdit){
+        await apiCall('PUT', `/api/customer/advance-clearances/${f.id}`, body);
+        S.advanceClearanceForm = null;
+        await loadAdvanceClearanceDetail(S.selectedAdvanceClearanceId);
+        toast('บันทึกการแก้ไขเรียบร้อยแล้ว');
+      } else {
+        await apiCall('POST', '/api/customer/advance-clearances', body, undefined, {'Idempotency-Key': f.idempotencyKey});
+        S.advanceClearancesLoaded = false;
+        await loadAdvanceClearances(S.advanceClearanceListFilter);
+        S.advanceClearanceForm = null;
+        toast('สร้างใบเคลียร์เงินทดรองจ่ายเรียบร้อยแล้ว (ยังเป็นร่าง — ต้องกดยื่นขออนุมัติต่อ)');
+      }
+    } catch(e){
+      toast(e.message,'err');
+      if(S.advanceClearanceForm) S.advanceClearanceForm.saving = false;
+    }
+    render(); return;
+  }
+  if(act==='filter-clearance-status'){ S.advanceClearanceListFilter.status = el.value; S.advanceClearanceListPage = 1; render(); return; }
+  if(act==='filter-clearance-employee'){ S.advanceClearanceListFilter.employeeId = el.value; S.advanceClearanceListPage = 1; render(); return; }
+  if(act==='clearance-page-prev'){ S.advanceClearanceListPage = Math.max(1, (S.advanceClearanceListPage||1)-1); render(); return; }
+  if(act==='clearance-page-next'){ S.advanceClearanceListPage = (S.advanceClearanceListPage||1)+1; render(); return; }
+  if(act==='submit-clearance'){
+    const id = parseInt(el.dataset.id);
+    if(isVoucherActionPending('clearance-submit', id)) return;
+    const key = voucherActionKey('clearance-submit', id);
+    S.voucherActionPending['clearance-submit-'+id] = true;
+    render();
+    try{
+      await apiCall('POST', `/api/customer/advance-clearances/${id}/submit`, {}, undefined, {'Idempotency-Key': key});
+      await loadAdvanceClearanceDetail(id);
+      toast('ยื่นขออนุมัติเรียบร้อยแล้ว');
+      clearVoucherActionKey('clearance-submit', id);
+    } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['clearance-submit-'+id] = false;
+    render(); return;
+  }
+  if(act==='open-reject-clearance'){ S.advanceClearanceRejectForm = { id: parseInt(el.dataset.id), reason:'' }; render(); return; }
+  if(act==='cancel-reject-clearance-form'){ S.advanceClearanceRejectForm = null; render(); return; }
+  if(act==='submit-reject-clearance'){
+    const id = parseInt(el.dataset.id);
+    const reason = document.getElementById('c-vRejectReason').value.trim();
+    if(!reason){ toast('กรุณาระบุเหตุผลที่ปฏิเสธ','err'); return; }
+    if(isVoucherActionPending('clearance-reject', id)) return;
+    S.voucherActionPending['clearance-reject-'+id] = true;
+    render();
+    try{
+      await apiCall('POST', `/api/customer/advance-clearances/${id}/reject`, {reason});
+      S.advanceClearanceRejectForm = null;
+      await loadAdvanceClearanceDetail(id);
+      toast('ปฏิเสธใบเคลียร์เรียบร้อยแล้ว');
+    } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['clearance-reject-'+id] = false;
+    render(); return;
+  }
+  if(act==='cancel-clearance'){
+    const id = parseInt(el.dataset.id);
+    if(isVoucherActionPending('clearance-cancel', id)) return;
+    S.voucherActionPending['clearance-cancel-'+id] = true;
+    render();
+    try{
+      await apiCall('POST', `/api/customer/advance-clearances/${id}/cancel`, {});
+      await loadAdvanceClearanceDetail(id);
+      toast('ยกเลิกใบเคลียร์เรียบร้อยแล้ว');
+    } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['clearance-cancel-'+id] = false;
+    render(); return;
+  }
+  if(act==='open-approve-clearance-preview'){
+    S.advanceClearanceApprovePreview = { id: parseInt(el.dataset.id) };
+    render(); return;
+  }
+  if(act==='cancel-approve-clearance-preview'){ S.advanceClearanceApprovePreview = null; render(); return; }
+  if(act==='confirm-approve-clearance'){
+    const id = parseInt(el.dataset.id);
+    if(isVoucherActionPending('clearance-approve', id)) return;
+    const key = voucherActionKey('clearance-approve', id);
+    S.voucherActionPending['clearance-approve-'+id] = true;
+    render();
+    try{
+      await apiCall('POST', `/api/customer/advance-clearances/${id}/approve`, {}, undefined, {'Idempotency-Key': key});
+      S.advanceClearanceApprovePreview = null;
+      await loadAdvanceClearanceDetail(id);
+      toast('อนุมัติเรียบร้อยแล้ว');
+      clearVoucherActionKey('clearance-approve', id);
+    } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['clearance-approve-'+id] = false;
+    render(); return;
+  }
+  if(act==='open-settle-clearance-form'){
+    S.advanceClearanceSettleForm = { id: parseInt(el.dataset.id), settlementDate: bangkokTodayStr(), settlementChannel:'cash', settlementRef:'' };
+    render(); return;
+  }
+  if(act==='cancel-settle-clearance-form'){ S.advanceClearanceSettleForm = null; render(); return; }
+  if(act==='submit-settle-clearance'){
+    const id = parseInt(el.dataset.id);
+    const f = S.advanceClearanceSettleForm;
+    if(!f.settlementDate){ toast('กรุณาระบุวันที่ชำระส่วนต่าง','err'); return; }
+    // กันตั้งแต่ฝั่ง UI ก่อนยิง API (defense in depth — backend เช็คซ้ำและเป็นตัวตัดสินจริงด้วย
+    // timezone Asia/Bangkok ที่แม่นยำกว่านี้เสมอ ดูคอมเมนต์ bangkokTodayStr())
+    if(f.settlementDate > bangkokTodayStr()){ toast('วันที่ชำระส่วนต่างเป็นวันที่ในอนาคตไม่ได้','err'); return; }
+    if(isVoucherActionPending('clearance-settle', id)) return;
+    const key = voucherActionKey('clearance-settle', id);
+    S.voucherActionPending['clearance-settle-'+id] = true;
+    render();
+    try{
+      await apiCall('POST', `/api/customer/advance-clearances/${id}/settle`, {
+        settlementDate: f.settlementDate, settlementChannel: f.settlementChannel, settlementRef: f.settlementRef,
+      }, undefined, {'Idempotency-Key': key});
+      S.advanceClearanceSettleForm = null;
+      await loadAdvanceClearanceDetail(id);
+      toast('บันทึกการชำระส่วนต่างเรียบร้อยแล้ว');
+      clearVoucherActionKey('clearance-settle', id);
+    } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['clearance-settle-'+id] = false;
     render(); return;
   }
   // ---------- ใบเบิกเงิน (petty_cash/advance/other ใช้ handler ร่วมกัน) ----------
