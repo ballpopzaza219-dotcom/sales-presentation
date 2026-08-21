@@ -9198,6 +9198,177 @@ app.put('/api/customer/petty-cash-funds/:id', requireCustomerAuth, async (req, r
   }
 });
 
+// ---------------- ผู้รับเงินภายนอก (client_external_payees) — ข้อ 1.4, master data เท่านั้น ----------------
+// ใช้ can_manage_po ร่วมเหมือนผู้รับเหมาช่วง (hasSubcontractorManagePermission ด้านบน) ด้วยเหตุผลเดียวกัน
+// เป๊ะๆ: ตารางนี้เป็นแค่ข้อมูลติดต่อ/อัตราหัก ณ ที่จ่ายเริ่มต้น ไม่มีเพดานวงเงินหรือผลต่อการอนุมัติใดๆ
+// (CLAUDE.md ข้อ 14 ไม่เข้าเงื่อนไข — ไม่มีช่องโหว่ self-approval แบบ fund_limit) แยกฟังก์ชันเป็นชื่อของ
+// ตัวเองแทนที่จะเรียก hasSubcontractorManagePermission ตรงๆ เพราะเป็นสิทธิ์คนละแนวคิดกัน (แค่บังเอิญ
+// ใช้ flag เดียวกันวันนี้ — เหมือน canFinance/canBidding ที่แยกกันไว้ทั้งที่ gate เดียวกัน)
+function hasExternalPayeeManagePermission(customer) {
+  return customer.role === 'super_user' || customer.can_manage_po === true;
+}
+
+function serializeExternalPayee(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    taxId: row.tax_id,
+    branchCode: row.branch_code,
+    address: row.address,
+    taxpayerType: row.taxpayer_type,
+    defaultWhtRate: Number(row.default_wht_rate),
+    defaultExpenseAccountCode: row.default_expense_account_code,
+    isActive: row.is_active,
+    createdAt: row.created_at,
+  };
+}
+
+// ต่างจาก validateSubcontractorInput ตรงที่ต้อง await เช็ค default_expense_account_code กับผังบัญชี
+// (composite FK ระดับ DB บังคับอยู่แล้วที่ client_external_payees_expense_account_fk แต่เช็คซ้ำชั้น
+// application ก่อนเพื่อ error message อ่านง่ายกว่า FK violation ดิบๆ — pattern เดียวกับทั้งไฟล์) จึงเป็น
+// async รับ dbClient เข้ามาด้วย (ตาม pattern ของ validate*VoucherInput ด้านล่าง ไม่ใช่ validateSubcontractorInput
+// ที่เป็น sync ล้วนเพราะไม่มีฟิลด์ไหนต้อง query เช็คก่อน)
+async function validateExternalPayeeInput(dbClient, companyId, { name, taxId, branchCode, address, taxpayerType, defaultWhtRate, defaultExpenseAccountCode }) {
+  const safeName = String(name || '').trim();
+  if (!safeName) return { error: 'กรุณาระบุชื่อผู้รับเงิน' };
+  const safeTaxpayerType = ['individual', 'juristic'].includes(taxpayerType) ? taxpayerType : 'juristic';
+  const safeTaxId = taxId ? String(taxId).trim() : null;
+  if (safeTaxId && !/^\d{13}$/.test(safeTaxId)) return { error: 'เลขผู้เสียภาษีต้องเป็นตัวเลข 13 หลัก' };
+  // ⚠️ DB schema (migration 0001) ไม่มี CHECK บังคับเรื่องนี้ (ต่างจาก client_subcontractors ที่มี) —
+  // บังคับที่ชั้น application แทนตามที่ตกลง เหตุผลเดียวกับผู้รับเหมาช่วง: นิติบุคคลไม่มีเลขผู้เสียภาษี
+  // จะออกหนังสือรับรองหัก ณ ที่จ่าย (50 ทวิ) ตอนจ่ายเงินจริงไม่ได้เลย
+  if (safeTaxpayerType === 'juristic' && !safeTaxId) {
+    return { error: 'ผู้รับเงินประเภทนิติบุคคลต้องระบุเลขผู้เสียภาษี (ใช้ออกหนังสือรับรองหัก ณ ที่จ่ายตอนจ่ายเงินจริง)' };
+  }
+  const safeDefaultWhtRate = parseNonNegativeNumericValue(defaultWhtRate ?? 0);
+  if (safeDefaultWhtRate === null || Number(safeDefaultWhtRate) > 100) return { error: 'ระบุอัตราหัก ณ ที่จ่ายเริ่มต้นไม่ถูกต้อง (0-100)' };
+  const safeDefaultExpenseAccountCode = defaultExpenseAccountCode ? String(defaultExpenseAccountCode).trim() : null;
+  if (safeDefaultExpenseAccountCode) {
+    const acc = await dbClient.query('SELECT 1 FROM client_chart_of_accounts WHERE code=$1 AND company_id=$2 AND is_active=true', [safeDefaultExpenseAccountCode, companyId]);
+    if (acc.rowCount === 0) return { error: 'ไม่พบรหัสบัญชีค่าใช้จ่ายเริ่มต้นนี้ในผังบัญชีของบริษัทคุณ' };
+  }
+  return {
+    safeName, safeTaxId,
+    safeBranchCode: String(branchCode || '00000').trim() || '00000',
+    safeAddress: String(address || '').trim(),
+    safeTaxpayerType,
+    safeDefaultWhtRate,
+    safeDefaultExpenseAccountCode,
+  };
+}
+
+// เปิดให้ทุกคนที่ login แล้วดูได้ (ไม่ gate สิทธิ์) เหมือน GET /api/customer/subcontractors — ใครก็ตาม
+// ที่สร้างใบจ่ายเจ้าหนี้ภายนอก (voucher_type='other') ต้องเลือกผู้รับเงินจาก list นี้ได้ ไม่ใช่แค่คนมีสิทธิ์
+// จัดการ master data — ไม่มีข้อมูลอ่อนไหวแบบเลขบัญชีธนาคารให้ต้องซ่อนแบบผู้รับเหมาช่วงด้วย (ตารางนี้ไม่มี
+// คอลัมน์ธนาคารเลย)
+app.get('/api/customer/external-payees', requireCustomerAuth, async (req, res) => {
+  const companyId = req.customer.company_id;
+  const r = await pool.query('SELECT * FROM client_external_payees WHERE company_id=$1 ORDER BY name', [companyId]);
+  res.json({ externalPayees: r.rows.map(serializeExternalPayee) });
+});
+
+app.post('/api/customer/external-payees', requireCustomerAuth, async (req, res) => {
+  if (!hasExternalPayeeManagePermission(req.customer)) return res.status(403).json({ error: 'ไม่มีสิทธิ์จัดการผู้รับเงินภายนอก' });
+  const companyId = req.customer.company_id;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const v = await validateExternalPayeeInput(client, companyId, req.body || {});
+    if (v.error) { await client.query('ROLLBACK'); return res.status(400).json({ error: v.error }); }
+    const insert = await client.query(
+      `INSERT INTO client_external_payees
+         (company_id, name, tax_id, branch_code, address, taxpayer_type, default_wht_rate, default_expense_account_code)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::numeric,$8) RETURNING *`,
+      [companyId, v.safeName, v.safeTaxId, v.safeBranchCode, v.safeAddress, v.safeTaxpayerType, v.safeDefaultWhtRate, v.safeDefaultExpenseAccountCode]
+    );
+    const row = insert.rows[0];
+    await writeAuditLog(client, {
+      companyId, docType: 'external_payee', docId: row.id, action: 'create', performedBy: req.customer.id,
+      reason: `เพิ่มผู้รับเงินภายนอกใหม่ "${row.name}"`,
+    });
+    await client.query('COMMIT');
+    res.json({ externalPayee: serializeExternalPayee(row) });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    if (err.code === '23505') {
+      const isDupTaxId = err.constraint === 'uq_client_external_payees_taxid';
+      return res.status(409).json({ error: isDupTaxId ? 'มีผู้รับเงินที่ใช้เลขผู้เสียภาษีนี้อยู่แล้ว' : 'มีผู้รับเงินชื่อนี้อยู่แล้ว (เทียบแบบไม่สนตัวพิมพ์เล็ก-ใหญ่และคำนำหน้านิติบุคคล)' });
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+// ⚠️ full-replace เสมอ ไม่ใช่ partial patch — เหตุผลเดียวกับ PUT /api/customer/subcontractors/:id ทุก
+// ประการ (ดูคอมเมนต์ที่นั่น) — ฟอร์มแก้ไขฝั่ง UI โหลดค่าปัจจุบันมาเต็มก่อนเสมอ
+app.put('/api/customer/external-payees/:id', requireCustomerAuth, async (req, res) => {
+  if (!hasExternalPayeeManagePermission(req.customer)) return res.status(403).json({ error: 'ไม่มีสิทธิ์จัดการผู้รับเงินภายนอก' });
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const existing = await client.query('SELECT * FROM client_external_payees WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (existing.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบผู้รับเงินนี้' }); }
+    const old = existing.rows[0];
+    const v = await validateExternalPayeeInput(client, companyId, req.body || {});
+    if (v.error) { await client.query('ROLLBACK'); return res.status(400).json({ error: v.error }); }
+    // ⚠️ TODO เมื่อมี endpoint ที่ล็อกผู้รับเงินไว้กับ voucher ที่ยัง active อยู่ (draft/submitted) ในอนาคต:
+    // ต้องบล็อกปิดใช้งานถ้ายังมี voucher ค้างอ้างอิงอยู่ — ตอนนี้ยังไม่มีเช็คนี้ (เหมือน TODO เดียวกันที่
+    // client_subcontractors — ดูคอมเมนต์ที่นั่น หลักการเดียวกัน)
+    const isActive = req.body && typeof req.body.isActive === 'boolean' ? req.body.isActive : true;
+
+    const update = await client.query(
+      `UPDATE client_external_payees SET
+         name=$1, tax_id=$2, branch_code=$3, address=$4, taxpayer_type=$5,
+         default_wht_rate=$6::numeric, default_expense_account_code=$7, is_active=$8
+       WHERE id=$9 RETURNING *`,
+      [v.safeName, v.safeTaxId, v.safeBranchCode, v.safeAddress, v.safeTaxpayerType,
+       v.safeDefaultWhtRate, v.safeDefaultExpenseAccountCode, isActive, id]
+    );
+    const row = update.rows[0];
+
+    const changes = [];
+    if (old.name !== v.safeName) changes.push(`ชื่อ: "${old.name}" → "${v.safeName}"`);
+    if ((old.tax_id || '') !== (v.safeTaxId || '')) changes.push(`เลขผู้เสียภาษี: "${old.tax_id || '-'}" → "${v.safeTaxId || '-'}"`);
+    if (old.taxpayer_type !== v.safeTaxpayerType) changes.push(`ประเภท: "${old.taxpayer_type}" → "${v.safeTaxpayerType}"`);
+    if (String(old.default_wht_rate) !== String(v.safeDefaultWhtRate)) changes.push(`อัตราหัก ณ ที่จ่ายเริ่มต้น: ${old.default_wht_rate}% → ${v.safeDefaultWhtRate}%`);
+    if ((old.default_expense_account_code || '') !== (v.safeDefaultExpenseAccountCode || '')) changes.push(`รหัสบัญชีค่าใช้จ่ายเริ่มต้น: "${old.default_expense_account_code || '-'}" → "${v.safeDefaultExpenseAccountCode || '-'}"`);
+    if (old.is_active !== isActive) changes.push(`สถานะ: ${old.is_active ? 'ใช้งานอยู่' : 'ปิดใช้งาน'} → ${isActive ? 'ใช้งานอยู่' : 'ปิดใช้งาน'}`);
+
+    if (changes.length > 0) {
+      await writeAuditLog(client, {
+        companyId, docType: 'external_payee', docId: id, action: 'edit', performedBy: req.customer.id,
+        fromStatus: old.is_active !== isActive ? String(old.is_active) : null,
+        toStatus: old.is_active !== isActive ? String(isActive) : null,
+        reason: changes.join('; '),
+      });
+    }
+    await client.query('COMMIT');
+    res.json({ externalPayee: serializeExternalPayee(row) });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    if (err.code === '23505') {
+      const isDupTaxId = err.constraint === 'uq_client_external_payees_taxid';
+      return res.status(409).json({ error: isDupTaxId ? 'มีผู้รับเงินที่ใช้เลขผู้เสียภาษีนี้อยู่แล้ว' : 'มีผู้รับเงินชื่อนี้อยู่แล้ว (เทียบแบบไม่สนตัวพิมพ์เล็ก-ใหญ่และคำนำหน้านิติบุคคล)' });
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+// รายชื่อประเภทเงินได้ตามมาตรา 40 — สำหรับ dropdown ตอนกรอก WHT rate ในฟอร์มใบจ่ายเจ้าหนี้ภายนอก
+// (voucher_type='other') อ่านอย่างเดียว ไม่ gate สิทธิ์เพิ่มเติมนอกจาก login (ไม่ใช่ company-scoped —
+// ตารางนี้เป็น master ร่วมทั้งระบบ ไม่มี company_id) default_rate เป็น NULL ได้ตามที่ตั้งใจ (เช่น 40(1)
+// เงินเดือน คำนวณตามอัตราก้าวหน้า) — ส่ง null ตรงๆ ให้ frontend ปฏิเสธ/บังคับกรอกเอง ห้าม fallback เป็น 0
+// ที่นี่ (CLAUDE.md ข้อ 17)
+app.get('/api/customer/wht-income-types', requireCustomerAuth, async (req, res) => {
+  const r = await pool.query('SELECT code, name_th, default_rate, is_active FROM client_wht_income_types WHERE is_active=true ORDER BY code');
+  res.json({ incomeTypes: r.rows.map(row => ({ code: row.code, nameTh: row.name_th, defaultRate: row.default_rate !== null ? Number(row.default_rate) : null })) });
+});
+
 // ---------------- ใบเบิกเงิน (payment vouchers) — เฉพาะ voucher_type='petty_cash' เฟสนี้ ----------------
 function serializePaymentVoucher(row) {
   return {
@@ -9968,6 +10139,31 @@ function serializeWhtCertificate(row) {
     issuedBy: row.issued_by, issuedAt: row.issued_at,
   };
 }
+
+// รายการ 50 ทวิ ทั้งหมดของบริษัท ข้ามแหล่งที่มา (source_type ทั้ง payment_voucher/advance_clearance_item/
+// subcontractor_payment) — สำหรับหน้า list/พิมพ์ซ้ำ (ข้อ 1.4.4) เทียบกับ endpoint เดิม 2 ตัวที่ผูกกับ
+// เอกสารใบเดียว (.../payment-vouchers/:id/wht-certificates, .../advance-clearances/:id/wht-certificates)
+// ตัวนี้ไม่ผูกกับใบไหนใบหนึ่ง กรองได้ตามเดือน (payment_date) และชื่อผู้รับเงิน
+//
+// ⚠️ ข้อจำกัดที่รู้ตัว: กรองด้วย payee_name (string match บน snapshot ที่ freeze ไว้ตอนออกใบ) ไม่ใช่ FK
+// ไปยัง client_external_payees/client_subcontractors เพราะตารางนี้ตั้งใจไม่มี FK แบบนั้นอยู่แล้ว (ดู
+// คอมเมนต์ตอนสร้างตารางที่ migration 0001 — freeze ชื่อไว้ถาวรไม่ให้เปลี่ยนตามชื่อปัจจุบันของ master data)
+// ผลคือถ้าผู้รับเงินถูกเปลี่ยนชื่อในภายหลัง ใบเก่าจะกรองด้วยชื่อปัจจุบันไม่เจอ (ต้องกรองด้วยชื่อเดิมตอนออกใบ
+// แทน) — ยอมรับข้อจำกัดนี้แทนที่จะเพิ่มคอลัมน์ FK ใหม่ที่ต้องทำ migration เพิ่ม เพราะกรณีเปลี่ยนชื่อผู้รับเงิน
+// ที่เคยออก 50 ทวิ ไปแล้วเกิดไม่บ่อย และยังกรองด้วยเดือนอย่างเดียว/ไล่ดูทั้งหมดได้เสมอ
+app.get('/api/customer/wht-certificates', requireCustomerAuth, async (req, res) => {
+  const companyId = req.customer.company_id;
+  const { month, payeeName } = req.query;
+  const conditions = ['company_id=$1'];
+  const params = [companyId];
+  if (month) { params.push(month); conditions.push(`to_char(payment_date,'YYYY-MM')=$${params.length}`); }
+  if (payeeName) { params.push(`%${payeeName}%`); conditions.push(`payee_name ILIKE $${params.length}`); }
+  const r = await pool.query(
+    `SELECT * FROM client_wht_certificates WHERE ${conditions.join(' AND ')} ORDER BY payment_date DESC, id DESC`,
+    params
+  );
+  res.json({ whtCertificates: r.rows.map(serializeWhtCertificate) });
+});
 
 app.get('/api/customer/advance-clearances', requireCustomerAuth, async (req, res) => {
   const companyId = req.customer.company_id;

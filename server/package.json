@@ -24,9 +24,11 @@
     "test:external-payment": "node tests/external-payment.regression.js",
     "test:pr-approval-rules": "node tests/pr-approval-rules.regression.js",
     "test:subcontractors": "node tests/subcontractors.regression.js",
-    "test:client-ledger": "npm run test:pr && npm run test:petty-cash && npm run test:advance && npm run test:advance-clearance && npm run test:external-payment && npm run test:pr-approval-rules && npm run test:subcontractors",
+    "test:external-payees": "node tests/external-payees.regression.js",
+    "test:client-ledger": "npm run test:pr && npm run test:petty-cash && npm run test:advance && npm run test:advance-clearance && npm run test:external-payment && npm run test:pr-approval-rules && npm run test:subcontractors && npm run test:external-payees",
     "test:petty-cash-vouchers-ui": "node tests/petty-cash-vouchers-ui.regression.js",
-    "test:advance-vouchers-ui": "node tests/advance-vouchers-ui.regression.js"
+    "test:advance-vouchers-ui": "node tests/advance-vouchers-ui.regression.js",
+    "test:external-payment-ui": "node tests/external-payment-ui.regression.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

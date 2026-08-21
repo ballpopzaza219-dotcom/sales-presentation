@@ -175,6 +175,22 @@ buffer bounds check **เมื่อมีการส่ง `buf` param เข
 **ต้องทำต่อไป**: เช็ค release ใหม่ของ `exceljs` เป็นระยะ (เช่นทุกไตรมาส) ว่าอัปเดต dependency `uuid`
 เป็น `^11.x` แล้วหรือยัง ถ้าอัปเดตแล้วให้ bump ทันทีเพื่อปิดช่องนี้ให้สนิท
 
+### ข.10 `client_external_payees` บังคับ "นิติบุคคลต้องมีเลขผู้เสียภาษี" แค่ชั้น application เท่านั้น — ไม่เหมือน `client_subcontractors`
+
+**ความไม่สอดคล้อง**: `client_subcontractors` (migration 0009) มี DB-level `CHECK
+(taxpayer_type<>'juristic' OR tax_id IS NOT NULL)` บังคับกฎนี้ที่ชั้นฐานข้อมูลด้วย (กันได้แม้มีทางเข้า
+อื่นที่ไม่ผ่าน `validateSubcontractorInput()`) แต่ `client_external_payees` (migration 0001 — สร้างก่อน
+0009 นานมาก ตอนนั้นยังไม่มีกฎนี้) มีแค่ `CHECK (tax_id IS NULL OR char_length(tax_id)=13)` เท่านั้น ไม่มี
+CHECK บังคับ "juristic ต้องมี tax_id" เลย — กฎนี้ถูกเพิ่มเข้ามาที่ `validateExternalPayeeInput()`
+(server.js) ในรอบทำหัวข้อ 1.4 (2026-08-21) เป็น**ชั้น application อย่างเดียว**
+
+**ผลกระทบจริง**: เส้นทางปกติผ่าน `POST/PUT /api/customer/external-payees` ถูกกันครบเหมือนกันทั้งสองตาราง
+(error message เดียวกันเป๊ะ) แต่ถ้ามีการเขียนแถวลง `client_external_payees` ตรงๆ ผ่านช่องทางอื่นที่ไม่ผ่าน
+endpoint นี้ (เช่น script/migration data-fix ในอนาคต) จะไม่มี DB ช่วยกันให้ เหมือนที่ `client_subcontractors`
+มี — ความเสี่ยงต่ำเพราะไม่มีช่องทางเขียนอื่นในโค้ดปัจจุบันเลยนอกจาก endpoint นี้ แต่ถ้าจะเพิ่มความเข้มงวด
+ให้เท่ากันในอนาคต ต้องทำ migration ใหม่เพิ่ม CHECK แบบเดียวกับ 0009 (ต้อง backfill/ตรวจแถวเก่าที่ละเมิดกฎ
+ก่อน ถ้ามี) — ยังไม่ได้วางแผนไว้ ไม่บล็อกการใช้งานปัจจุบัน
+
 ---
 
 ## ตารางสรุปด่วน
@@ -194,3 +210,4 @@ buffer bounds check **เมื่อมีการส่ง `buf` param เข
 | ข.7 | payee_tax_id พนักงานไม่ผูก master data | ไม่สะดวก |
 | ข.8 | ~~ไม่มี automated test suite~~ | แก้แล้ว — 8 ไฟล์ `server/tests/*.regression.js`, `npm run test:client-ledger` |
 | ข.9 | npm audit เหลือ 2 (moderate, exceljs/uuid) — 10 อื่นแก้แล้ว 2026-08-06 | หนี้เทคนิค (ยอมรับแล้ว) |
+| ข.10 | external_payees บังคับ juristic+tax_id แค่ชั้น app (subcontractors มี DB CHECK ด้วย) | ไม่สะดวก (ยอมรับแล้ว) |
