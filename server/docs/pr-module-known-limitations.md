@@ -191,6 +191,35 @@ endpoint นี้ (เช่น script/migration data-fix ในอนาคต
 ให้เท่ากันในอนาคต ต้องทำ migration ใหม่เพิ่ม CHECK แบบเดียวกับ 0009 (ต้อง backfill/ตรวจแถวเก่าที่ละเมิดกฎ
 ก่อน ถ้ามี) — ยังไม่ได้วางแผนไว้ ไม่บล็อกการใช้งานปัจจุบัน
 
+### ข.11 คอลัมน์ DATE (ไม่ใช่ TIMESTAMPTZ) ที่ SELECT ผ่าน `.*` โดยไม่ใส่ `to_char()` จะแสดงผิดวันไปหนึ่งวันเสมอบนเครื่องนี้
+
+**พบจริงระหว่างทำหัวข้อ 1.3 (2026-08-21)**: `CLIENT_ADVANCE_CLEARANCE_SELECT` (`SELECT ac.*, ...`) และ
+endpoint 50 ทวิทั้ง 3 ตัว (`SELECT * FROM client_wht_certificates ...`) ไม่ได้ cast คอลัมน์ประเภท `DATE`
+(`clearance_date`/`settlement_date`/`payment_date`) ด้วย `to_char(col,'YYYY-MM-DD')` ก่อนส่งออก —
+ต่างจาก pattern ที่ใช้ทั่วทั้งไฟล์ (เช่น `request_date` ของ `client_payment_vouchers`,
+`start_date`/`end_date` ของ `client_leave_requests` บรรทัด ~1040, `work_date` ของ `client_labor_costs`
+บรรทัด ~4880)
+
+**สาเหตุ**: `pg` แปลงคอลัมน์ `DATE` เป็น JS `Date` object โดยตีความเป็น "เที่ยงคืนตาม local timezone ของ
+เครื่องที่รัน Node" (ไม่ใช่ UTC) — เครื่อง server เครื่องนี้ local timezone เป็น Asia/Bangkok (UTC+7) พอ
+`res.json()` เรียก `JSON.stringify()` จะแปลง Date object กลับเป็น UTC ISO string ซึ่งเลื่อนถอยหลังไป 7
+ชั่วโมง เพียงพอให้ข้ามวันไปเป็น "17:00 ของวันก่อนหน้า" เสมอ (ตัวอย่างจริง: DB เก็บ `2026-08-21` แต่ response
+ออกมาเป็น `"2026-08-20T17:00:00.000Z"`) — ฝั่ง frontend ที่ตัดด้วย `.slice(0,10)` (pattern ที่ใช้ทั่วทั้ง
+ไฟล์ `pr-system.html` กับ TIMESTAMPTZ) จะได้วันที่ **ผิดไปหนึ่งวันเสมอ** ถ้านำไปใช้กับคอลัมน์ `DATE` ที่ไม่
+ได้ cast มาก่อน — ไม่ใช่แค่ปัญหา cosmetic เพราะวันที่แสดงผิดจริง
+
+**แก้แล้ว**: เพิ่ม `to_char(col,'YYYY-MM-DD') AS col` (ชื่อซ้ำคอลัมน์เดิม ตัวหลังชนะตอน map เป็น JS object
+— pattern เดียวกับ `client_leave_requests`/`client_labor_costs` ข้างต้น) ให้ทั้ง `clearance_date`/
+`settlement_date` ใน `CLIENT_ADVANCE_CLEARANCE_SELECT` และ `payment_date` ใน endpoint 50 ทวิทั้ง 3 ตัว —
+รวมถึงแก้ย้อนหลังให้ endpoint 50 ทวิของหัวข้อ 1.4 (จ่ายเจ้าหนี้ภายนอก, ทำไปแล้วก่อนหน้านี้) ที่มีบั๊กเดียวกัน
+แต่ E2E test ตอนนั้นไม่ได้ตรวจ format วันที่ตรงๆ จึงไม่จับได้
+
+**ยังไม่ได้ตรวจทั้งระบบ**: grep `SELECT \*`/`SELECT alias.*` แบบไม่มี `to_char` ทั่วทั้ง server.js เจอ
+มากกว่า 30 จุด (users/employees/leave/job_applications/foreign_worker_documents ฯลฯ) — ส่วนใหญ่ไม่เคย
+ถูกตรวจว่ามีคอลัมน์ `DATE` ที่ได้รับผลกระทบจริงหรือไม่ (บางตารางอาจมีแต่ `TIMESTAMPTZ` ซึ่งไม่มีปัญหานี้)
+อยู่นอกขอบเขตงานหัวข้อ 1 (client ledger) รอบนี้ — ถ้าจะแก้ทั่วระบบต้องไล่ตรวจทีละตารางว่ามีคอลัมน์ `DATE`
+จริงหรือไม่ก่อน ยังไม่ได้ทำ
+
 ---
 
 ## ตารางสรุปด่วน
@@ -211,3 +240,4 @@ endpoint นี้ (เช่น script/migration data-fix ในอนาคต
 | ข.8 | ~~ไม่มี automated test suite~~ | แก้แล้ว — 8 ไฟล์ `server/tests/*.regression.js`, `npm run test:client-ledger` |
 | ข.9 | npm audit เหลือ 2 (moderate, exceljs/uuid) — 10 อื่นแก้แล้ว 2026-08-06 | หนี้เทคนิค (ยอมรับแล้ว) |
 | ข.10 | external_payees บังคับ juristic+tax_id แค่ชั้น app (subcontractors มี DB CHECK ด้วย) | ไม่สะดวก (ยอมรับแล้ว) |
+| ข.11 | คอลัมน์ DATE ที่ไม่ cast to_char แสดงผิดวันไปหนึ่งวัน (แก้แล้ว 4 จุดในหัวข้อ 1.3/1.4, เหลืออีก 30+ จุดนอกขอบเขต) | บางส่วนแก้แล้ว (2026-08-21) |

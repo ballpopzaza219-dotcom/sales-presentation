@@ -9540,7 +9540,7 @@ app.get('/api/customer/payment-vouchers/:id/wht-certificates', requireCustomerAu
   const voucherCheck = await pool.query('SELECT 1 FROM client_payment_vouchers WHERE id=$1 AND company_id=$2', [id, companyId]);
   if (voucherCheck.rowCount === 0) return res.status(404).json({ error: 'ไม่พบใบเบิกเงิน' });
   const r = await pool.query(
-    `SELECT * FROM client_wht_certificates WHERE company_id=$1 AND source_type='payment_voucher' AND source_id=$2 ORDER BY id`,
+    `SELECT *, to_char(payment_date,'YYYY-MM-DD') AS payment_date FROM client_wht_certificates WHERE company_id=$1 AND source_type='payment_voucher' AND source_id=$2 ORDER BY id`,
     [companyId, id]
   );
   res.json({ whtCertificates: r.rows.map(serializeWhtCertificate) });
@@ -9929,15 +9929,20 @@ app.post('/api/customer/payment-vouchers/:id/cancel', requireCustomerAuth, async
 
 // ---------------- ยอดเงินทดรองจ่ายคงค้างรายพนักงาน (ข้อ 1.2) ----------------
 // "คงค้าง" = ใบเบิกเงินทดรองจ่ายที่ approved แล้ว แต่ยังไม่มีใบเคลียร์ (client_advance_clearances) สถานะ
-// approved ผูกกับมัน — ใบเดียวเคลียร์ได้ครั้งเดียวเสมอ (unique index uq_client_advance_clearances_active_voucher
-// กันมีใบเคลียร์ live ซ้อนกันมากกว่า 1 ใบต่อ advance หนึ่งใบ) เคลียร์ approved แล้วถือว่าปิดยอดสมบูรณ์
-// ไม่ว่า difference_amount จะเป็นเท่าไหร่ (ส่วนต่างถูกจัดการผ่าน settlement_* ของใบเคลียร์แล้ว)
+// 'approved' หรือ 'settled' ผูกกับมัน — ใบเดียวเคลียร์ได้ครั้งเดียวเสมอ (unique index
+// uq_client_advance_clearances_active_voucher กันมีใบเคลียร์ live ซ้อนกันมากกว่า 1 ใบต่อ advance หนึ่งใบ)
+// ⚠️ ต้องเช็คทั้ง 'approved' และ 'settled' (ไม่ใช่แค่ 'approved' เฉยๆ) — หลัง migration 0005 แยกสถานะ
+// 'settled' ออกจาก 'approved' แล้ว (เคลียร์ที่มีส่วนต่างจะค้างที่ 'approved' รอ /settle ก่อนค่อยขยับไป
+// 'settled' จริง) ถ้าเช็คแค่ 'approved' เฉยๆ พอเคลียร์ไหนถูก /settle จนสถานะเปลี่ยนเป็น 'settled' แล้ว
+// เงื่อนไข NOT EXISTS จะกลับมาเป็นจริงอีกครั้ง ทำให้ใบเบิกที่เคลียร์เสร็จสมบูรณ์แล้วโผล่กลับมาเป็น "คงค้าง"
+// ผิดๆ ในรายงาน (บั๊กจริงที่พบตอนต่อ UI หัวข้อ 1.3 — endpoint นี้เขียนไว้ตั้งแต่ก่อน 0005 แยกสถานะ เลยไม่เคย
+// อัปเดตตาม)
 app.get('/api/customer/outstanding-advances', requireCustomerAuth, async (req, res) => {
   const companyId = req.customer.company_id;
   const { employeeId } = req.query;
   const conditions = [
     `v.company_id=$1`, `v.voucher_type='advance'`, `v.status='approved'`,
-    `NOT EXISTS (SELECT 1 FROM client_advance_clearances c WHERE c.advance_voucher_id = v.id AND c.status = 'approved')`,
+    `NOT EXISTS (SELECT 1 FROM client_advance_clearances c WHERE c.advance_voucher_id = v.id AND c.status IN ('approved','settled'))`,
   ];
   const params = [companyId];
   if (employeeId) { params.push(parseInt(employeeId, 10)); conditions.push(`v.payee_employee_id=$${params.length}`); }
@@ -9998,8 +10003,17 @@ function serializeAdvanceClearance(row) {
     items: [],
   };
 }
+// ac.* เพียงอย่างเดียวจะส่ง clearance_date/settlement_date (DATE columns) ออกไปเป็น JS Date object ที่
+// pg แปลงด้วย local timezone ของเครื่อง server (ไม่ใช่ UTC เสมอไป) — เครื่องนี้ local timezone เป็น
+// Asia/Bangkok (UTC+7) พอ JSON.stringify กลับเป็น UTC ตอน res.json() เที่ยงคืนวันที่จริงจะกลายเป็น
+// 17:00 ของ "วันก่อนหน้า" ใน string ISO ที่ส่งออกไป (เช่น 2026-08-21 กลายเป็น
+// "2026-08-20T17:00:00.000Z") ทำให้ frontend ที่ตัดด้วย .slice(0,10) เจอวันที่ผิดเพี้ยนไปวันหนึ่งเสมอ —
+// override ด้วย to_char() ทับคอลัมน์ชื่อเดียวกัน (Postgres คืนสองคอลัมน์ชื่อซ้ำได้ ตัวหลังชนะตอน map เป็น
+// JS object) ตาม pattern เดิมที่ใช้แล้วกับ client_leave_requests/client_labor_costs (บรรทัด ~1040/4880)
 const CLIENT_ADVANCE_CLEARANCE_SELECT = `
-  SELECT ac.*, v.voucher_no AS advance_voucher_no, v.payee_employee_id, e.full_name AS payee_employee_name
+  SELECT ac.*, to_char(ac.clearance_date,'YYYY-MM-DD') AS clearance_date,
+    to_char(ac.settlement_date,'YYYY-MM-DD') AS settlement_date,
+    v.voucher_no AS advance_voucher_no, v.payee_employee_id, e.full_name AS payee_employee_name
   FROM client_advance_clearances ac
   JOIN client_payment_vouchers v ON v.id = ac.advance_voucher_id
   LEFT JOIN employees e ON e.id = v.payee_employee_id`;
@@ -10159,7 +10173,10 @@ app.get('/api/customer/wht-certificates', requireCustomerAuth, async (req, res) 
   if (month) { params.push(month); conditions.push(`to_char(payment_date,'YYYY-MM')=$${params.length}`); }
   if (payeeName) { params.push(`%${payeeName}%`); conditions.push(`payee_name ILIKE $${params.length}`); }
   const r = await pool.query(
-    `SELECT * FROM client_wht_certificates WHERE ${conditions.join(' AND ')} ORDER BY payment_date DESC, id DESC`,
+    // ORDER BY payment_date เฉยๆ จะ ambiguous เพราะ SELECT list มีคอลัมน์ชื่อ payment_date ซ้ำ 2 ตัว
+    // (ตัวจาก * ดิบ กับตัวที่ to_char ทับ) ต้อง qualify ด้วยชื่อตารางให้ชัดว่าหมายถึงคอลัมน์จริงบนตาราง
+    // ไม่ใช่ชื่อ output column ที่ซ้ำกันใน SELECT list
+    `SELECT *, to_char(payment_date,'YYYY-MM-DD') AS payment_date FROM client_wht_certificates WHERE ${conditions.join(' AND ')} ORDER BY client_wht_certificates.payment_date DESC, id DESC`,
     params
   );
   res.json({ whtCertificates: r.rows.map(serializeWhtCertificate) });
@@ -10190,7 +10207,7 @@ app.get('/api/customer/advance-clearances/:id/wht-certificates', requireCustomer
   const clearanceCheck = await pool.query('SELECT 1 FROM client_advance_clearances WHERE id=$1 AND company_id=$2', [id, companyId]);
   if (clearanceCheck.rowCount === 0) return res.status(404).json({ error: 'ไม่พบใบเคลียร์เงินทดรองจ่าย' });
   const r = await pool.query(
-    `SELECT wc.* FROM client_wht_certificates wc
+    `SELECT wc.*, to_char(wc.payment_date,'YYYY-MM-DD') AS payment_date FROM client_wht_certificates wc
      JOIN client_advance_clearance_items i ON i.id = wc.source_id AND wc.source_type='advance_clearance_item'
      WHERE wc.company_id=$1 AND i.clearance_id=$2 ORDER BY wc.id`,
     [companyId, id]
