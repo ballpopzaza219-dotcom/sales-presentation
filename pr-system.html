@@ -760,6 +760,14 @@ let S = {
   selectedVoucherDetail:null, // { voucher, auditLog, journalEntries } — fetched fresh each time (ไม่ cache)
   voucherForm:null,
   voucherRejectForm:null,
+  // Idempotency-Key per in-flight voucher action (submit/approve — the ones wrapped in withIdempotency
+  // on the backend), keyed by `${action}-${voucherId}`. Generated once per attempt and reused across
+  // retries of the SAME attempt so a rapid double-click can't create two documents; cleared on success
+  // (a genuinely new action later gets a fresh key). See CLAUDE.md client-ledger rule 8.
+  voucherActionKeys:{},
+  // Parallel map, same keys — true while that action's request is in flight. Checked to disable the
+  // triggering button and to make a stray extra click a no-op instead of firing a second request.
+  voucherActionPending:{},
   geoProvinces:[],
   geoProvincesLoaded:false,
   jobPositionsLoaded:false,
@@ -8148,6 +8156,17 @@ function pageLedger(key){
 // voucherType อื่น (advance/other) ไว้แล้วสำหรับขั้นถัดไป แต่ field เฉพาะของ other (payeeExternalId)
 // ยังใช้ไม่ได้จริงเพราะ client_external_payees ยังไม่มี CRUD endpoint (จะทำในขั้น 3 ตามแผน)
 
+// ดึง/สร้าง Idempotency-Key ของ action หนึ่งครั้ง (ผูกกับ voucherId+action) แล้ว "จำ" ไว้ใน S จนกว่าจะ
+// เคลียร์ทิ้ง — ให้การกดปุ่มซ้ำ (retry ตอน error, หรือดับเบิลคลิกโดยไม่ตั้งใจ) ใช้คีย์เดิมเสมอแทนที่จะ
+// สุ่มใหม่ทุกครั้ง ซึ่งจะทำให้กันสร้างเอกสารซ้ำไม่ได้จริงตามที่ withIdempotency ตั้งใจ (CLAUDE.md ข้อ 8)
+function voucherActionKey(action, id){
+  const k = `${action}-${id}`;
+  if(!S.voucherActionKeys[k]) S.voucherActionKeys[k] = crypto.randomUUID();
+  return S.voucherActionKeys[k];
+}
+function clearVoucherActionKey(action, id){ delete S.voucherActionKeys[`${action}-${id}`]; }
+function isVoucherActionPending(action, id){ return !!S.voucherActionPending[`${action}-${id}`]; }
+
 function voucherStatusLabels(){
   return {
     draft: tr('voucher.status_draft'), submitted: tr('voucher.status_submitted'),
@@ -8341,8 +8360,8 @@ function renderVoucherCreateForm(voucherType){
       <div class="field" style="grid-column:1/-1;"><label>${tr('voucher.field_purpose')} *</label><input id="f-vPurpose" value="${esc(f.values.purpose)}"></div>
     </div>
     <div style="display:flex; gap:8px; margin-top:14px;">
-      <button type="button" class="btn btn-primary btn-sm" data-act="submit-voucher-create" data-voucher-type="${voucherType}">${tr('common.save')}</button>
-      <button type="button" class="btn btn-ghost btn-sm" data-act="cancel-voucher-form">${tr('approval_permissions.cancel')}</button>
+      <button type="button" class="btn btn-primary btn-sm" data-act="submit-voucher-create" data-voucher-type="${voucherType}" ${f.saving?'disabled':''}>${tr('common.save')}</button>
+      <button type="button" class="btn btn-ghost btn-sm" data-act="cancel-voucher-form" ${f.saving?'disabled':''}>${tr('approval_permissions.cancel')}</button>
     </div>
   </div>`;
 }
@@ -8390,19 +8409,19 @@ function pageFinPaymentVoucherDetail(){
   <div class="card" style="padding:20px 22px; margin-bottom:16px;">
     <div class="small-btn-row" style="justify-content:flex-end;">
       ${isDraft && isCreator ? `<button class="btn btn-ghost btn-sm" data-act="open-edit-voucher" data-id="${v.id}">${tr('common.action_edit')}</button>` : ''}
-      ${isDraft && isCreator ? `<button class="btn btn-navy btn-sm" data-act="submit-voucher" data-id="${v.id}">${tr('voucher.action_submit')}</button>` : ''}
+      ${isDraft && isCreator ? `<button class="btn btn-navy btn-sm" data-act="submit-voucher" data-id="${v.id}" ${isVoucherActionPending('submit',v.id)?'disabled':''}>${tr('voucher.action_submit')}</button>` : ''}
       ${isSubmitted && canApproveFlag && !isCreator ? `
-        <button class="btn btn-danger btn-sm" data-act="open-reject-voucher" data-id="${v.id}">${tr('voucher.action_reject')}</button>
-        <button class="btn btn-primary btn-sm" data-act="approve-voucher" data-id="${v.id}">${tr('voucher.action_approve')}</button>` : ''}
+        <button class="btn btn-danger btn-sm" data-act="open-reject-voucher" data-id="${v.id}" ${isVoucherActionPending('approve',v.id)?'disabled':''}>${tr('voucher.action_reject')}</button>
+        <button class="btn btn-primary btn-sm" data-act="approve-voucher" data-id="${v.id}" ${isVoucherActionPending('approve',v.id)?'disabled':''}>${tr('voucher.action_approve')}</button>` : ''}
       ${isSubmitted && !canApproveFlag && !isCreator ? `<div class="hint">${tr('voucher.awaiting_approval_hint')}</div>` : ''}
-      ${(isDraft||isSubmitted) && (isCreator||canApproveFlag) ? `<button class="btn btn-ghost btn-sm" data-act="cancel-voucher" data-id="${v.id}">${tr('voucher.action_cancel')}</button>` : ''}
+      ${(isDraft||isSubmitted) && (isCreator||canApproveFlag) ? `<button class="btn btn-ghost btn-sm" data-act="cancel-voucher" data-id="${v.id}" ${isVoucherActionPending('cancel',v.id)?'disabled':''}>${tr('voucher.action_cancel')}</button>` : ''}
     </div>
     ${S.voucherRejectForm && S.voucherRejectForm.id===v.id ? `
     <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border);">
       <div class="field"><label>${tr('voucher.reject_reason_label')} *</label><textarea id="f-vRejectReason" rows="2">${esc(S.voucherRejectForm.reason)}</textarea></div>
       <div class="small-btn-row" style="margin-top:8px;">
-        <button class="btn btn-danger btn-sm" data-act="submit-reject-voucher" data-id="${v.id}">${tr('voucher.action_reject')}</button>
-        <button class="btn btn-ghost btn-sm" data-act="cancel-reject-voucher-form">${tr('approval_permissions.cancel')}</button>
+        <button class="btn btn-danger btn-sm" data-act="submit-reject-voucher" data-id="${v.id}" ${isVoucherActionPending('reject',v.id)?'disabled':''}>${tr('voucher.action_reject')}</button>
+        <button class="btn btn-ghost btn-sm" data-act="cancel-reject-voucher-form" ${isVoucherActionPending('reject',v.id)?'disabled':''}>${tr('approval_permissions.cancel')}</button>
       </div>
     </div>` : ''}
   </div>
@@ -9841,7 +9860,7 @@ async function handleAction(act, el){
     }
     return;
   }
-  if(act==='logout'){ S.currentUser=null; S.view='login'; S.customerUsersLoaded=false; S.approvalRulesLoaded=false; S.subcontractorsLoaded=false; S.pettyCashFundsLoaded=false; S.paymentVouchersLoadedByType={petty_cash:false, advance:false, other:false}; S.approvalConditionsLoaded=false; S.jobPositionsLoaded=false; S.employeesLoaded=false; S.jobApplicationsLoaded=false; S.foreignWorkerDocumentsLoaded=false; S.tendersLoaded=false; S.notifications=[]; S.notificationsUnread=0; S.notifDropdownOpen=false; render(); return; }
+  if(act==='logout'){ S.currentUser=null; S.view='login'; S.customerUsersLoaded=false; S.approvalRulesLoaded=false; S.subcontractorsLoaded=false; S.pettyCashFundsLoaded=false; S.paymentVouchersLoadedByType={petty_cash:false, advance:false, other:false}; S.voucherActionKeys={}; S.voucherActionPending={}; S.approvalConditionsLoaded=false; S.jobPositionsLoaded=false; S.employeesLoaded=false; S.jobApplicationsLoaded=false; S.foreignWorkerDocumentsLoaded=false; S.tendersLoaded=false; S.notifications=[]; S.notificationsUnread=0; S.notifDropdownOpen=false; render(); return; }
   if(act==='toggle-notif-dropdown'){ S.notifDropdownOpen = !S.notifDropdownOpen; render(); return; }
   if(act==='set-locale'){ await I18N.setLocale(el.dataset.locale); return; }
   if(act==='open-notification'){
@@ -10334,7 +10353,9 @@ async function handleAction(act, el){
   // ---------- ใบเบิกเงิน (petty_cash/advance/other ใช้ handler ร่วมกัน) ----------
   if(act==='open-add-voucher'){
     const voucherType = el.dataset.voucherType;
-    S.voucherForm = { voucherType, values:{ pettyCashFundId:'', payeeEmployeeId:'', projectId:'', amount:'', expenseAccountCode:'', purpose:'' } };
+    // สร้าง Idempotency-Key ตอนเปิดฟอร์ม (ไม่ใช่ตอนกด save) แล้วใช้คีย์เดิมซ้ำถ้าผู้ใช้กด save ซ้ำ/retry
+    // ระหว่างฟอร์มเปิดอยู่ — ปิดฟอร์มแล้วเปิดใหม่ถือเป็นความพยายามใหม่จริงๆ จึงค่อยได้คีย์ใหม่
+    S.voucherForm = { voucherType, idempotencyKey: crypto.randomUUID(), values:{ pettyCashFundId:'', payeeEmployeeId:'', projectId:'', amount:'', expenseAccountCode:'', purpose:'' } };
     render(); return;
   }
   if(act==='cancel-voucher-form'){ S.voucherForm = null; render(); return; }
@@ -10349,6 +10370,7 @@ async function handleAction(act, el){
     render(); return;
   }
   if(act==='submit-voucher-create'){
+    if(el.disabled) return; // ปุ่มถูก disable ระหว่างรอ response อยู่แล้ว — กันเรียกซ้ำ
     const voucherType = el.dataset.voucherType;
     const cfg = voucherTypeConfig(voucherType);
     const isEdit = S.voucherForm && S.voucherForm.mode==='edit';
@@ -10359,6 +10381,8 @@ async function handleAction(act, el){
     if(!body.amount || !body.purpose || !body.payeeEmployeeId || (cfg.needsFund && !body.pettyCashFundId)){
       toast('กรุณากรอกข้อมูลที่จำเป็นให้ครบ','err'); return;
     }
+    S.voucherForm.saving = true;
+    render();
     try{
       if(isEdit){
         await apiCall('PUT', `/api/customer/payment-vouchers/${S.voucherForm.id}`, body);
@@ -10366,12 +10390,17 @@ async function handleAction(act, el){
         await loadVoucherDetail(S.selectedVoucherId);
         toast('บันทึกการแก้ไขเรียบร้อยแล้ว');
       } else {
-        await apiCall('POST', '/api/customer/payment-vouchers', body, undefined, {'Idempotency-Key': crypto.randomUUID()});
+        // ใช้คีย์เดิมที่สร้างไว้ตอนเปิดฟอร์ม (open-add-voucher) เสมอ — ถ้า apiCall ล้มเหลวแล้วผู้ใช้กด
+        // save ซ้ำ จะได้ Idempotency-Key เดิม ไม่ใช่คีย์สุ่มใหม่ที่ทำให้สร้างซ้ำได้จริง
+        await apiCall('POST', '/api/customer/payment-vouchers', body, undefined, {'Idempotency-Key': S.voucherForm.idempotencyKey});
         await loadPaymentVouchers(voucherType);
         S.voucherForm = null;
         toast('สร้างใบเบิกเงินเรียบร้อยแล้ว (ยังเป็นร่าง — ต้องกดยื่นขออนุมัติต่อ)');
       }
-    } catch(e){ toast(e.message,'err'); }
+    } catch(e){
+      toast(e.message,'err');
+      if(S.voucherForm) S.voucherForm.saving = false;
+    }
     render(); return;
   }
   if(act==='filter-voucher-status'){ S.voucherListFilter.status = el.value; S.voucherListPage = 1; render(); return; }
@@ -10380,20 +10409,32 @@ async function handleAction(act, el){
   if(act==='voucher-page-next'){ S.voucherListPage = (S.voucherListPage||1)+1; render(); return; }
   if(act==='submit-voucher'){
     const id = parseInt(el.dataset.id);
+    if(isVoucherActionPending('submit', id)) return; // ปุ่มควร disabled อยู่แล้ว — กันดับเบิลคลิกซ้ำ
+    const key = voucherActionKey('submit', id);
+    S.voucherActionPending['submit-'+id] = true;
+    render();
     try{
-      await apiCall('POST', `/api/customer/payment-vouchers/${id}/submit`, {}, undefined, {'Idempotency-Key': crypto.randomUUID()});
+      await apiCall('POST', `/api/customer/payment-vouchers/${id}/submit`, {}, undefined, {'Idempotency-Key': key});
       await loadVoucherDetail(id);
       toast('ยื่นขออนุมัติเรียบร้อยแล้ว');
+      clearVoucherActionKey('submit', id);
     } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['submit-'+id] = false;
     render(); return;
   }
   if(act==='approve-voucher'){
     const id = parseInt(el.dataset.id);
+    if(isVoucherActionPending('approve', id)) return;
+    const key = voucherActionKey('approve', id);
+    S.voucherActionPending['approve-'+id] = true;
+    render();
     try{
-      await apiCall('POST', `/api/customer/payment-vouchers/${id}/approve`, {}, undefined, {'Idempotency-Key': crypto.randomUUID()});
+      await apiCall('POST', `/api/customer/payment-vouchers/${id}/approve`, {}, undefined, {'Idempotency-Key': key});
       await loadVoucherDetail(id);
       toast('อนุมัติเรียบร้อยแล้ว');
+      clearVoucherActionKey('approve', id);
     } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['approve-'+id] = false;
     render(); return;
   }
   if(act==='open-reject-voucher'){ S.voucherRejectForm = { id: parseInt(el.dataset.id), reason:'' }; render(); return; }
@@ -10402,21 +10443,29 @@ async function handleAction(act, el){
     const id = parseInt(el.dataset.id);
     const reason = document.getElementById('f-vRejectReason').value.trim();
     if(!reason){ toast('กรุณาระบุเหตุผลที่ปฏิเสธ','err'); return; }
+    if(isVoucherActionPending('reject', id)) return;
+    S.voucherActionPending['reject-'+id] = true;
+    render();
     try{
       await apiCall('POST', `/api/customer/payment-vouchers/${id}/reject`, {reason});
       S.voucherRejectForm = null;
       await loadVoucherDetail(id);
       toast('ปฏิเสธใบเบิกเรียบร้อยแล้ว');
     } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['reject-'+id] = false;
     render(); return;
   }
   if(act==='cancel-voucher'){
     const id = parseInt(el.dataset.id);
+    if(isVoucherActionPending('cancel', id)) return;
+    S.voucherActionPending['cancel-'+id] = true;
+    render();
     try{
       await apiCall('POST', `/api/customer/payment-vouchers/${id}/cancel`, {});
       await loadVoucherDetail(id);
       toast('ยกเลิกใบเบิกเรียบร้อยแล้ว');
     } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['cancel-'+id] = false;
     render(); return;
   }
   if(act==='submit-subcontractor'){
