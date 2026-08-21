@@ -778,6 +778,14 @@ let S = {
   voucherActionPending:{},
   outstandingAdvances:[], // จาก GET /api/customer/outstanding-advances — รีเฟรชทุกครั้งที่เข้าหน้ารายงาน (ไม่ cache แบบ xLoaded)
   outstandingAdvancesFilter:{employeeId:''},
+  externalPayees:[],
+  externalPayeesLoaded:false,
+  externalPayeeForm:null,
+  whtIncomeTypes:[],
+  whtIncomeTypesLoaded:false,
+  whtCertificates:[], // จาก GET /api/customer/wht-certificates — รีเฟรชทุกครั้งที่เข้าหน้า/เปลี่ยน filter (ไม่ cache)
+  whtCertificatesFilter:{month:'', payeeName:''},
+  selectedWhtCertificateId:null,
   geoProvinces:[],
   geoProvincesLoaded:false,
   jobPositionsLoaded:false,
@@ -942,6 +950,51 @@ async function loadOutstandingAdvances(employeeId){
   } catch(e){
     toast(e.message || 'โหลดยอดเงินทดรองจ่ายคงค้างไม่สำเร็จ', 'err');
     S.outstandingAdvances = [];
+  }
+  render();
+}
+
+async function loadExternalPayees(){
+  try {
+    const res = await fetch('/api/customer/external-payees');
+    const data = await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(data.error || 'โหลดข้อมูลผู้รับเงินภายนอกไม่สำเร็จ');
+    S.externalPayees = data.externalPayees;
+    S.externalPayeesLoaded = true;
+  } catch(e){
+    toast(e.message || 'โหลดข้อมูลผู้รับเงินภายนอกไม่สำเร็จ', 'err');
+  }
+  render();
+}
+
+async function loadWhtIncomeTypes(){
+  try {
+    const res = await fetch('/api/customer/wht-income-types');
+    const data = await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(data.error || 'โหลดประเภทเงินได้ไม่สำเร็จ');
+    S.whtIncomeTypes = data.incomeTypes;
+    S.whtIncomeTypesLoaded = true;
+  } catch(e){
+    toast(e.message || 'โหลดประเภทเงินได้ไม่สำเร็จ', 'err');
+  }
+  render();
+}
+
+// ไม่มี xLoaded flag ตั้งใจ (เหตุผลเดียวกับ loadOutstandingAdvances) — มีใบ 50 ทวิ ออกใหม่ได้ตลอดเวลาจาก
+// การอนุมัติใบจ่ายเจ้าหนี้ภายนอก/เคลียร์เงินทดรองจ่ายที่อื่นในระบบ
+async function loadWhtCertificates(month, payeeName){
+  try {
+    const params = new URLSearchParams();
+    if(month) params.set('month', month);
+    if(payeeName) params.set('payeeName', payeeName);
+    const qs = params.toString();
+    const res = await fetch(`/api/customer/wht-certificates${qs?'?'+qs:''}`);
+    const data = await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(data.error || 'โหลดรายการหนังสือรับรองหัก ณ ที่จ่ายไม่สำเร็จ');
+    S.whtCertificates = data.whtCertificates;
+  } catch(e){
+    toast(e.message || 'โหลดรายการหนังสือรับรองหัก ณ ที่จ่ายไม่สำเร็จ', 'err');
+    S.whtCertificates = [];
   }
   render();
 }
@@ -2494,6 +2547,9 @@ function financeNavFor(u){
       {key:'fin_petty_cash_funds', label:tr('nav.fin_petty_cash_funds'), icon:'wallet'},
       {key:'fin_vouchers_petty_cash', label:tr('nav.fin_vouchers_petty_cash'), icon:'wallet'},
       {key:'fin_vouchers_advance', label:tr('nav.fin_vouchers_advance'), icon:'wallet'},
+      {key:'fin_external_payees', label:tr('nav.fin_external_payees'), icon:'userPlus'},
+      {key:'fin_vouchers_other', label:tr('nav.fin_vouchers_other'), icon:'wallet'},
+      {key:'fin_wht_certificates', label:tr('nav.fin_wht_certificates'), icon:'doc'},
     ];
   }
   return [
@@ -2511,6 +2567,9 @@ function financeNavFor(u){
     {key:'fin_petty_cash_funds', label:tr('nav.fin_petty_cash_funds'), icon:'wallet'},
     {key:'fin_vouchers_petty_cash', label:tr('nav.fin_vouchers_petty_cash'), icon:'wallet'},
     {key:'fin_vouchers_advance', label:tr('nav.fin_vouchers_advance'), icon:'wallet'},
+    {key:'fin_external_payees', label:tr('nav.fin_external_payees'), icon:'userPlus'},
+    {key:'fin_vouchers_other', label:tr('nav.fin_vouchers_other'), icon:'wallet'},
+    {key:'fin_wht_certificates', label:tr('nav.fin_wht_certificates'), icon:'doc'},
     {key:'section', label:tr('nav.section_treasury')},
     {key:'fin_stock', label:tr('nav.fin_stock'), icon:'boxes'},
     {key:'fin_cashbank', label:tr('nav.fin_cashbank'), icon:'bank'},
@@ -2601,7 +2660,7 @@ function navFor(role){
 // (canApprovePettyCash/canApproveAdvance/canManagePettyCashFund etc.), same as before this list
 // existed. Reports (e.g. fin_advance_outstanding) stay super_user-only, same as the other report
 // pages in financeNavFor() — reading is not the same right as filing your own claim.
-const FINANCE_NON_SUPER_PAGES = ['fin_petty_cash_funds','fin_vouchers_petty_cash','fin_vouchers_advance','fin_voucher_detail'];
+const FINANCE_NON_SUPER_PAGES = ['fin_petty_cash_funds','fin_vouchers_petty_cash','fin_vouchers_advance','fin_external_payees','fin_vouchers_other','fin_wht_certificates','fin_wht_certificate_print','fin_voucher_detail'];
 
 function renderDashboard(){
   const u = S.currentUser;
@@ -2633,7 +2692,7 @@ function renderDashboard(){
   if(u.role!=='super_user' && u.canManagePo && S.module==='pr' && !nav.find(n=>n.key==='subcontractors')){
     nav.push({key:'subcontractors', label:tr('nav.subcontractors'), icon:'users'});
   }
-  const hiddenPages = ['emp_app_form','emp_app_print','fin_tender_add','fin_tender_detail','fin_budget_detail','fin_project_add','fin_project_detail','fin_project_schedule','fin_po_add','fin_quotation_add','fin_document_add','fin_voucher_detail']; // reachable only via buttons, not listed in any sidebar nav
+  const hiddenPages = ['emp_app_form','emp_app_print','fin_tender_add','fin_tender_detail','fin_budget_detail','fin_project_add','fin_project_detail','fin_project_schedule','fin_po_add','fin_quotation_add','fin_document_add','fin_voucher_detail','fin_wht_certificate_print']; // reachable only via buttons, not listed in any sidebar nav
   if(!hiddenPages.includes(S.page) && !nav.find(n=>n.key===S.page && n.key!=='section')) S.page = S.module==='finance' ? 'fin_overview' : S.module==='employees' ? 'emp_overview' : S.module==='bidding' ? 'fin_tender_overview' : 'overview';
 
   return `
@@ -2772,6 +2831,10 @@ function renderPage(){
     case 'fin_petty_cash_funds': return pageFinPettyCashFunds();
     case 'fin_vouchers_petty_cash': return pageFinPaymentVouchers('petty_cash');
     case 'fin_vouchers_advance': return pageFinPaymentVouchers('advance');
+    case 'fin_external_payees': return pageFinExternalPayees();
+    case 'fin_vouchers_other': return pageFinPaymentVouchers('other');
+    case 'fin_wht_certificates': return pageFinWhtCertificates();
+    case 'fin_wht_certificate_print': return pageFinWhtCertificatePrint();
     case 'fin_voucher_detail': return pageFinPaymentVoucherDetail();
     case 'fin_advance_outstanding': return pageFinAdvanceOutstanding();
     case 'fin_stock': return pageFinStock();
@@ -8301,6 +8364,79 @@ function renderPettyCashFundForm(){
   </div>`;
 }
 
+// ---------- ผู้รับเงินภายนอก (client_external_payees) — master data สำหรับใบจ่ายเจ้าหนี้ภายนอก (ข้อ 1.4) ----------
+function pageFinExternalPayees(){
+  if(S.dataMode==='demo'){
+    return `<div class="page-head"><div><h2>${tr('nav.fin_external_payees')}</h2><div class="sub">${tr('voucher.payee_list_sub')}</div></div></div>
+    <div class="card" style="padding:20px 22px;"><div class="empty">${tr('approval_permissions.demo_not_available')}</div></div>`;
+  }
+  const canManage = !!(S.currentUser && (S.currentUser.role==='super_user' || S.currentUser.canManagePo));
+  const rows = S.externalPayees || [];
+  const taxpayerTypeLabels = {individual:tr('voucher.payee_type_individual'), juristic:tr('voucher.payee_type_juristic')};
+  return `
+  <div class="page-head">
+    <div><h2>${tr('nav.fin_external_payees')}</h2><div class="sub">${tr('voucher.payee_list_sub')}</div></div>
+    ${canManage ? `<button class="btn btn-primary btn-sm" data-act="open-add-payee">${tr('voucher.payee_add_button')}</button>` : ''}
+  </div>
+  ${!canManage ? permNote(tr('voucher.payee_no_manage_note')) : ''}
+  ${canManage && S.externalPayeeForm ? renderExternalPayeeForm() : ''}
+  <div class="card" style="padding:20px 22px;">
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>${tr('voucher.payee_col_name')}</th><th>${tr('voucher.payee_col_tax_id')}</th>
+        <th>${tr('voucher.payee_col_type')}</th><th class="num-cell">${tr('voucher.payee_col_default_wht_rate')}</th>
+        <th>${tr('common.col_status')}</th><th></th>
+      </tr></thead>
+      <tbody>
+        ${rows.length===0 ? `<tr><td colspan="6"><div class="empty" style="padding:20px 0;">${tr('voucher.payee_no_payees_yet')}</div></td></tr>` : rows.map(p=>`
+          <tr style="${p.isActive?'':'opacity:0.55;'}">
+            <td>${esc(p.name)}</td>
+            <td class="mono">${p.taxId?esc(p.taxId):'-'}</td>
+            <td>${taxpayerTypeLabels[p.taxpayerType]||p.taxpayerType}</td>
+            <td class="mono num-cell">${p.defaultWhtRate}%</td>
+            <td><span class="badge ${p.isActive?'badge-approved':'badge-suspended'}">${p.isActive?tr('common.status_active'):tr('common.status_inactive')}</span></td>
+            <td>${canManage ? `<button class="btn btn-ghost btn-sm" data-act="open-edit-payee" data-id="${p.id}">${tr('common.action_edit')}</button>` : ''}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table></div>
+  </div>`;
+}
+function renderExternalPayeeForm(){
+  const f = S.externalPayeeForm;
+  const isEdit = f.mode==='edit';
+  const accountOptions = (S.chartOfAccounts||[]).filter(a=>a.category==='expense').map(a=>`<option value="${a.code}" ${f.values.defaultExpenseAccountCode===a.code?'selected':''}>${a.code} ${esc(a.name)}</option>`).join('');
+  return `
+  <div class="card" style="padding:16px; margin-bottom:16px; background:var(--surface-muted,#f7f8fa); border:1px solid var(--border);">
+    <div style="font-weight:600; margin-bottom:10px;">${isEdit?tr('voucher.payee_edit_title'):tr('voucher.payee_add_title')}</div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:10px;">
+      <div class="field"><label>${tr('voucher.payee_field_name')} *</label><input id="f-payeeName" value="${esc(f.values.name)}"></div>
+      <div class="field"><label>${tr('voucher.payee_field_taxpayer_type')}</label>
+        <select id="f-payeeTaxpayerType">
+          <option value="juristic" ${f.values.taxpayerType==='juristic'?'selected':''}>${tr('voucher.payee_type_juristic')}</option>
+          <option value="individual" ${f.values.taxpayerType==='individual'?'selected':''}>${tr('voucher.payee_type_individual')}</option>
+        </select>
+      </div>
+      <div class="field"><label>${tr('voucher.payee_field_tax_id')}</label><input id="f-payeeTaxId" value="${esc(f.values.taxId)}" maxlength="13" placeholder="13 หลัก"></div>
+      <div class="field"><label>${tr('voucher.payee_field_branch_code')}</label><input id="f-payeeBranchCode" value="${esc(f.values.branchCode)}" placeholder="00000"></div>
+      <div class="field" style="grid-column:1/-1;"><label>${tr('voucher.payee_field_address')}</label><input id="f-payeeAddress" value="${esc(f.values.address)}"></div>
+      <div class="field"><label>${tr('voucher.payee_field_default_wht_rate')}</label><input id="f-payeeDefaultWhtRate" type="number" min="0" max="100" step="0.01" value="${esc(f.values.defaultWhtRate)}"></div>
+      <div class="field"><label>${tr('voucher.payee_field_default_expense_account')}</label>
+        <select id="f-payeeDefaultExpenseAccount"><option value="">— ${tr('voucher.field_expense_account_optional')} —</option>${accountOptions}</select>
+      </div>
+      ${isEdit ? `<div class="field"><label>${tr('common.col_status')}</label>
+        <select id="f-payeeIsActive">
+          <option value="1" ${f.values.isActive?'selected':''}>${tr('common.status_active')}</option>
+          <option value="0" ${!f.values.isActive?'selected':''}>${tr('common.status_inactive')}</option>
+        </select>
+      </div>` : ''}
+    </div>
+    <div style="display:flex; gap:8px; margin-top:14px;">
+      <button type="button" class="btn btn-primary btn-sm" data-act="submit-payee">${tr('common.save')}</button>
+      <button type="button" class="btn btn-ghost btn-sm" data-act="cancel-payee-form">${tr('approval_permissions.cancel')}</button>
+    </div>
+  </div>`;
+}
+
 function pageFinPaymentVouchers(voucherType){
   const cfg = voucherTypeConfig(voucherType);
   if(S.dataMode==='demo'){
@@ -8370,13 +8506,74 @@ function pageFinPaymentVouchers(voucherType){
   </div>`;
 }
 
+// คำนวณ/แสดงยอดสรุป VAT/WHT สดขณะกรอก (ไม่ผ่าน render() ทั้งหน้า — เขียน DOM ตรงๆ เท่านั้น กัน input
+// เสีย focus/ตำแหน่ง cursor ระหว่างพิมพ์ ซึ่งจะเกิดขึ้นถ้า re-render ฟอร์มทั้งก้อนทุกครั้งที่พิมพ์) สูตร
+// ต้องตรงกับที่ server.js คำนวณจริงตอน INSERT/UPDATE เป๊ะ (ROUND(amount*rate/100,2) แยกกันสำหรับ VAT/WHT
+// แล้วค่อย net = amount+vat-wht) ไม่งั้นตัวเลขพรีวิวจะไม่ตรงกับที่ระบบบันทึกจริงหลัง submit
+function round2(n){ return Math.round((n + Number.EPSILON) * 100) / 100; }
+function updateOtherVoucherSummary(){
+  const amountEl = document.getElementById('f-vAmount');
+  const hasTaxInvoiceEl = document.getElementById('f-vHasTaxInvoice');
+  // ต้องเช็คทั้งคู่ ไม่ใช่แค่ amountEl — #f-vAmount มีอยู่ในฟอร์มทุก voucherType (petty_cash/advance/other)
+  // ร่วมกัน แต่ #f-vHasTaxInvoice (และฟิลด์ VAT/WHT อื่นๆ ในบล็อกนี้) render เฉพาะตอน voucherType='other'
+  // เท่านั้น (ดู renderVoucherCreateForm()) — เรียกจาก attachHandlers() ทุกครั้งที่ render() แบบไม่มีเงื่อนไข
+  // เช็คแค่ amountEl ตัวเดียวจึงยัง throw ตอนฟอร์ม petty_cash/advance เปิดอยู่ (พบจริง: exception นี้ทำให้
+  // submit-voucher-create ทั้งฟังก์ชันหยุดกลางคันตรง render() ก่อนถึง apiCall() เลย ใบเบิกเงินสดย่อย/เงิน
+  // ทดรองจ่ายเลยสร้างไม่ได้อีกต่อไปหลังเพิ่มโค้ดส่วนนี้เข้ามา)
+  if(!amountEl || !hasTaxInvoiceEl) return;
+  const amount = parseFloat(amountEl.value) || 0;
+  const hasTaxInvoice = hasTaxInvoiceEl.checked;
+  const vatRate = hasTaxInvoice ? (parseFloat(document.getElementById('f-vVatRate').value) || 0) : 0;
+  const whtRate = parseFloat(document.getElementById('f-vWhtRate').value) || 0;
+  const vatAmount = round2(amount * vatRate / 100);
+  const whtAmount = round2(amount * whtRate / 100);
+  const totalWithVat = round2(amount + vatAmount);
+  const netAmount = round2(amount + vatAmount - whtAmount);
+  document.getElementById('vSummaryGross').textContent = fmtMoney(amount);
+  document.getElementById('vSummaryVat').textContent = fmtMoney(vatAmount);
+  document.getElementById('vSummaryTotal').textContent = fmtMoney(totalWithVat);
+  document.getElementById('vSummaryWht').textContent = fmtMoney(whtAmount);
+  document.getElementById('vSummaryNet').textContent = fmtMoney(netAmount);
+}
+// เช็คบ็อกซ์ "มีใบกำกับภาษีเต็มรูป" ควบคุมฟิลด์อัตราภาษีซื้อโดยตรง (disable+ล้างเป็น 0 ทันทีที่ไม่ติ๊ก) —
+// กันตั้งแต่ระดับ UI ไม่ให้กรอกแล้วโดน DB ปฏิเสธทีหลัง (CHECK client_payment_vouchers_tax_invoice_check
+// อยู่แล้วฝั่ง DB แต่ผู้ใช้ควรรู้ตั้งแต่กรอก ไม่ใช่รอ error ตอนกด save)
+function toggleVatRateField(){
+  const hasInvoice = document.getElementById('f-vHasTaxInvoice').checked;
+  const vatInput = document.getElementById('f-vVatRate');
+  vatInput.disabled = !hasInvoice;
+  if(!hasInvoice) vatInput.value = '0';
+  updateOtherVoucherSummary();
+}
+// เลือกประเภทเงินได้มาตรา 40 แล้ว auto-fill อัตราหัก ณ ที่จ่ายจาก default_rate ถ้ามี (ผู้ใช้แก้ไขเองต่อได้
+// เสมอ ไม่ lock ฟิลด์) — ถ้า default_rate เป็น null (เช่น 40(1) เงินเดือน คำนวณตามอัตราก้าวหน้า ไม่ใช่ %
+// คงที่ — ดู CLAUDE.md ข้อ 17) ต้องเตือนชัดเจนว่าต้องกรอกอัตราเอง ไม่ fallback เป็น 0 เงียบๆ
+function onWhtIncomeTypeChange(){
+  const code = document.getElementById('f-vWhtIncomeType').value;
+  const type = (S.whtIncomeTypes||[]).find(t=>t.code===code);
+  const warnEl = document.getElementById('vWhtNullRateWarning');
+  const whtRateInput = document.getElementById('f-vWhtRate');
+  if(type && type.defaultRate !== null){
+    whtRateInput.value = type.defaultRate;
+    warnEl.style.display = 'none';
+  } else if(type && type.defaultRate === null){
+    warnEl.style.display = '';
+  } else {
+    warnEl.style.display = 'none';
+  }
+  updateOtherVoucherSummary();
+}
+
 function renderVoucherCreateForm(voucherType){
   const cfg = voucherTypeConfig(voucherType);
   const f = S.voucherForm;
   const fundOptions = (S.pettyCashFunds||[]).filter(x=>x.isActive).map(x=>`<option value="${x.id}" ${String(f.values.pettyCashFundId)===String(x.id)?'selected':''}>${esc(x.name)}</option>`).join('');
   const employeeOptions = (DB.employees||[]).filter(x=>x.status==='active').map(x=>`<option value="${x.id}" ${String(f.values.payeeEmployeeId)===String(x.id)?'selected':''}>${esc(x.fullName)}</option>`).join('');
+  const externalPayeeOptions = (S.externalPayees||[]).filter(x=>x.isActive).map(x=>`<option value="${x.id}" ${String(f.values.payeeExternalId)===String(x.id)?'selected':''}>${esc(x.name)}${x.taxId?'':` (${tr('voucher.oth_payee_no_taxid_hint')})`}</option>`).join('');
   const projectOptions = (DB.projects||[]).map(p=>`<option value="${p.id}" ${String(f.values.projectId)===String(p.id)?'selected':''}>${esc(p.name)}</option>`).join('');
   const accountOptions = (S.chartOfAccounts||[]).filter(a=>a.category==='expense').map(a=>`<option value="${a.code}" ${f.values.expenseAccountCode===a.code?'selected':''}>${a.code} ${esc(a.name)}</option>`).join('');
+  const whtTypeOptions = (S.whtIncomeTypes||[]).map(t=>`<option value="${t.code}" ${f.values.whtIncomeTypeCode===t.code?'selected':''}>${t.code} ${esc(t.nameTh)}</option>`).join('');
+  const isOther = voucherType==='other';
   return `
   <div class="card" style="padding:16px; margin-bottom:16px; background:var(--surface-muted,#f7f8fa); border:1px solid var(--border);">
     <div style="font-weight:600; margin-bottom:10px;">${cfg.formTitle}</div>
@@ -8384,18 +8581,48 @@ function renderVoucherCreateForm(voucherType){
       ${cfg.needsFund ? `<div class="field"><label>${tr('voucher.field_fund')} *</label>
         <select id="f-vFund"><option value="">— ${tr('voucher.field_fund')} —</option>${fundOptions}</select>
       </div>` : ''}
-      <div class="field"><label>${cfg.payeeLabel} *</label>
+      ${cfg.needsExternalPayee ? `<div class="field"><label>${cfg.payeeLabel} *</label>
+        <select id="f-vExternalPayee"><option value="">— ${cfg.payeeLabel} —</option>${externalPayeeOptions}</select>
+      </div>` : `<div class="field"><label>${cfg.payeeLabel} *</label>
         <select id="f-vEmployee"><option value="">— ${cfg.payeeLabel} —</option>${employeeOptions}</select>
-      </div>
+      </div>`}
       <div class="field"><label>${tr('common.col_project')}</label>
         <select id="f-vProject"><option value="">— ${tr('voucher.field_no_project')} —</option>${projectOptions}</select>
       </div>
-      <div class="field"><label>${tr('voucher.field_amount')} *</label><input id="f-vAmount" type="number" min="0.01" step="0.01" value="${esc(f.values.amount)}"></div>
+      <div class="field"><label>${tr('voucher.field_amount')} *</label><input id="f-vAmount" type="number" min="0.01" step="0.01" value="${esc(f.values.amount)}" oninput="updateOtherVoucherSummary()"></div>
       ${cfg.needsExpenseAccount ? `<div class="field"><label>${tr('voucher.field_expense_account')}</label>
         <select id="f-vExpenseAccount"><option value="">— ${tr('voucher.field_expense_account_optional')} —</option>${accountOptions}</select>
       </div>` : ''}
       <div class="field" style="grid-column:1/-1;"><label>${cfg.purposeLabel} *</label><input id="f-vPurpose" value="${esc(f.values.purpose)}"></div>
     </div>
+    ${isOther ? `
+    <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border);">
+      <div style="font-weight:600; margin-bottom:10px;">${tr('voucher.oth_vat_wht_section')}</div>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:10px;">
+        <div class="field">
+          <label><input id="f-vHasTaxInvoice" type="checkbox" ${f.values.hasTaxInvoice?'checked':''} onchange="toggleVatRateField()"> ${tr('voucher.oth_has_tax_invoice')}</label>
+        </div>
+        <div class="field"><label>${tr('voucher.oth_vat_rate')}</label>
+          <input id="f-vVatRate" type="number" min="0" max="100" step="0.01" value="${esc(f.values.vatRate)}" ${f.values.hasTaxInvoice?'':'disabled'} oninput="updateOtherVoucherSummary()">
+        </div>
+        <div class="field"><label>${tr('voucher.oth_wht_income_type')}</label>
+          <select id="f-vWhtIncomeType" onchange="onWhtIncomeTypeChange()"><option value="">— ${tr('voucher.oth_wht_no_wht')} —</option>${whtTypeOptions}</select>
+        </div>
+        <div class="field"><label>${tr('voucher.oth_wht_rate')}</label>
+          <input id="f-vWhtRate" type="number" min="0" max="100" step="0.01" value="${esc(f.values.whtRate)}" oninput="updateOtherVoucherSummary()">
+        </div>
+      </div>
+      <div id="vWhtNullRateWarning" class="callout callout-error" style="margin-top:10px; display:${(()=>{ const t=(S.whtIncomeTypes||[]).find(x=>x.code===f.values.whtIncomeTypeCode); return t && t.defaultRate===null ? '' : 'none'; })()};">${tr('voucher.oth_wht_null_rate_warning')}</div>
+      <div class="card" style="margin-top:12px; padding:12px 16px; background:var(--surface,#fff);">
+        <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:8px; font-size:13px;">
+          <div><div class="hint">${tr('voucher.oth_summary_gross')}</div><div class="mono" id="vSummaryGross">0.00</div></div>
+          <div><div class="hint">${tr('voucher.oth_summary_vat')}</div><div class="mono" id="vSummaryVat">0.00</div></div>
+          <div><div class="hint">${tr('voucher.oth_summary_total')}</div><div class="mono" id="vSummaryTotal">0.00</div></div>
+          <div><div class="hint">${tr('voucher.oth_summary_wht')}</div><div class="mono" id="vSummaryWht">0.00</div></div>
+          <div><div class="hint" style="font-weight:600;">${tr('voucher.oth_summary_net')}</div><div class="mono" id="vSummaryNet" style="font-weight:700;">0.00</div></div>
+        </div>
+      </div>
+    </div>` : ''}
     <div style="display:flex; gap:8px; margin-top:14px;">
       <button type="button" class="btn btn-primary btn-sm" data-act="submit-voucher-create" data-voucher-type="${voucherType}" ${f.saving?'disabled':''}>${tr('common.save')}</button>
       <button type="button" class="btn btn-ghost btn-sm" data-act="cancel-voucher-form" ${f.saving?'disabled':''}>${tr('approval_permissions.cancel')}</button>
@@ -8442,6 +8669,15 @@ function pageFinPaymentVoucherDetail(){
       ${v.expenseAccountCode ? `<div><div class="hint">${tr('voucher.field_expense_account')}</div><div class="mono">${esc(v.expenseAccountCode)}</div></div>` : ''}
       <div><div class="hint">${tr('voucher.col_date')}</div><div>${v.requestDate||'-'}</div></div>
     </div>
+    ${v.voucherType==='other' ? `
+    <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border); display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; font-size:13px;">
+      <div><div class="hint">${tr('voucher.oth_summary_gross')}</div><div class="mono">${fmtMoney(v.amount)}</div></div>
+      <div><div class="hint">${tr('voucher.oth_summary_vat')}</div><div class="mono">${fmtMoney(v.vatAmount)} (${v.vatRate}%)</div></div>
+      <div><div class="hint">${tr('voucher.oth_summary_total')}</div><div class="mono">${fmtMoney(Number(v.amount)+Number(v.vatAmount))}</div></div>
+      <div><div class="hint">${tr('voucher.oth_summary_wht')}</div><div class="mono">${fmtMoney(v.whtAmount)} (${v.whtRate}%)</div></div>
+      <div><div class="hint" style="font-weight:600;">${tr('voucher.oth_summary_net')}</div><div class="mono" style="font-weight:700;">${fmtMoney(v.netAmount)}</div></div>
+      ${v.whtIncomeTypeCode ? `<div><div class="hint">${tr('voucher.oth_wht_income_type')}</div><div>${esc((()=>{ const t=(S.whtIncomeTypes||[]).find(x=>x.code===v.whtIncomeTypeCode); return t ? `${t.code} ${t.nameTh}` : v.whtIncomeTypeCode; })())}</div></div>` : ''}
+    </div>` : ''}
   </div>`}
   <div class="card" style="padding:20px 22px; margin-bottom:16px;">
     <div class="small-btn-row" style="justify-content:flex-end;">
@@ -8538,6 +8774,112 @@ function pageFinAdvanceOutstanding(){
         <td colspan="2"></td>
       </tr></tfoot>
     </table></div>`}
+  </div>`;
+}
+
+// ---------- หนังสือรับรองหัก ณ ที่จ่าย 50 ทวิ (ข้อ 1.4.4) — list + พิมพ์ซ้ำ ----------
+// ข้ามแหล่งที่มาทั้งหมด (payment_voucher/advance_clearance_item/subcontractor_payment) — ไม่ผูกกับ
+// voucher_type='other' อย่างเดียว เพราะเคลียร์เงินทดรองจ่าย (1.3) ก็ออก 50 ทวิ ได้เหมือนกัน
+function pageFinWhtCertificates(){
+  const rows = S.whtCertificates || [];
+  const filt = S.whtCertificatesFilter;
+  const grandTotal = rows.reduce((s,c)=>s+Number(c.whtAmount),0);
+  return `
+  <div class="page-head"><div><h2>${tr('nav.fin_wht_certificates')}</h2><div class="sub">${tr('voucher.wht_cert_list_sub')}</div></div></div>
+  <div class="card" style="padding:14px 16px; margin-bottom:16px;">
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px;">
+      <div class="field"><label>${tr('voucher.wht_cert_filter_month')}</label>
+        <input type="month" value="${esc(filt.month)}" onchange="S.whtCertificatesFilter.month=this.value; loadWhtCertificates(S.whtCertificatesFilter.month, S.whtCertificatesFilter.payeeName);">
+      </div>
+      <div class="field"><label>${tr('voucher.wht_cert_filter_payee')}</label>
+        <input value="${esc(filt.payeeName)}" onchange="S.whtCertificatesFilter.payeeName=this.value; loadWhtCertificates(S.whtCertificatesFilter.month, S.whtCertificatesFilter.payeeName);">
+      </div>
+    </div>
+  </div>
+  <div class="card" style="padding:20px 22px;">
+    ${rows.length===0 ? `<div class="empty" style="padding:20px 0;">${tr('voucher.wht_cert_empty')}</div>` : `
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>${tr('voucher.wht_cert_col_no')}</th><th>${tr('voucher.col_date')}</th>
+        <th>${tr('voucher.wht_cert_col_payee')}</th><th>${tr('voucher.oth_wht_income_type')}</th>
+        <th class="num-cell">${tr('voucher.oth_summary_gross')}</th><th class="num-cell">${tr('voucher.wht_cert_col_rate')}</th>
+        <th class="num-cell">${tr('voucher.oth_summary_wht')}</th><th></th>
+      </tr></thead>
+      <tbody>${rows.map(c=>`
+        <tr>
+          <td class="mono">${esc(c.certNo)||'-'}</td>
+          <td>${c.paymentDate ? String(c.paymentDate).slice(0,10) : '-'}</td>
+          <td>${esc(c.payeeName)}</td>
+          <td>${esc(c.whtIncomeTypeNameSnapshot)||'-'}</td>
+          <td class="mono num-cell">${fmtMoney(c.grossAmount)}</td>
+          <td class="mono num-cell">${c.whtRate}%</td>
+          <td class="mono num-cell">${fmtMoney(c.whtAmount)}</td>
+          <td><button class="btn btn-ghost btn-sm" data-act="print-wht-certificate" data-id="${c.id}">${tr('voucher.wht_cert_print_button')}</button></td>
+        </tr>`).join('')}
+      </tbody>
+      <tfoot><tr>
+        <td colspan="6" style="text-align:right; font-weight:700;">${tr('voucher.outstanding_grand_total')}</td>
+        <td class="mono num-cell" style="font-weight:700;">${fmtMoney(grandTotal)}</td>
+        <td></td>
+      </tr></tfoot>
+    </table></div>`}
+  </div>`;
+}
+
+// หน้าพิมพ์ใบเดียว — จัดรูปแบบตามหัวข้อของแบบฟอร์ม 50 ทวิ จริง (ผู้จ่ายเงิน/ผู้ถูกหักภาษี/ประเภทเงินได้/
+// วันที่จ่าย/จำนวนเงิน/ภาษีที่หัก) ใช้ data-act="print-doc" (window.print() ตรงๆ) แบบเดียวกับหน้าพิมพ์อื่น
+// ในระบบ (ปิดงบประจำปี ฯลฯ) — พึ่ง @media print ที่ตั้งไว้ระดับ global ซ่อน sidebar/nav ให้อยู่แล้ว ไม่ต้อง
+// ทำ print layout แยกเฉพาะหน้านี้
+function pageFinWhtCertificatePrint(){
+  const cert = (S.whtCertificates||[]).find(c=>c.id===S.selectedWhtCertificateId);
+  if(!cert){
+    return `<div class="page-head"><div><h2>${tr('voucher.wht_cert_print_title')}</h2></div></div>
+    <div class="card" style="padding:20px 22px;"><div class="empty">${tr('voucher.wht_cert_not_found')}</div></div>`;
+  }
+  const company = DB.company || {};
+  return `
+  <div class="page-head">
+    <div><h2>${tr('voucher.wht_cert_print_title')}</h2><div class="sub">${esc(cert.certNo)||'-'}</div></div>
+    <button class="btn btn-navy" data-act="print-doc">${ICN.printer} ${tr('ledger.print_doc')}</button>
+  </div>
+  <div class="card" style="padding:32px 40px; max-width:720px; margin:0 auto;">
+    <div style="text-align:center; font-weight:700; font-size:16px; margin-bottom:4px;">${tr('voucher.wht_cert_print_heading')}</div>
+    <div style="text-align:center; font-size:13px; color:var(--text-muted); margin-bottom:20px;">${tr('voucher.wht_cert_print_subheading')}</div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:16px;">
+      <div>
+        <div class="hint">${tr('voucher.wht_cert_print_payer')}</div>
+        <div style="font-weight:600;">${esc(company.name)||'-'}</div>
+        <div style="font-size:13px;">${tr('company_settings.tax_id_label')}: ${esc(company.tax_id)||'-'}</div>
+        <div style="font-size:13px; white-space:pre-line;">${esc(company.address)||'-'}</div>
+      </div>
+      <div>
+        <div class="hint">${tr('voucher.wht_cert_print_payee')}</div>
+        <div style="font-weight:600;">${esc(cert.payeeName)}</div>
+        <div style="font-size:13px;">${tr('company_settings.tax_id_label')}: ${esc(cert.payeeTaxId)}</div>
+      </div>
+    </div>
+    <div class="table-wrap" style="margin-bottom:16px;"><table>
+      <thead><tr>
+        <th>${tr('voucher.oth_wht_income_type')}</th><th>${tr('voucher.col_date')}</th>
+        <th class="num-cell">${tr('voucher.oth_summary_gross')}</th><th class="num-cell">${tr('voucher.wht_cert_col_rate')}</th>
+        <th class="num-cell">${tr('voucher.oth_summary_wht')}</th>
+      </tr></thead>
+      <tbody><tr>
+        <td>${esc(cert.whtIncomeTypeNameSnapshot)||esc(cert.incomeTypeDesc)||'-'}</td>
+        <td>${cert.paymentDate ? String(cert.paymentDate).slice(0,10) : '-'}</td>
+        <td class="mono num-cell">${fmtMoney(cert.grossAmount)}</td>
+        <td class="mono num-cell">${cert.whtRate}%</td>
+        <td class="mono num-cell">${fmtMoney(cert.whtAmount)}</td>
+      </tr></tbody>
+    </table></div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-top:40px; font-size:13px; text-align:center;">
+      <div>
+        <div style="border-top:1px solid var(--border); padding-top:8px; margin-top:40px;">${tr('voucher.wht_cert_print_signature_payer')}</div>
+      </div>
+      <div>
+        <div>${tr('voucher.wht_cert_print_issue_date')}: ${cert.issuedAt ? String(cert.issuedAt).slice(0,10) : '-'}</div>
+      </div>
+    </div>
   </div>`;
 }
 
@@ -9763,6 +10105,7 @@ function attachHandlers(){
   document.querySelectorAll('.modal').forEach(m=>{ m.onclick = (e)=>e.stopPropagation(); });
   wireScheduleScrollSync();
   updateScheduleChartOverlay();
+  updateOtherVoucherSummary(); // no-op if the 'other' voucher form (VAT/WHT section) isn't on screen right now
 }
 
 async function handleAction(act, el){
@@ -10002,7 +10345,7 @@ async function handleAction(act, el){
     // โครงการ (client_projects) backs the project pickers on cost/revenue/labor forms, budget-vs-
     // actual, and the project list/detail pages themselves — load it once, on first visit to any
     // of them, rather than duplicating the load call in every single one of those page branches.
-    const PROJECT_DEPENDENT_PAGES = ['fin_projects','fin_project_add','fin_project_detail','fin_costs','fin_revenue','fin_retention','fin_receive_payment','fin_labor','fin_labor_pay','create_pr','fin_po','fin_po_add','fin_quotations','fin_quotation_add','fin_documents','fin_document_add','fin_petty_cash_funds','fin_vouchers_petty_cash','fin_vouchers_advance','fin_voucher_detail'];
+    const PROJECT_DEPENDENT_PAGES = ['fin_projects','fin_project_add','fin_project_detail','fin_costs','fin_revenue','fin_retention','fin_receive_payment','fin_labor','fin_labor_pay','create_pr','fin_po','fin_po_add','fin_quotations','fin_quotation_add','fin_documents','fin_document_add','fin_petty_cash_funds','fin_vouchers_petty_cash','fin_vouchers_advance','fin_vouchers_other','fin_voucher_detail'];
     if(PROJECT_DEPENDENT_PAGES.includes(S.page) && S.dataMode!=='demo' && !S.projectsLoaded) await loadRealProjects();
     if(S.page==='fin_tender_overview' && S.dataMode!=='demo' && !S.tenderOverviewLoaded) await loadTenderOverview();
     if(S.page==='fin_project_schedule' && S.dataMode!=='demo') await loadProjectTasks(S.selectedProjectId);
@@ -10080,8 +10423,22 @@ async function handleAction(act, el){
       if(!S.employeesLoaded) await loadRealEmployees(); // ฟอร์มสร้างใบเบิกต้องเลือกพนักงานผู้ขอเบิก
       if(!S.paymentVouchersLoadedByType.advance) await loadPaymentVouchers('advance');
     }
+    if(S.page==='fin_external_payees' && S.dataMode!=='demo'){
+      if(!S.chartOfAccountsLoaded) await loadChartOfAccounts(); // ฟอร์มมี dropdown รหัสบัญชีค่าใช้จ่ายเริ่มต้น
+      if(!S.externalPayeesLoaded) await loadExternalPayees();
+    }
+    if(S.page==='fin_vouchers_other' && S.dataMode!=='demo'){
+      if(!S.externalPayeesLoaded) await loadExternalPayees(); // ฟอร์มสร้างใบเบิกต้องเลือกผู้รับเงิน
+      if(!S.chartOfAccountsLoaded) await loadChartOfAccounts();
+      if(!S.whtIncomeTypesLoaded) await loadWhtIncomeTypes(); // dropdown ประเภทเงินได้มาตรา 40
+      if(!S.paymentVouchersLoadedByType.other) await loadPaymentVouchers('other');
+    }
+    if(S.page==='fin_wht_certificates' && S.dataMode!=='demo'){
+      await loadWhtCertificates(S.whtCertificatesFilter.month, S.whtCertificatesFilter.payeeName); // รีเฟรชทุกครั้งที่เข้าหน้า
+    }
     if(S.page==='fin_voucher_detail' && S.dataMode!=='demo'){
       if(!S.chartOfAccountsLoaded) await loadChartOfAccounts();
+      if(!S.whtIncomeTypesLoaded) await loadWhtIncomeTypes();
       if(S.selectedVoucherId) await loadVoucherDetail(S.selectedVoucherId);
     }
     if(S.page==='fin_advance_outstanding' && S.dataMode!=='demo'){
@@ -10445,12 +10802,58 @@ async function handleAction(act, el){
     } catch(e){ toast(e.message,'err'); }
     render(); return;
   }
+  // ---------- ผู้รับเงินภายนอก ----------
+  if(act==='open-add-payee'){
+    S.externalPayeeForm = { mode:'new', values:{ name:'', taxpayerType:'juristic', taxId:'', branchCode:'00000', address:'', defaultWhtRate:'0', defaultExpenseAccountCode:'' } };
+    render(); return;
+  }
+  if(act==='open-edit-payee'){
+    const id = parseInt(el.dataset.id);
+    const p = (S.externalPayees||[]).find(x=>x.id===id);
+    if(!p){ toast('ไม่พบผู้รับเงินนี้','err'); return; }
+    S.externalPayeeForm = { mode:'edit', id, values:{
+      name:p.name, taxpayerType:p.taxpayerType, taxId:p.taxId||'', branchCode:p.branchCode||'00000',
+      address:p.address||'', defaultWhtRate:String(p.defaultWhtRate), defaultExpenseAccountCode:p.defaultExpenseAccountCode||'', isActive:p.isActive,
+    }};
+    render(); return;
+  }
+  if(act==='cancel-payee-form'){ S.externalPayeeForm = null; render(); return; }
+  if(act==='submit-payee'){
+    const f = S.externalPayeeForm;
+    const body = {
+      name: document.getElementById('f-payeeName').value.trim(),
+      taxpayerType: document.getElementById('f-payeeTaxpayerType').value,
+      taxId: document.getElementById('f-payeeTaxId').value.trim() || null,
+      branchCode: document.getElementById('f-payeeBranchCode').value.trim() || '00000',
+      address: document.getElementById('f-payeeAddress').value.trim(),
+      defaultWhtRate: document.getElementById('f-payeeDefaultWhtRate').value || '0',
+      defaultExpenseAccountCode: document.getElementById('f-payeeDefaultExpenseAccount').value || null,
+    };
+    if(!body.name){ toast('กรุณากรอกชื่อผู้รับเงิน','err'); return; }
+    if(f.mode==='edit') body.isActive = document.getElementById('f-payeeIsActive').value==='1';
+    try{
+      if(f.mode==='edit') await apiCall('PUT', `/api/customer/external-payees/${f.id}`, body);
+      else await apiCall('POST', '/api/customer/external-payees', body);
+      await loadExternalPayees();
+      S.externalPayeeForm = null;
+      toast(f.mode==='edit'?'บันทึกการแก้ไขเรียบร้อยแล้ว':'เพิ่มผู้รับเงินเรียบร้อยแล้ว');
+    } catch(e){ toast(e.message,'err'); }
+    render(); return;
+  }
+  if(act==='print-wht-certificate'){
+    S.selectedWhtCertificateId = parseInt(el.dataset.id);
+    S.page = 'fin_wht_certificate_print';
+    render(); return;
+  }
   // ---------- ใบเบิกเงิน (petty_cash/advance/other ใช้ handler ร่วมกัน) ----------
   if(act==='open-add-voucher'){
     const voucherType = el.dataset.voucherType;
     // สร้าง Idempotency-Key ตอนเปิดฟอร์ม (ไม่ใช่ตอนกด save) แล้วใช้คีย์เดิมซ้ำถ้าผู้ใช้กด save ซ้ำ/retry
     // ระหว่างฟอร์มเปิดอยู่ — ปิดฟอร์มแล้วเปิดใหม่ถือเป็นความพยายามใหม่จริงๆ จึงค่อยได้คีย์ใหม่
-    S.voucherForm = { voucherType, idempotencyKey: crypto.randomUUID(), values:{ pettyCashFundId:'', payeeEmployeeId:'', projectId:'', amount:'', expenseAccountCode:'', purpose:'' } };
+    S.voucherForm = { voucherType, idempotencyKey: crypto.randomUUID(), values:{
+      pettyCashFundId:'', payeeEmployeeId:'', payeeExternalId:'', projectId:'', amount:'', expenseAccountCode:'', purpose:'',
+      hasTaxInvoice:false, vatRate:'0', whtRate:'0', whtIncomeTypeCode:'',
+    }};
     render(); return;
   }
   if(act==='cancel-voucher-form'){ S.voucherForm = null; render(); return; }
@@ -10459,8 +10862,9 @@ async function handleAction(act, el){
     const v = S.selectedVoucherDetail && S.selectedVoucherDetail.voucher;
     if(!v || v.id!==id){ toast('ไม่พบใบเบิกเงินนี้','err'); return; }
     S.voucherForm = { mode:'edit', id, voucherType:v.voucherType, values:{
-      pettyCashFundId: v.pettyCashFundId||'', payeeEmployeeId: v.payeeEmployeeId||'', projectId: v.projectId||'',
+      pettyCashFundId: v.pettyCashFundId||'', payeeEmployeeId: v.payeeEmployeeId||'', payeeExternalId: v.payeeExternalId||'', projectId: v.projectId||'',
       amount: v.amount, expenseAccountCode: v.expenseAccountCode||'', purpose: v.purpose||'',
+      hasTaxInvoice: !!v.hasTaxInvoice, vatRate: String(v.vatRate||0), whtRate: String(v.whtRate||0), whtIncomeTypeCode: v.whtIncomeTypeCode||'',
     }};
     render(); return;
   }
@@ -10471,10 +10875,37 @@ async function handleAction(act, el){
     const isEdit = S.voucherForm && S.voucherForm.mode==='edit';
     const body = { voucherType, projectId: document.getElementById('f-vProject').value || null, amount: document.getElementById('f-vAmount').value, purpose: document.getElementById('f-vPurpose').value.trim() };
     if(cfg.needsFund) body.pettyCashFundId = document.getElementById('f-vFund').value || null;
-    body.payeeEmployeeId = document.getElementById('f-vEmployee').value || null;
+    let payeeOk;
+    if(cfg.needsExternalPayee){
+      body.payeeExternalId = document.getElementById('f-vExternalPayee').value || null;
+      payeeOk = !!body.payeeExternalId;
+    } else {
+      body.payeeEmployeeId = document.getElementById('f-vEmployee').value || null;
+      payeeOk = !!body.payeeEmployeeId;
+    }
     if(cfg.needsExpenseAccount) body.expenseAccountCode = document.getElementById('f-vExpenseAccount').value || null;
-    if(!body.amount || !body.purpose || !body.payeeEmployeeId || (cfg.needsFund && !body.pettyCashFundId)){
+    if(voucherType==='other'){
+      body.hasTaxInvoice = document.getElementById('f-vHasTaxInvoice').checked;
+      body.vatRate = body.hasTaxInvoice ? (document.getElementById('f-vVatRate').value || '0') : '0';
+      body.whtRate = document.getElementById('f-vWhtRate').value || '0';
+      body.whtIncomeTypeCode = document.getElementById('f-vWhtIncomeType').value || null;
+    }
+    // ซิงก์ค่าที่เพิ่งอ่านจาก DOM กลับเข้า S.voucherForm.values ก่อนเช็ค validation ใดๆ เสมอ — toast()
+    // เรียก render() ทันที ซึ่งจะ regenerate ฟอร์มจาก S.voucherForm.values ใหม่ทั้งก้อน ถ้าไม่ sync ก่อน
+    // ตรงนี้ ฟอร์มจะ reset กลับไปเป็นค่าตอนเปิดฟอร์มครั้งแรก (ว่างเปล่า/ค่าเดิมตอน edit) ทันทีที่ validation
+    // ล้มเหลวครั้งแรก ทำให้ผู้ใช้ต้องพิมพ์ทุกช่องใหม่หมด — พบจริงจากการเขียนเทส guard "WHT ไม่มีเลขภาษี"
+    // ที่กรอกฟอร์มเต็มก่อนกด save แล้วเจอฟอร์มว่างเปล่าในภาพ screenshot ทั้งที่ toast ขึ้นถูกต้อง
+    Object.assign(S.voucherForm.values, body);
+    if(!body.amount || !body.purpose || !payeeOk || (cfg.needsFund && !body.pettyCashFundId)){
       toast('กรุณากรอกข้อมูลที่จำเป็นให้ครบ','err'); return;
+    }
+    if(voucherType==='other' && Number(body.whtRate)>0){
+      // กันตั้งแต่ฝั่ง UI (ไม่ใช่รอ backend ปฏิเสธ) — มีอัตราหัก ณ ที่จ่ายแต่ผู้รับเงินไม่มีเลขผู้เสียภาษี
+      // ออก 50 ทวิ ไม่ได้แน่นอน ต้องบอกชัดเจนตั้งแต่ตรงนี้ (เหตุผลเดียวกับที่ backend เช็คซ้ำใน
+      // validateExternalPaymentVoucherInput — ดู CLAUDE.md เรื่อง defense in depth)
+      if(!body.whtIncomeTypeCode){ toast('มีอัตราหัก ณ ที่จ่าย ต้องระบุประเภทเงินได้ตามมาตรา 40 ด้วย','err'); return; }
+      const payee = (S.externalPayees||[]).find(p=>String(p.id)===String(body.payeeExternalId));
+      if(payee && !payee.taxId){ toast('ผู้รับเงินนี้ยังไม่มีเลขผู้เสียภาษีในระบบ ไม่สามารถหัก ณ ที่จ่ายได้ (ใช้ออกหนังสือรับรอง 50 ทวิ) กรุณาเพิ่มเลขผู้เสียภาษีในข้อมูลผู้รับเงินก่อน','err'); return; }
     }
     S.voucherForm.saving = true;
     render();
