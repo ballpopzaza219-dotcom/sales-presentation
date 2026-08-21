@@ -586,11 +586,6 @@ const ROLES = {
 // ตำแหน่งสำหรับลงนามในเอกสาร PR (แยกจากสิทธิ์การใช้งานระบบ ROLES ด้านบน)
 // รายการแนะนำในหน้าจัดการผู้ใช้งาน — พิมพ์ตำแหน่งอื่นเพิ่มเองได้หากไม่มีในรายการ
 const POSITION_SUGGESTIONS = ['โฟร์แมน', 'วิศวกรโครงการ', 'ผจก.โครงการ', 'กรรมการบริษัท'];
-// ช่องลงนาม 2 ช่องบนเอกสาร PR — แต่ละช่องรับได้หลายตำแหน่ง
-const SIGN_GROUPS = [
-  {label:'โฟร์แมน / วิศวกรโครงการ', positions:['โฟร์แมน','วิศวกรโครงการ']},
-  {label:'ผจก.โครงการ / กรรมการบริษัท', positions:['ผจก.โครงการ','กรรมการบริษัท']},
-];
 function posLabel(u){ return (u && (u.position || (ROLES[u.role]&&ROLES[u.role].label))) || ''; }
 
 // ---------------- In-memory DB ----------------
@@ -725,6 +720,14 @@ let S = {
   projectSaving:false,       // double-submit guard for save-project-full, mirrors S.tenderSaving
   projectAddForm:null,      // set lazily on first render of pageFinProjectAdd() so field edits persist across re-renders
   prForm:null,               // set lazily on first render of pageCreatePR() so field edits persist across re-renders
+  purchaseRequests:[],
+  purchaseRequestsLoaded:false,
+  purchaseRequestListFilter:{status:'', projectId:''},
+  selectedPurchaseRequestId:null,
+  selectedPurchaseRequestDetail:null, // { purchaseRequest } — fetched fresh each time (ไม่ cache), เหตุผลเดียวกับ selectedVoucherDetail
+  prItemAdjustmentsByItemId:{}, // itemId -> array — โหลดแยกต่อรายการ (lazy, ตอนกด "ดูประวัติ" ต่อ item) ไม่โหลดรวมมากับ detail
+  prCancelQtyForm:null,       // {itemId, qty:'', note:''} — set เมื่อเปิดฟอร์มลดยอดรายการ
+  prRejectForm:null,          // {id, reason:''} — set เมื่อเปิดฟอร์มปฏิเสธ PR
   purchaseOrdersLoaded:false,
   poAddForm:null,             // set lazily on first render of pageFinPoAdd()
   quotationsLoaded:false,
@@ -1335,6 +1338,47 @@ async function loadRealProjectDetail(id){
   } catch(e){ toast(e.message, 'err'); S.selectedProjectInstallments = []; }
   render();
 }
+// ---------- Purchase Requests (ใบขอซื้อ, หัวข้อ 4) — ต่อ API จริงทั้งหมด ไม่มี demo mode ----------
+async function loadPurchaseRequests(){
+  try{
+    const params = new URLSearchParams();
+    if(S.purchaseRequestListFilter.status) params.set('status', S.purchaseRequestListFilter.status);
+    if(S.purchaseRequestListFilter.projectId) params.set('projectId', S.purchaseRequestListFilter.projectId);
+    const qs = params.toString();
+    const data = await apiCall('GET', '/api/customer/purchase-requests'+(qs?`?${qs}`:''));
+    S.purchaseRequests = data.purchaseRequests;
+  } catch(e){ toast(e.message, 'err'); }
+  S.purchaseRequestsLoaded = true; render();
+}
+async function loadPurchaseRequestDetail(id){
+  S.selectedPurchaseRequestDetail = null;
+  render();
+  try{
+    const data = await apiCall('GET', `/api/customer/purchase-requests/${id}`);
+    S.selectedPurchaseRequestDetail = data.purchaseRequest;
+  } catch(e){ toast(e.message, 'err'); }
+  render();
+}
+async function loadPrItemAdjustments(itemId){
+  try{
+    const data = await apiCall('GET', `/api/customer/purchase-requests/${S.selectedPurchaseRequestId}/items/${itemId}/adjustments`);
+    S.prItemAdjustmentsByItemId[itemId] = data.adjustments;
+  } catch(e){ toast(e.message, 'err'); }
+  render();
+}
+// โหลดงบ BOQ ที่อนุมัติแล้วของโครงการที่เลือกไว้ในฟอร์มสร้าง PR แบบ source='boq' — undefined=กำลังโหลด,
+// null=โหลดแล้วแต่ไม่มีงบที่อนุมัติ (GET /budgets คืน {budget:null}), object=มีงบ (ดู currentItems ที่มี
+// requestedQty/requestedAmount ต่อบรรทัดจาก attachPrRequestedTotals ฝั่ง server)
+async function loadPrBudgetForProject(projectId){
+  if(!S.prForm) return;
+  S.prForm.boqBudget = undefined;
+  render();
+  try{
+    const data = await apiCall('GET', `/api/customer/budgets?projectId=${projectId}`);
+    if(S.prForm) S.prForm.boqBudget = data.budget;
+  } catch(e){ toast(e.message, 'err'); if(S.prForm) S.prForm.boqBudget = null; }
+  render();
+}
 function mapRealPurchaseOrder(p){
   return {
     id:p.id, poNo:p.poNo, projectId:p.projectId, projectName:p.projectName, prReference:p.prReference,
@@ -1565,7 +1609,6 @@ function seedIfEmpty(mode='template'){
     mk('mint.checker','mint@sitereq.demo','checker','มิ้นท์ ผู้ตรวจสอบ','Passw0rd!','โฟร์แมน'),
     mk('boss.approver','boss@sitereq.demo','approver','บอส ผู้อนุมัติ','Passw0rd!','ผจก.โครงการ')
   );
-  DB.prs = [];
   DB.adminRequests = [];
   DB.projects = [];
   DB.revenue = [];
@@ -1588,21 +1631,12 @@ function seedIfEmpty(mode='template'){
     ...['ช่างก่อสร้างทั่วไป','ช่างปูน/ช่างก่ออิฐ','ช่างไม้/ช่างแบบ','ช่างเหล็ก/ช่างเชื่อม','ช่างไฟฟ้า','ช่างประปา/สุขาภิบาล','ช่างสี','ช่างกระเบื้อง'].map(name=>({id:uid(), name, category:'ช่างเทคนิค/ช่างฝีมือ', isActive:true})),
     ...['กรรมกร/แรงงานทั่วไป','คนขับรถ/พขร.','ผู้ควบคุมเครื่องจักร','ยาม/รปภ.'].map(name=>({id:uid(), name, category:'แรงงาน/ปฏิบัติการ', isActive:true})),
     ...['คลังพัสดุ/สต๊อกวัสดุ','เจ้าหน้าที่ความปลอดภัย (Safety Officer)'].map(name=>({id:uid(), name, category:'ฝ่ายสนับสนุน', isActive:true})),
-    // Same exact strings as POSITION_SUGGESTIONS/SIGN_GROUPS — must stay byte-for-byte identical,
-    // since PR-document signature pickers match users by `positions.includes(x.position)`
-    // (see signPositionOptions()). Renaming these would silently drop users from those dropdowns.
+    // Same exact strings as POSITION_SUGGESTIONS above — must stay byte-for-byte identical, since the
+    // position-suggestion dropdown in user management matches on these exact labels.
     ...['โฟร์แมน','วิศวกรโครงการ','ผจก.โครงการ','กรรมการบริษัท'].map(name=>({id:uid(), name, category:'ผู้บริหาร/ลงนามเอกสาร', isActive:true})),
   ];
   if(mode==='template') return;
 
-  const items1=[{material:'ปูนซีเมนต์ปอร์ตแลนด์ ถุง 50 กก.',qty:120,unit:'ถุง',price:165},{material:'เหล็กเส้น RB9 มม.',qty:300,unit:'เส้น',price:78}];
-  const items2=[{material:'ทรายหยาบ',qty:8,unit:'คิว',price:650},{material:'อิฐมอญ',qty:2000,unit:'ก้อน',price:2.8}];
-  const items3=[{material:'ไม้แบบ 1"x6"x4ม.',qty:60,unit:'แผ่น',price:145}];
-  DB.prs = [
-    {id:uid(), no:'PR-2607-0001', site:'โครงการ A - คลองหลวง', requester:'ธัน ผู้จัดทำ', requesterRole:'maker', date:'2026-07-08', items:items1, status:'pending_check', flow:['maker','checker','approver'], step:1, history:[{who:'ธัน ผู้จัดทำ',action:'สร้างรายการ',at:'08 ก.ค. 2026 09:12'}]},
-    {id:uid(), no:'PR-2607-0002', site:'โครงการ B - บางนา', requester:'อารยา คู่อนุมัติ', requesterRole:'single_dual', date:'2026-07-09', items:items2, status:'pending_approval', flow:['single_dual','dual_partner'], step:0, history:[{who:'อารยา คู่อนุมัติ',action:'สร้างรายการ (รออนุมัติคู่)',at:'09 ก.ค. 2026 14:02'}]},
-    {id:uid(), no:'PR-2607-0003', site:'โครงการ A - คลองหลวง', requester:'กฤต หน้างานเดี่ยว', requesterRole:'single_auto', date:'2026-07-09', items:items3, status:'approved', flow:['single_auto'], step:1, history:[{who:'กฤต หน้างานเดี่ยว',action:'สร้างและอนุมัติอัตโนมัติ',at:'09 ก.ค. 2026 08:44'}]},
-  ];
   DB.adminRequests = [
     {id:uid(), type:'สร้างผู้ใช้งานใหม่', detail:'สร้างผู้ใช้: วีระ หน้างาน (บทบาท: Maker)', by:'ณภัทร บริหารข้อมูล', at:'10 ก.ค. 2026 11:20', status:'pending'},
   ];
@@ -1795,7 +1829,6 @@ function seedIfEmpty(mode='template'){
 seedIfEmpty('template');
 
 function fmtMoney(n){ return (n||0).toLocaleString('th-TH',{minimumFractionDigits:2, maximumFractionDigits:2}); }
-function prTotal(pr){ return pr.items.reduce((s,i)=>s+i.qty*i.price,0); }
 // Shared placeholder <tbody> rows for a table whose first fetch hasn't resolved yet (paired with the
 // .skel-row/.skel-bar CSS above) — rowCount rows of colCount bars, widths varied per column index so
 // the block doesn't look like one bar repeated. Callers wrap the result in <tbody>...</tbody> themselves.
@@ -2669,12 +2702,26 @@ function employeesNavFor(){
   ];
 }
 
+// PR (สร้าง/รายการ) เปิดให้ทุก role เห็นเหมือนกันหมด — สิทธิ์สร้างใบขอซื้อไม่ผูกกับ role เดิม (ROLES
+// ด้านบน) เลยแม้แต่น้อย ฝั่ง backend รับ POST จากลูกค้าที่ login แล้วทุกคน ส่วนสิทธิ์อนุมัติผูกกับ flag
+// can_approve_pr + client_pr_approval_rules (ไม่ใช่ role) — ทุกคนจึงเห็น "รายการ PR ทั้งหมด" ได้เท่ากัน
+// (ไม่แยก mine/all ตาม role อีกต่อไป) เพื่อให้คนมี can_approve_pr แต่ role ไม่ใช่ super_user ยังกรอง
+// สถานะ submitted แล้วเห็นรายการที่รออนุมัติของคนอื่นได้ — เดิมมี approve_queue/check_queue แยกตาม role
+// (checker/approver/single_dual) แต่เป็น concept จาก workflow เดโมเก่าที่ backend จริงไม่มี (ไม่มี step
+// "checker" เลย มีแค่ draft→submitted→approved/rejected ขั้นเดียว) จึงยุบรวมเป็น all_prs ที่กรองสถานะได้แทน
 function navFor(role){
   const items = [{key:'overview', label:tr('nav.overview'), icon:'overview'}];
-  if(role==='super_user'){
+  // ซ่อนเมนู PR ในโหมด demo — หน้า PR ต่อ API จริงล้วน (ไม่มี demo dataset แล้ว) ถ้าเปิดให้กดในโหมด demo
+  // จะยิง fetch ไปที่ endpoint จริงที่ session ยังไม่ login จริง แล้วเจอ 401 งงๆ แทนที่จะเป็นทัวร์เดโมที่ใช้ได้จริง
+  if(S.dataMode!=='demo'){
     items.push(
       {key:'create_pr', label:tr('nav.create_pr'), icon:'plus'},
+      {key:'my_prs', label:tr('nav.my_prs'), icon:'list'},
       {key:'all_prs', label:tr('nav.all_prs'), icon:'list'},
+    );
+  }
+  if(role==='super_user'){
+    items.push(
       {key:'section', label:tr('nav.section_settings')},
       {key:'company_settings', label:tr('nav.company_settings'), icon:'settings'},
       {key:'users', label:tr('nav.users'), icon:'users'},
@@ -2693,26 +2740,6 @@ function navFor(role){
     );
   } else if(role==='admin_approver'){
     items.push({key:'admin_queue', label:tr('nav.admin_queue_approver'), icon:'check'});
-  } else if(role==='single_auto'){
-    items.push(
-      {key:'create_pr', label:tr('nav.create_pr'), icon:'plus'},
-      {key:'my_prs', label:tr('nav.my_prs'), icon:'list'},
-    );
-  } else if(role==='single_dual'){
-    items.push(
-      {key:'create_pr', label:tr('nav.create_pr'), icon:'plus'},
-      {key:'my_prs', label:tr('nav.my_prs'), icon:'list'},
-      {key:'approve_queue', label:tr('nav.approve_queue_dual'), icon:'check'},
-    );
-  } else if(role==='maker'){
-    items.push(
-      {key:'create_pr', label:tr('nav.create_pr'), icon:'plus'},
-      {key:'my_prs', label:tr('nav.my_prs'), icon:'list'},
-    );
-  } else if(role==='checker'){
-    items.push({key:'check_queue', label:tr('nav.check_queue'), icon:'search'});
-  } else if(role==='approver'){
-    items.push({key:'approve_queue', label:tr('nav.approve_queue'), icon:'check'});
   }
   return items;
 }
@@ -2755,7 +2782,7 @@ function renderDashboard(){
   if(u.role!=='super_user' && u.canManagePo && S.module==='pr' && !nav.find(n=>n.key==='subcontractors')){
     nav.push({key:'subcontractors', label:tr('nav.subcontractors'), icon:'users'});
   }
-  const hiddenPages = ['emp_app_form','emp_app_print','fin_tender_add','fin_tender_detail','fin_budget_detail','fin_project_add','fin_project_detail','fin_project_schedule','fin_po_add','fin_quotation_add','fin_document_add','fin_voucher_detail','fin_wht_certificate_print','fin_advance_clearance_detail']; // reachable only via buttons, not listed in any sidebar nav
+  const hiddenPages = ['emp_app_form','emp_app_print','fin_tender_add','fin_tender_detail','fin_budget_detail','fin_project_add','fin_project_detail','fin_project_schedule','fin_po_add','fin_quotation_add','fin_document_add','fin_voucher_detail','fin_wht_certificate_print','fin_advance_clearance_detail','pr_detail']; // reachable only via buttons, not listed in any sidebar nav
   if(!hiddenPages.includes(S.page) && !nav.find(n=>n.key===S.page && n.key!=='section')) S.page = S.module==='finance' ? 'fin_overview' : S.module==='employees' ? 'emp_overview' : S.module==='bidding' ? 'fin_tender_overview' : 'overview';
 
   return `
@@ -2851,8 +2878,7 @@ function renderPage(){
     case 'create_pr': return pageCreatePR(u);
     case 'my_prs': return pagePRList(u, 'mine');
     case 'all_prs': return pagePRList(u, 'all');
-    case 'approve_queue': return pageApproveQueue(u);
-    case 'check_queue': return pageCheckQueue(u);
+    case 'pr_detail': return pagePurchaseRequestDetail(u);
     case 'company_settings': return pageCompanySettings(u);
     case 'users': return pageUsers(u);
     case 'conditions': return pageConditions(u);
@@ -2924,6 +2950,9 @@ function renderPage(){
 function statCard(icon, label, num, lbl){
   return `<div class="card stat-card"><div class="stico">${ICN[icon]}</div><div><span class="eyebrow">${label}</span><div class="num">${num}</div><div class="lbl">${lbl}</div></div></div>`;
 }
+// PR ในแดชบอร์ดนี้ต่อ API จริงเสมอ (S.purchaseRequests, โหลด lazy ตอนเข้าหน้า overview — ดู hook ใน
+// render orchestration) — ไม่มี demo dataset ของ PR แล้ว (ลบ DB.prs ทิ้งทั้งหมดตามที่ตกลง) จึงแสดง 0
+// ในโหมด demo เสมอ (S.purchaseRequests ไม่ถูกโหลดในโหมดนั้น) ซึ่งเป็นผลที่ยอมรับแล้ว
 function pageOverview(u){
   const role = ROLES[u.role];
   let stats = '';
@@ -2931,21 +2960,22 @@ function pageOverview(u){
     stats = `
       <div class="grid-cards">
         ${statCard('users',tr('dashboard.stat_users'), DB.users.length, tr('dashboard.stat_users_note'))}
-        ${statCard('doc',tr('dashboard.stat_all_prs'), DB.prs.length, tr('dashboard.stat_all_prs_note'))}
+        ${statCard('doc',tr('dashboard.stat_all_prs'), S.purchaseRequests.length, tr('dashboard.stat_all_prs_note'))}
         ${statCard('hourglass',tr('dashboard.stat_pending_admin'), DB.adminRequests.filter(r=>r.status==='pending').length, tr('dashboard.stat_pending_admin_note'))}
         ${statCard('flag',tr('dashboard.stat_conditions'), DB.approvalConditions.length, tr('dashboard.stat_conditions_note'))}
       </div>`;
   } else {
-    const mine = DB.prs.filter(p=>p.requester===u.name);
-    const pending = DB.prs.filter(p=>['pending_check','pending_approval'].includes(p.status));
+    const mine = S.purchaseRequests.filter(p=>p.requestedBy===u.id);
+    const pendingForMe = S.purchaseRequests.filter(p=>p.status==='submitted');
     stats = `
       <div class="grid-cards">
         ${statCard('doc',tr('dashboard.stat_my_prs'), mine.length, tr('dashboard.stat_my_prs_note'))}
         ${statCard('check',tr('dashboard.stat_approved'), mine.filter(p=>p.status==='approved').length, tr('dashboard.stat_approved_note'))}
-        ${statCard('hourglass',tr('dashboard.stat_pending'), mine.filter(p=>p.status.startsWith('pending')).length, tr('dashboard.stat_pending_note'))}
-        ${(u.role==='checker'||u.role==='approver'||u.role==='single_dual')?statCard('search',tr('dashboard.stat_pending_for_me'), pending.length, tr('dashboard.stat_pending_for_me_note')):''}
+        ${statCard('hourglass',tr('dashboard.stat_pending'), mine.filter(p=>p.status==='submitted').length, tr('dashboard.stat_pending_note'))}
+        ${(u.role==='super_user'||u.canApprovePr===true)?statCard('search',tr('dashboard.stat_pending_for_me'), pendingForMe.length, tr('dashboard.stat_pending_for_me_note')):''}
       </div>`;
   }
+  const recent = S.purchaseRequests.slice(0,5);
   return `
     <div class="page-head">
       <div><h2>${tr('dashboard.title')}</h2><div class="sub">${DB.company.name} · ${role.label}</div></div>
@@ -2954,7 +2984,22 @@ function pageOverview(u){
     ${stats}
     <div class="card" style="padding:20px 22px;">
       <div class="section-title">${tr('dashboard.recent_prs')}</div>
-      ${renderPRTable(DB.prs.slice(-5).reverse(), u, false)}
+      ${recent.length===0 ? `<div class="empty"><div class="em-icon">${ICN.box}</div>${tr('pr.list_empty')}</div>` : `
+      <div class="table-wrap"><table>
+        <thead><tr><th>${tr('pr.col_no')}</th><th>${tr('pr.col_project')}</th><th>${tr('pr.col_requested_by')}</th><th>${tr('pr.col_request_date')}</th><th>${tr('pr.col_total')}</th><th>${tr('pr.col_status')}</th><th></th></tr></thead>
+        <tbody>
+          ${recent.map(p=>`
+            <tr>
+              <td class="mono" style="font-weight:600;">${p.prNo || `(${tr('pr.status_draft')})`}</td>
+              <td>${esc(p.projectName||'-')}</td>
+              <td>${esc(customerNameById(p.requestedBy))}</td>
+              <td>${p.requestDate||'-'}</td>
+              <td class="mono">${fmtMoney(p.totalAmount)}</td>
+              <td>${prStatusBadge(p.status)}</td>
+              <td><button class="btn btn-ghost btn-sm" data-act="nav" data-page="pr_detail" data-id="${p.id}" data-id-field="selectedPurchaseRequestId">${tr('common.view_detail')}</button></td>
+            </tr>`).join('')}
+        </tbody>
+      </table></div>`}
     </div>
   `;
 }
@@ -2972,108 +3017,175 @@ function statusBadge(status){
   return `<span class="badge ${m.cls}">${m.label}</span>`;
 }
 
-function renderPRTable(list, u, showActions){
-  if(list.length===0) return `<div class="empty"><div class="em-icon">${ICN.box}</div>ยังไม่มีรายการ</div>`;
-  return `<div class="table-wrap"><table>
-    <thead><tr><th>เลขที่ PR</th><th>หน้างาน</th><th>ผู้ขอ</th><th>วันที่</th><th>ยอดรวม (บาท)</th><th>สถานะ</th><th></th></tr></thead>
-    <tbody>
-      ${list.map(p=>`
-        <tr>
-          <td class="mono" style="font-weight:600;">${p.no}</td>
-          <td>${p.projectName || p.site}</td>
-          <td>${p.requester}</td>
-          <td>${p.date}</td>
-          <td class="mono">${fmtMoney(prTotal(p))}</td>
-          <td>${statusBadge(p.status)}</td>
-          <td><button class="btn btn-ghost btn-sm" data-act="view-pr" data-id="${p.id}">ดูรายละเอียด</button></td>
-        </tr>`).join('')}
-    </tbody>
-  </table></div>`;
+// ---------- รายการ PR (ต่อ API จริง — my_prs = ของฉันเอง, all_prs = ทั้งหมด) ----------
+function prStatusBadge(status){
+  const map = {
+    draft:{cls:'badge-draft', label:tr('pr.status_draft')},
+    submitted:{cls:'badge-pending', label:tr('pr.status_submitted')},
+    approved:{cls:'badge-approved', label:tr('pr.status_approved')},
+    rejected:{cls:'badge-rejected', label:tr('pr.status_rejected')},
+    cancelled:{cls:'badge-suspended', label:tr('pr.status_cancelled')},
+  };
+  const m = map[status] || {cls:'badge-draft', label:status};
+  return `<span class="badge ${m.cls}">${m.label}</span>`;
 }
-
+function prVal(value){ return value==null ? '' : String(value); }
 function pagePRList(u, scope){
-  const list = scope==='mine' ? DB.prs.filter(p=>p.requester===u.name) : DB.prs;
+  const all = scope==='mine' ? S.purchaseRequests.filter(p=>p.requestedBy===u.id) : S.purchaseRequests;
+  const f = S.purchaseRequestListFilter;
+  const list = all.filter(p=>{
+    if(f.status && p.status!==f.status) return false;
+    if(f.projectId && String(p.projectId)!==String(f.projectId)) return false;
+    return true;
+  });
+  const statusOptions = ['draft','submitted','approved','rejected','cancelled'];
   return `
-    <div class="page-head"><div><h2>${scope==='mine'?'รายการ PR ของฉัน':'รายการ PR ทั้งหมด'}</h2><div class="sub">${list.length} รายการ</div></div></div>
-    <div class="card" style="padding:20px 22px;">${renderPRTable(list, u, true)}</div>
+    <div class="page-head"><div><h2>${scope==='mine'?tr('nav.my_prs'):tr('nav.all_prs')}</h2><div class="sub">${list.length} ${tr('pr.list_count_unit')}</div></div>
+      <button class="btn btn-primary" data-act="nav" data-page="create_pr">+ ${tr('nav.create_pr')}</button>
+    </div>
+    <div class="card" style="padding:16px 18px; margin-bottom:14px;">
+      <div class="split">
+        <div class="field"><label>${tr('pr.filter_status')}</label>
+          <select data-act="filter-pr-status">
+            <option value="">${tr('pr.filter_status_all')}</option>
+            ${statusOptions.map(s=>`<option value="${s}" ${f.status===s?'selected':''}>${tr('pr.status_'+s)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>${tr('pr.filter_project')}</label>
+          <select data-act="filter-pr-project">
+            <option value="">${tr('pr.filter_project_all')}</option>
+            ${DB.projects.map(p=>`<option value="${p.id}" ${String(f.projectId)===String(p.id)?'selected':''}>${esc(p.name)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="padding:20px 22px;">
+      ${list.length===0 ? `<div class="empty"><div class="em-icon">${ICN.box}</div>${tr('pr.list_empty')}</div>` : `
+      <div class="table-wrap"><table>
+        <thead><tr><th>${tr('pr.col_no')}</th><th>${tr('pr.col_project')}</th><th>${tr('pr.col_requested_by')}</th><th>${tr('pr.col_request_date')}</th><th>${tr('pr.col_total')}</th><th>${tr('pr.col_status')}</th><th></th></tr></thead>
+        <tbody>
+          ${list.map(p=>`
+            <tr>
+              <td class="mono" style="font-weight:600;">${p.prNo || `(${tr('pr.status_draft')})`}</td>
+              <td>${esc(p.projectName||'-')}</td>
+              <td>${esc(customerNameById(p.requestedBy))}</td>
+              <td>${p.requestDate||'-'}</td>
+              <td class="mono">${fmtMoney(p.totalAmount)}</td>
+              <td>${prStatusBadge(p.status)}</td>
+              <td><button class="btn btn-ghost btn-sm" data-act="nav" data-page="pr_detail" data-id="${p.id}" data-id-field="selectedPurchaseRequestId">${tr('common.view_detail')}</button></td>
+            </tr>`).join('')}
+        </tbody>
+      </table></div>`}
+    </div>
   `;
 }
 
-// ---------- PR document (read-only — used for view/print, matches the company's printed PR form) ----------
-function prVal(value){ return value==null ? '' : String(value); }
-function prCellText(value=''){
-  return `<div class="pr-doc-line">${prVal(value)}</div>`;
-}
-function prItemRow(idx, item={}){
-  return `<tr class="pr-doc-items">
-    <td style="text-align:center;">${idx+1}</td>
-    <td>${prCellText(item.material)}</td>
-    <td>${prCellText(item.area)}</td>
-    <td>${prCellText(item.brand)}</td>
-    <td>${prCellText(item.size)}</td>
-    <td>${prCellText(item.qty)}</td>
-    <td>${prCellText(item.unit)}</td>
-  </tr>`;
-}
-function renderPRDocument(pr={}){
-  const rows = Array.from({length:10}).map((_,i)=>prItemRow(i, (pr.items||[])[i]||{})).join('');
-  const sessU = S.currentUser;
-  const reqName = pr.requesterName || pr.requester || (sessU ? sessU.name : '');
-  const reqPosition = pr.requesterPosition || (sessU ? posLabel(sessU) : '');
-  const reqDate = pr.requesterDate || pr.requestDate || pr.date || '';
-
-  return `<div class="pr-doc">
-    <div class="pr-doc-head">
-      <div class="pr-doc-logo">${DB.company.logo_url ? `<img src="${DB.company.logo_url}" alt="โลโก้บริษัท" style="max-width:100%; max-height:100%; object-fit:contain;">` : 'โลโก้บริษัท'}</div>
-      <div class="pr-doc-title">
-        <h3>${DB.company.name || 'ชื่อบริษัท'}</h3>
-        <div>ขออนุมัติขอซื้อวัสดุ</div>
-      </div>
-      <div></div>
-    </div>
-    <table class="pr-doc-table">
-      <colgroup><col style="width:54%;"><col style="width:23%;"><col style="width:23%;"></colgroup>
-      <tr><th class="pr-doc-section">ข้อมูลทั่วไป (General Information)</th><th colspan="2" class="pr-doc-section" style="text-align:left; padding-left:5px;">เลขที่ PR. ${prCellText(pr.no)}</th></tr>
-      <tr><td><b>ชื่อโครงการ (Project Name)</b>${prCellText(pr.projectName || pr.site)}</td><td colspan="2"><b>ชื่อผู้ขออนุมัติ (Requested by)</b>${prCellText(pr.requester)}</td></tr>
-      <tr><td><b>ผังงาน (SUB CODE)</b>${prCellText(pr.subCode)}</td><td colspan="2"><b>วันที่ขอซื้อ (Request date)</b>${prCellText(pr.requestDate || pr.date)}</td></tr>
-      <tr><th class="pr-doc-section">รายละเอียดวัสดุ (Material Details)</th><th class="pr-doc-section">วันที่ต้องการใช้งาน</th><th style="background:#fff; font-weight:700; text-align:center;">${prCellText(pr.neededDate)}</th></tr>
-    </table>
-    <table class="pr-doc-table">
-      <colgroup><col style="width:44px;"><col><col style="width:14%;"><col style="width:13%;"><col style="width:10%;"><col style="width:9%;"><col style="width:9%;"></colgroup>
-      <thead><tr><th>ลำดับ</th><th>รายการวัสดุ</th><th>พื้นที่ใช้งาน</th><th>ยี่ห้อ / รุ่น</th><th>ขนาด</th><th>จำนวน</th><th>หน่วย</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-    <table class="pr-doc-table">
-      <tr><td class="pr-doc-note"><b>หมายเหตุ</b><div class="pr-doc-line" style="min-height:54px; align-items:flex-start;">${prVal(pr.remark)}</div></td></tr>
-    </table>
-    <table class="pr-doc-table">
-      <colgroup><col style="width:28%;"><col style="width:27%;"><col style="width:28%;"><col style="width:17%;"></colgroup>
-      <tr><th class="pr-doc-approve">ผู้ขออนุมัติ</th><th class="pr-doc-approve">โฟร์แมน / วิศวกรโครงการ</th><th class="pr-doc-approve">ผจก.โครงการ / กรรมการบริษัท</th><th class="pr-doc-approve">หมายเหตุ</th></tr>
-      <tr class="pr-doc-sign"><td></td><td></td><td></td><td rowspan="4"></td></tr>
-      <tr><td><div class="pr-doc-sign-line">ชื่อ: ${prVal(reqName)}</div></td><td><div class="pr-doc-sign-line">ชื่อ: ${prVal(pr.foremanName)}</div></td><td><div class="pr-doc-sign-line">ชื่อ: ${prVal(pr.managerName)}</div></td></tr>
-      <tr><td><div class="pr-doc-sign-line">ตำแหน่ง: ${prVal(reqPosition)}</div></td><td><div class="pr-doc-sign-line">ตำแหน่ง: ${prVal(pr.foremanPosition) || SIGN_GROUPS[0].label}</div></td><td><div class="pr-doc-sign-line">ตำแหน่ง: ${prVal(pr.managerPosition) || SIGN_GROUPS[1].label}</div></td></tr>
-      <tr><td><div class="pr-doc-sign-line">วันที่: ${prVal(reqDate)}</div></td><td><div class="pr-doc-sign-line">วันที่: ${prVal(pr.foremanDate)}</div></td><td><div class="pr-doc-sign-line">วันที่: ${prVal(pr.managerDate)}</div></td></tr>
-    </table>
-    <div class="pr-doc-page">หน้าที่ 1/2</div>
-  </div>`;
-}
-
-// ---------- Create PR (plain data-entry form — doesn't need to visually match the printed document) ----------
-// Rows are bound live to S.prForm.items[idx] via oninput (no render() call from those handlers —
-// see pageCreatePR()'s own comment) so a background render() elsewhere in the app (the 45s
-// notification poll, or anything else) can never silently wipe an in-progress PR draft.
+// ---------- สร้าง PR ใหม่ (source='boq' อ้างอิงงบ BOQ ที่อนุมัติแล้ว, หรือ 'manual' กรอกเอง) ----------
+// Rows are bound live to S.prForm via oninput (no render() call from those handlers, same principle
+// as S.projectAddForm / S.laborBatch elsewhere in this file) so a background render() — the 45s
+// notification poll being the most common real-world trigger — can never silently wipe an in-progress draft.
 function prItemFormRow(idx, item={}){
   return `<div class="pr-item-row" data-item-row="${idx}">
     <input placeholder="${tr('create_pr.col_material')}" value="${prVal(item.material)}" oninput="S.prForm.items[${idx}].material=this.value;">
-    <input placeholder="${tr('create_pr.col_area')}" value="${prVal(item.area)}" oninput="S.prForm.items[${idx}].area=this.value;">
-    <input placeholder="${tr('create_pr.col_brand')}" value="${prVal(item.brand)}" oninput="S.prForm.items[${idx}].brand=this.value;">
-    <input placeholder="${tr('create_pr.col_size')}" value="${prVal(item.size)}" oninput="S.prForm.items[${idx}].size=this.value;">
     <input type="number" placeholder="0" value="${prVal(item.qty)}" oninput="S.prForm.items[${idx}].qty=this.value;">
     <input placeholder="${tr('create_pr.col_unit')}" value="${prVal(item.unit)}" oninput="S.prForm.items[${idx}].unit=this.value;">
     <input type="number" placeholder="0.00" value="${prVal(item.price)}" oninput="S.prForm.items[${idx}].price=this.value;">
     <button class="remove-item" data-act="remove-item" data-idx="${idx}">✕</button>
   </div>`;
 }
+// แถวเลือกรายการ BOQ — แสดงงบต่อบรรทัด + ยอดที่เคยขอซื้อไปแล้ว (จาก requestedQty/requestedAmount ที่
+// backend คำนวณให้ ดู loadBudgetDetail's attachPrRequestedTotals) เพื่อให้เห็น "เหลืองบเท่าไหร่" ก่อนกรอก
+// จำนวนที่จะขอในใบนี้ — เตือน (ไม่บล็อก) ถ้ายอดที่เคยขอ + ที่กำลังจะขอในใบนี้ เกินงบบรรทัดนั้น
+function prBoqItemRow(item){
+  const requestedQty = item.requestedQty||0, requestedAmount = item.requestedAmount||0;
+  const remainingQty = item.qty - requestedQty;
+  const remainingAmount = item.amount - requestedAmount;
+  const typedQty = Number(S.prForm.boqQty[item.id] || 0);
+  const over = typedQty > 0 && (requestedQty + typedQty) > item.qty;
+  return `<tr style="${over?'background:#fff6e5;':''}">
+    <td class="mono" style="font-size:11.5px; color:var(--text-muted);">${esc(item.workCode||'-')}</td>
+    <td>${esc(item.description)}</td>
+    <td>${esc(item.unit)}</td>
+    <td class="mono">${fmtMoney(item.qty)}</td>
+    <td class="mono">${fmtMoney(requestedQty)}</td>
+    <td class="mono" style="${remainingQty<0?'color:var(--red);':''}">${fmtMoney(remainingQty)}</td>
+    <td class="mono">${fmtMoney(remainingAmount)}</td>
+    <td><input id="pr-boq-qty-${item.id}" type="number" min="0" style="width:90px;" placeholder="0" value="${prVal(S.prForm.boqQty[item.id])}" oninput="S.prForm.boqQty[${item.id}]=this.value; document.getElementById('pr-boq-warn-${item.id}').style.display=(Number(this.value||0)>0 && (${requestedQty}+Number(this.value||0))>${item.qty})?'block':'none';"></td>
+    <td><input id="pr-boq-price-${item.id}" type="number" min="0" step="0.01" style="width:100px;" placeholder="0.00" value="${prVal(S.prForm.boqUnitPrice[item.id] ?? (item.qty>0 ? round2(item.amount/item.qty) : 0))}" oninput="S.prForm.boqUnitPrice[${item.id}]=this.value;"></td>
+    <td id="pr-boq-warn-${item.id}" style="display:${over?'block':'none'}; color:#b45309; font-size:11px; white-space:nowrap;">${tr('create_pr.boq_over_budget_warn')}</td>
+  </tr>`;
+}
+function pageCreatePR(u){
+  if(!S.prForm) S.prForm = {
+    source:'manual',
+    projectId:null, projectSearchText:'', projectResultsOpen:false,
+    neededDate:'', note:'',
+    items:[{material:'',qty:'',unit:'',price:''}],
+    boqBudget:undefined, boqQty:{}, boqUnitPrice:{},
+    submitting:false, idempotencyKey: crypto.randomUUID(),
+  };
+  const f = S.prForm;
+
+  let boqSection = '';
+  if(f.source==='boq'){
+    if(!f.projectId){
+      boqSection = `<div class="hint" style="margin-top:10px;">${tr('create_pr.boq_pick_project_first')}</div>`;
+    } else if(f.boqBudget===undefined){
+      boqSection = `<div class="hint" style="margin-top:10px;">${tr('common.loading')}</div>`;
+    } else if(f.boqBudget===null || !f.boqBudget.currentRevision){
+      boqSection = `<div class="hint" style="margin-top:10px; color:var(--red);">${tr('create_pr.boq_no_approved_budget')}</div>`;
+    } else {
+      const items = (f.boqBudget.currentItems||[]).filter(it=>!it.isGroup);
+      boqSection = `
+        <div class="table-wrap" style="margin-top:10px;"><table>
+          <thead><tr>
+            <th>${tr('create_pr.boq_col_work_code')}</th><th>${tr('create_pr.boq_col_description')}</th><th>${tr('create_pr.col_unit')}</th>
+            <th>${tr('create_pr.boq_col_budget_qty')}</th><th>${tr('create_pr.boq_col_requested_qty')}</th><th>${tr('create_pr.boq_col_remaining_qty')}</th><th>${tr('create_pr.boq_col_remaining_amount')}</th>
+            <th>${tr('create_pr.boq_col_this_qty')}</th><th>${tr('create_pr.col_unit_price')}</th><th></th>
+          </tr></thead>
+          <tbody>${items.map(prBoqItemRow).join('')}</tbody>
+        </table></div>`;
+    }
+  }
+
+  return `
+  <div class="page-head"><div><h2>${tr('nav.create_pr')}</h2><div class="sub">${tr('create_pr.subtitle')}</div></div></div>
+  <div class="card" style="padding:24px 26px; max-width:1180px;">
+    <div class="section-title">${tr('create_pr.section_general')}</div>
+    <div class="field-row" style="margin-bottom:14px;">
+      <label style="margin-right:16px;"><input type="radio" name="pr-source" value="manual" ${f.source==='manual'?'checked':''} onchange="S.prForm.source='manual'; render();"> ${tr('create_pr.source_manual')}</label>
+      <label><input type="radio" name="pr-source" value="boq" ${f.source==='boq'?'checked':''} onchange="S.prForm.source='boq'; if(S.prForm.projectId) loadPrBudgetForProject(S.prForm.projectId); else render();"> ${tr('create_pr.source_boq')}</label>
+    </div>
+    <div class="split">
+      <div class="field" style="position:relative;">
+        <label>${tr('create_pr.project_name_label')}</label>
+        <input id="pr-project-search" autocomplete="off" value="${esc(f.projectSearchText)}" placeholder="${tr('create_pr.project_name_placeholder')}" oninput="onPrProjectSearchInput(this.value)" onfocus="onPrProjectSearchFocus()" onblur="onPrProjectSearchBlur()">
+        <div id="pr-project-results" style="position:absolute; z-index:20; left:0; right:0; top:100%; margin-top:4px; background:#fff; border:1px solid var(--border-strong); border-radius:var(--radius-sm); box-shadow:0 6px 18px rgba(0,0,0,.08); max-height:260px; overflow-y:auto;">${renderPrProjectResults()}</div>
+        ${!f.projectId && f.projectSearchText ? `<div class="hint" style="color:var(--red);">${tr('create_pr.project_not_selected_hint')}</div>` : ''}
+      </div>
+      <div class="field"><label>${tr('create_pr.neededdate_label')}</label><input id="pr-neededdate" type="date" value="${f.neededDate}" onchange="S.prForm.neededDate=this.value;"></div>
+    </div>
+    <div class="field"><label>${tr('create_pr.requested_by_label')}</label><input value="${esc(u.name)}" disabled style="background:var(--surface-alt); color:var(--text-muted);"></div>
+
+    <div class="section-title" style="margin-top:6px;">${tr('create_pr.section_items')}</div>
+    ${f.source==='manual' ? `
+    <div id="pr-items">
+      <div class="pr-item-row" style="font-size:11px; color:var(--text-muted); text-transform:uppercase;">
+        <div>${tr('create_pr.col_material')}</div><div>${tr('create_pr.col_qty')}</div><div>${tr('create_pr.col_unit')}</div><div>${tr('create_pr.col_unit_price')}</div><div></div>
+      </div>
+      ${f.items.map((item,idx)=>prItemFormRow(idx,item)).join('')}
+    </div>
+    <button class="btn btn-ghost btn-sm" data-act="add-item" style="margin-top:4px;">+ ${tr('create_pr.add_item')}</button>
+    ` : boqSection}
+
+    <div class="field" style="margin-top:18px;"><label>${tr('create_pr.remark_label')}</label><textarea id="pr-remark" placeholder="${tr('create_pr.remark_label')}" oninput="S.prForm.note=this.value;">${esc(f.note)}</textarea></div>
+
+    <div style="margin-top:22px; padding-top:16px; border-top:1px solid var(--border); display:flex; justify-content:flex-end;">
+      <button class="btn btn-primary" data-act="submit-pr" ${f.submitting?'disabled':''}>${f.submitting?tr('leave_public.submitting'):tr('create_pr.submit')}</button>
+    </div>
+  </div>`;
+}
+
 // "ชื่อโครงการ" on the create-PR form is an autocomplete over the real client_projects list
 // (DB.projects, already company-scoped by loadRealProjects()) — searches name and code together
 // in one field, no separate mode. Renders synchronously (no API round-trip needed, the list is
@@ -3133,97 +3245,6 @@ function onPrProjectSearchBlur(){
     if(el) el.innerHTML = '';
   }, 200);
 }
-function signPositionOptions(positions, selectedId){
-  const options = DB.users.filter(x=>x.active && positions.includes(x.position));
-  return `<option value="">— เลือกชื่อ —</option>
-    ${options.map(x=>`<option value="${x.id}" ${String(selectedId)===String(x.id)?'selected':''}>${x.name} (${x.position})</option>`).join('')}`;
-}
-function pageCreatePR(u){
-  if(!['super_user','single_auto','single_dual','maker'].includes(u.role)){
-    return `<div class="page-head"><h2>${tr('create_pr.no_access_title')}</h2></div>${permNote(tr('create_pr.no_access_note'))}`;
-  }
-  let flowNote = '';
-  if(u.role==='super_user') flowNote = tr('create_pr.flow_super_user');
-  if(u.role==='single_auto') flowNote = tr('create_pr.flow_single_auto');
-  if(u.role==='single_dual') flowNote = tr('create_pr.flow_single_dual');
-  if(u.role==='maker') flowNote = tr('create_pr.flow_maker');
-
-  // Bound live to S.prForm (fields via oninput/onchange below, without calling render() from those
-  // handlers for text inputs) so a background render() elsewhere in the app — the 45s notification
-  // poll being the most common real-world trigger — can never silently wipe an in-progress PR draft.
-  // Same principle as S.projectAddForm / S.laborBatch elsewhere in this file.
-  if(!S.prForm) S.prForm = {
-    projectId:null, projectSearchText:'', projectResultsOpen:false,
-    subCode:'', reqDate:new Date().toISOString().slice(0,10), neededDate:'', remark:'',
-    foreman:'', manager:'', items:[{material:'',area:'',brand:'',size:'',qty:'',unit:'',price:''}],
-  };
-  const f = S.prForm;
-
-  return `
-  <div class="page-head"><div><h2>${tr('nav.create_pr')}</h2><div class="sub">${tr('create_pr.subtitle')}</div></div></div>
-  ${permNote(flowNote)}
-  <div class="card" style="padding:24px 26px; max-width:1180px;">
-    <div class="section-title">${tr('create_pr.section_general')}</div>
-    <div class="split">
-      <div class="field" style="position:relative;">
-        <label>${tr('create_pr.project_name_label')}</label>
-        <input id="pr-project-search" autocomplete="off" value="${esc(f.projectSearchText)}" placeholder="${tr('create_pr.project_name_placeholder')}" oninput="onPrProjectSearchInput(this.value)" onfocus="onPrProjectSearchFocus()" onblur="onPrProjectSearchBlur()">
-        <div id="pr-project-results" style="position:absolute; z-index:20; left:0; right:0; top:100%; margin-top:4px; background:#fff; border:1px solid var(--border-strong); border-radius:var(--radius-sm); box-shadow:0 6px 18px rgba(0,0,0,.08); max-height:260px; overflow-y:auto;">${renderPrProjectResults()}</div>
-        ${!f.projectId && f.projectSearchText ? `<div class="hint" style="color:var(--red);">${tr('create_pr.project_not_selected_hint')}</div>` : ''}
-      </div>
-      <div class="field"><label>${tr('create_pr.subcode_label')}</label><input id="pr-subcode" value="${esc(f.subCode)}" placeholder="SUB CODE" oninput="S.prForm.subCode=this.value;"></div>
-    </div>
-    <div class="split">
-      <div class="field"><label>${tr('create_pr.reqdate_label')}</label><input id="pr-reqdate" type="date" value="${f.reqDate}" onchange="S.prForm.reqDate=this.value;"></div>
-      <div class="field"><label>${tr('create_pr.neededdate_label')}</label><input id="pr-neededdate" type="date" value="${f.neededDate}" onchange="S.prForm.neededDate=this.value;"></div>
-    </div>
-    <div class="field"><label>${tr('create_pr.requested_by_label')}</label><input value="${u.name} — ${posLabel(u)}" disabled style="background:var(--surface-alt); color:var(--text-muted);"></div>
-
-    <div class="section-title" style="margin-top:6px;">${tr('create_pr.section_items')}</div>
-    <div id="pr-items">
-      <div class="pr-item-row" style="font-size:11px; color:var(--text-muted); text-transform:uppercase;">
-        <div>${tr('create_pr.col_material')}</div><div>${tr('create_pr.col_area')}</div><div>${tr('create_pr.col_brand')}</div><div>${tr('create_pr.col_size')}</div><div>${tr('create_pr.col_qty')}</div><div>${tr('create_pr.col_unit')}</div><div>${tr('create_pr.col_unit_price')}</div><div></div>
-      </div>
-      ${f.items.map((item,idx)=>prItemFormRow(idx,item)).join('')}
-    </div>
-    <button class="btn btn-ghost btn-sm" data-act="add-item" style="margin-top:4px;">+ ${tr('create_pr.add_item')}</button>
-
-    <div class="field" style="margin-top:18px;"><label>${tr('create_pr.remark_label')}</label><textarea id="pr-remark" placeholder="${tr('create_pr.remark_label')}" oninput="S.prForm.remark=this.value;">${esc(f.remark)}</textarea></div>
-
-    <div class="section-title" style="margin-top:6px;">${tr('create_pr.section_signers')}</div>
-    <div class="hint" style="margin-top:-8px; margin-bottom:14px;">${tr('create_pr.signers_hint')}</div>
-    <div class="split">
-      <div class="field"><label>${SIGN_GROUPS[0].label}</label><select id="pr-foreman" onchange="S.prForm.foreman=this.value;">${signPositionOptions(SIGN_GROUPS[0].positions, f.foreman)}</select></div>
-      <div class="field"><label>${SIGN_GROUPS[1].label}</label><select id="pr-manager" onchange="S.prForm.manager=this.value;">${signPositionOptions(SIGN_GROUPS[1].positions, f.manager)}</select></div>
-    </div>
-
-    <div style="margin-top:22px; padding-top:16px; border-top:1px solid var(--border); display:flex; justify-content:flex-end;">
-      <button class="btn btn-primary" data-act="submit-pr">${tr('create_pr.submit')}</button>
-    </div>
-  </div>`;
-}
-
-// ---------- Approve / Check queues ----------
-function pageApproveQueue(u){
-  let list;
-  if(u.role==='single_dual'){
-    list = DB.prs.filter(p=>p.status==='pending_approval' && p.requesterRole==='single_dual' && p.requester!==u.name);
-  } else if(u.role==='approver'){
-    list = DB.prs.filter(p=>p.status==='pending_approval');
-  } else { list = []; }
-  return `
-  <div class="page-head"><div><h2>อนุมัติรายการ</h2><div class="sub">รายการที่รอการอนุมัติจากคุณ</div></div></div>
-  ${permNote(u.role==='single_dual' ? 'คุณสามารถอนุมัติรายการของ Single User ท่านอื่น (ไม่รวมของตัวเอง) หรือ Super User' : 'อนุมัติรายการที่ผ่านการตรวจสอบจาก Checker หรือส่งตรงจาก Maker')}
-  <div class="card" style="padding:20px 22px;">${renderPRTable(list, u, true)}</div>`;
-}
-function pageCheckQueue(u){
-  const list = DB.prs.filter(p=>p.status==='pending_check');
-  return `
-  <div class="page-head"><div><h2>ตรวจสอบรายการ</h2><div class="sub">รายการที่รอการตรวจสอบก่อนส่งอนุมัติ</div></div></div>
-  ${permNote('ในฐานะ Checker คุณตรวจสอบความถูกต้องของรายการก่อนส่งต่อให้ Approver อนุมัติ')}
-  <div class="card" style="padding:20px 22px;">${renderPRTable(list, u, true)}</div>`;
-}
-
 // ---------- Users management ----------
 function pageUsers(u){
   if(S.dataMode==='demo') return pageUsersDemo(u);
@@ -9971,34 +9992,6 @@ function renderModal(){
       </div>
     </div>`;
   }
-  if(S.modal.type==='view-pr'){
-    const pr = DB.prs.find(p=>p.id===S.modal.id);
-    if(!pr) return '';
-    const total = prTotal(pr);
-    const chain = buildChain(pr);
-    return `<div class="modal-overlay" data-act="close-modal">
-      <div class="modal pr-doc-modal" data-stop="1">
-        <div class="no-print">
-          <div class="section-title">สถานะการอนุมัติ</div>
-          <div class="chain">${chain}</div>
-        </div>
-
-        <div class="pr-doc-wrap">${renderPRDocument(pr)}</div>
-
-        <div class="no-print">
-          <div style="text-align:right; margin-top:14px; font-weight:700; color:var(--navy);">มูลค่ารวม (ไม่แสดงในเอกสารพิมพ์): <span class="mono">${fmtMoney(total)}</span> บาท</div>
-          <div class="section-title" style="margin-top:18px;">ประวัติ</div>
-          ${pr.history.map(h=>`<div style="font-size:12.5px; color:var(--text-muted); margin-bottom:6px;"><b style="color:var(--navy);">${h.who}</b> — ${h.action} <span class="mono" style="opacity:.7;">· ${h.at}</span></div>`).join('')}
-        </div>
-
-        ${prActionButtons(pr)}
-        <div class="small-btn-row no-print" style="justify-content:flex-end; margin-top:18px;">
-          <button class="btn btn-ghost" data-act="print-doc">${ICN.printer} พิมพ์เอกสาร</button>
-          <button class="btn btn-ghost" data-act="close-modal">ปิด</button>
-        </div>
-      </div>
-    </div>`;
-  }
   if(S.modal.type==='add-user' || S.modal.type==='edit-user'){
     const editing = S.modal.type==='edit-user';
     const m = S.modal;
@@ -10620,41 +10613,131 @@ function renderModal(){
   return '';
 }
 
-function buildChain(pr){
-  const stepsMap = {
-    single_auto: [{k:'requester',l:'ผู้ขอ (Auto)'}],
-    single_dual: [{k:'requester',l:'ผู้ขอ'},{k:'partner',l:'ผู้อนุมัติคู่'}],
-    maker: [{k:'maker',l:'Maker'},{k:'checker',l:'Checker'},{k:'approver',l:'Approver'}],
-    super_user: [{k:'requester',l:'Super User (Auto)'}],
-  };
-  let steps = stepsMap[pr.requesterRole] || stepsMap.maker;
-  if(pr.requesterRole==='maker' && !pr.items) steps = stepsMap.maker;
-  let doneCount;
-  if(pr.status==='approved') doneCount = steps.length;
-  else if(pr.status==='rejected') doneCount = -1;
-  else if(pr.status==='pending_check') doneCount = 1;
-  else doneCount = steps.length - 1;
-
-  return steps.map((s,i)=>{
-    let cls='';
-    if(pr.status==='rejected' && i===doneCount+1) cls='rejected';
-    else if(i < doneCount || pr.status==='approved') cls='done';
-    else if(i === doneCount && pr.status!=='approved') cls='current';
-    const line = i < steps.length-1 ? `<div class="chain-line ${i<doneCount?'done':''}"></div>` : '';
-    return `<div class="chain-node ${cls}"><div class="chain-circle">${cls==='done'?'✓':i+1}</div><div class="chain-lbl">${s.l}</div></div>${line}`;
-  }).join('');
+// ---------- รายละเอียด PR (หน้าเต็ม ไม่ใช่ modal) ----------
+// แถบความคืบหน้าต่อรายการ (requirement 2): ขอ(qtyRequested)=ฐาน 100% แบ่งเป็น 3 ส่วนซ้อนกัน —
+// เปิด PO แล้ว(qtyOrdered)/ยกเลิก(qtyCancelled)/คงเหลือ(qtyRemaining) — ผลรวม 3 ส่วนเท่ากับ
+// qtyRequested เสมอ (การันตีโดย DB constraint qty_ordered+qty_cancelled<=qty_requested)
+function prItemProgressBar(item){
+  const total = item.qtyRequested || 1; // กัน div-by-zero (ไม่เกิดจริงเพราะ qty_requested>0 บังคับที่ DB แต่กันไว้)
+  const orderedPct = Math.min(100, (item.qtyOrdered/total)*100);
+  const cancelledPct = Math.min(100-orderedPct, (item.qtyCancelled/total)*100);
+  return `<div>
+    <div style="display:flex; height:8px; border-radius:4px; overflow:hidden; background:var(--surface-alt); width:100%; min-width:120px;">
+      <div style="width:${orderedPct}%; background:var(--navy);"></div>
+      <div style="width:${cancelledPct}%; background:var(--red); opacity:.55;"></div>
+    </div>
+    <div style="font-size:11px; color:var(--text-muted); margin-top:3px; white-space:nowrap;">
+      ${tr('pr.progress_requested')} ${fmtMoney(item.qtyRequested)} · ${tr('pr.progress_ordered')} ${fmtMoney(item.qtyOrdered)} · ${tr('pr.progress_cancelled')} ${fmtMoney(item.qtyCancelled)} ·
+      <b style="color:var(--navy);">${tr('pr.progress_remaining')} ${fmtMoney(item.qtyRemaining)}</b>
+    </div>
+  </div>`;
 }
+function prAdjustmentTypeLabel(t){
+  return t==='consume' ? tr('pr.adjustment_consume') : t==='release' ? tr('pr.adjustment_release') : tr('pr.adjustment_cancel');
+}
+function prItemAdjustmentHistory(itemId){
+  const list = S.prItemAdjustmentsByItemId[itemId];
+  if(list===undefined) return `<button class="btn btn-ghost btn-sm" data-act="load-pr-item-adjustments" data-item-id="${itemId}">${tr('pr.view_adjustment_history')}</button>`;
+  if(list.length===0) return `<div class="hint">${tr('pr.no_adjustment_history')}</div>`;
+  return `<div class="table-wrap"><table>
+    <thead><tr><th>${tr('pr.adj_col_type')}</th><th>${tr('pr.adj_col_qty')}</th><th>${tr('pr.adj_col_note')}</th><th>${tr('pr.adj_col_by')}</th><th>${tr('pr.adj_col_at')}</th></tr></thead>
+    <tbody>${list.map(a=>`<tr>
+      <td>${prAdjustmentTypeLabel(a.adjustmentType)}</td>
+      <td class="mono">${fmtMoney(a.qty)}</td>
+      <td>${esc(a.note||'-')}</td>
+      <td>${esc(customerNameById(a.createdBy))}</td>
+      <td>${a.createdAt ? new Date(a.createdAt).toLocaleString(I18N.getLocale()==='en'?'en-GB':'th-TH',{dateStyle:'medium',timeStyle:'short'}) : '-'}</td>
+    </tr>`).join('')}</tbody>
+  </table></div>`;
+}
+function prCanManageItems(u){ return !!(u && (u.role==='super_user' || u.canManagePo===true)); }
+function prCanApprove(u){ return !!(u && (u.role==='super_user' || u.canApprovePr===true)); }
+function pagePurchaseRequestDetail(u){
+  const pr = S.selectedPurchaseRequestDetail;
+  if(!pr) return `<div class="page-head"><h2>${tr('common.loading')}</h2></div>`;
+  const isOwner = u.id===pr.requestedBy || (pr.submittedBy!=null && u.id===pr.submittedBy);
+  const canManageItems = prCanManageItems(u);
+  const canApprove = prCanApprove(u);
+  const cf = S.prCancelQtyForm;
 
-function prActionButtons(pr){
-  const u = S.currentUser;
-  let can = false, actionLabel='';
-  if(pr.status==='pending_check' && u.role==='checker') { can=true; }
-  if(pr.status==='pending_approval' && u.role==='approver') { can=true; }
-  if(pr.status==='pending_approval' && u.role==='single_dual' && pr.requester!==u.name && pr.requesterRole==='single_dual') { can=true; }
-  if(!can) return '';
-  return `<div class="small-btn-row" style="margin-top:16px;">
-    <button class="btn btn-navy btn-sm" data-act="pr-approve" data-id="${pr.id}">✓ อนุมัติ / ส่งต่อ</button>
-    <button class="btn btn-danger btn-sm" data-act="pr-reject" data-id="${pr.id}">ปฏิเสธ</button>
+  return `
+  <div class="page-head">
+    <div>
+      <button class="btn btn-ghost btn-sm" data-act="nav" data-page="my_prs" style="margin-bottom:8px;">${ICN.chevronLeft} ${tr('common.back')}</button>
+      <h2>${pr.prNo || `(${tr('pr.status_draft')})`} ${prStatusBadge(pr.status)}</h2>
+      <div class="sub">${esc(pr.projectName||'-')} · ${pr.source==='boq' ? tr('create_pr.source_boq') : tr('create_pr.source_manual')}</div>
+    </div>
+  </div>
+
+  <div class="card" style="padding:20px 22px; margin-bottom:16px;">
+    <div class="split">
+      <div><div class="lbl">${tr('pr.col_requested_by')}</div><div>${esc(customerNameById(pr.requestedBy))}</div></div>
+      <div><div class="lbl">${tr('pr.col_request_date')}</div><div>${pr.requestDate||'-'}</div></div>
+      <div><div class="lbl">${tr('create_pr.neededdate_label')}</div><div>${pr.neededDate||'-'}</div></div>
+    </div>
+    ${pr.note ? `<div style="margin-top:10px;"><div class="lbl">${tr('create_pr.remark_label')}</div><div>${esc(pr.note)}</div></div>` : ''}
+    ${pr.status==='rejected' && pr.rejectedReason ? `<div style="margin-top:10px; color:var(--red);"><div class="lbl">${tr('pr.rejected_reason_label')}</div><div>${esc(pr.rejectedReason)}</div></div>` : ''}
+    <div style="margin-top:10px; text-align:right; font-weight:700; color:var(--navy);">${tr('pr.col_total')}: <span class="mono">${fmtMoney(pr.totalAmount)}</span> ${pr.approvedAmount!=null ? `<span style="font-weight:400; color:var(--text-muted); font-size:12.5px;">(${tr('pr.approved_amount_label')} ${fmtMoney(pr.approvedAmount)})</span>` : ''}</div>
+  </div>
+
+  ${pr.status==='approved' ? `<div class="hint" style="background:#fff6e5; padding:10px 14px; border-radius:var(--radius-sm); margin-bottom:16px;">${tr('pr.po_not_supported_notice')}</div>` : ''}
+
+  <div class="card" style="padding:20px 22px; margin-bottom:16px;">
+    <div class="section-title">${tr('create_pr.section_items')}</div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>${tr('create_pr.col_material')}</th><th>${tr('create_pr.col_unit')}</th><th>${tr('create_pr.col_unit_price')}</th><th>${tr('pr.col_estimated_amount')}</th><th>${tr('pr.col_progress')}</th><th></th></tr></thead>
+      <tbody>
+      ${pr.items.map(item=>`
+        <tr>
+          <td>${esc(item.material)}</td>
+          <td>${esc(item.unit)}</td>
+          <td class="mono">${fmtMoney(item.unitPrice)}</td>
+          <td class="mono">${fmtMoney(item.estimatedAmount)}</td>
+          <td>${prItemProgressBar(item)}</td>
+          <td>
+            ${pr.status==='approved' && canManageItems && Number(item.qtyRemaining)>0 ? `<button class="btn btn-ghost btn-sm" data-act="open-pr-cancel-qty" data-item-id="${item.id}">${tr('pr.cancel_qty_btn')}</button>` : ''}
+          </td>
+        </tr>
+        <tr><td colspan="6" style="padding-top:0; padding-bottom:14px; border-top:none;">${prItemAdjustmentHistory(item.id)}</td></tr>
+        ${cf && cf.itemId===item.id ? `
+        <tr><td colspan="6" style="border-top:none;">
+          <div class="card" style="padding:14px 16px; background:var(--surface-alt);">
+            <div class="section-title" style="margin-top:0;">${tr('pr.cancel_qty_form_title')}</div>
+            <div class="hint" style="color:var(--red); margin-bottom:10px;">${tr('pr.cancel_qty_irreversible_warn')}</div>
+            <div class="split">
+              <div class="field"><label>${tr('pr.cancel_qty_amount_label')} (${tr('pr.progress_remaining')} ${fmtMoney(item.qtyRemaining)})</label>
+                <input id="pr-cq-qty" type="number" min="0" step="0.0001" value="${prVal(cf.qty)}" oninput="S.prCancelQtyForm.qty=this.value;">
+              </div>
+              <div class="field"><label>${tr('pr.cancel_qty_reason_label')}</label>
+                <input id="pr-cq-note" value="${esc(cf.note)}" oninput="S.prCancelQtyForm.note=this.value;">
+              </div>
+            </div>
+            <div class="small-btn-row" style="justify-content:flex-end;">
+              <button class="btn btn-ghost btn-sm" data-act="cancel-pr-cancel-qty-form">${tr('common.cancel')}</button>
+              <button class="btn btn-danger btn-sm" data-act="submit-pr-cancel-qty" data-item-id="${item.id}" data-pr-id="${pr.id}">${tr('pr.cancel_qty_confirm_btn')}</button>
+            </div>
+          </div>
+        </td></tr>` : ''}
+      `).join('')}
+      </tbody>
+    </table></div>
+  </div>
+
+  <div class="card" style="padding:20px 22px;">
+    <div class="small-btn-row" style="justify-content:flex-end;">
+      ${pr.status==='draft' && isOwner ? `<button class="btn btn-primary btn-sm" data-act="pr-submit" data-id="${pr.id}" ${isVoucherActionPending('pr-submit',pr.id)?'disabled':''}>${tr('pr.action_submit')}</button>` : ''}
+      ${pr.status==='submitted' && canApprove ? `<button class="btn btn-navy btn-sm" data-act="pr-approve" data-id="${pr.id}" ${isVoucherActionPending('pr-approve',pr.id)?'disabled':''}>${tr('pr.action_approve')}</button>` : ''}
+      ${pr.status==='submitted' && canApprove ? `<button class="btn btn-danger btn-sm" data-act="open-pr-reject" data-id="${pr.id}">${tr('pr.action_reject')}</button>` : ''}
+      ${['draft','submitted','approved'].includes(pr.status) && (isOwner||canApprove) ? `<button class="btn btn-ghost btn-sm" data-act="pr-cancel" data-id="${pr.id}" ${isVoucherActionPending('pr-cancel',pr.id)?'disabled':''}>${tr('pr.action_cancel')}</button>` : ''}
+    </div>
+    ${S.prRejectForm && S.prRejectForm.id===pr.id ? `
+    <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border);">
+      <div class="field"><label>${tr('pr.rejected_reason_label')}</label><input id="pr-reject-reason" value="${esc(S.prRejectForm.reason)}" oninput="S.prRejectForm.reason=this.value;"></div>
+      <div class="small-btn-row" style="justify-content:flex-end;">
+        <button class="btn btn-ghost btn-sm" data-act="cancel-pr-reject-form">${tr('common.cancel')}</button>
+        <button class="btn btn-danger btn-sm" data-act="submit-pr-reject" data-id="${pr.id}">${tr('pr.action_reject')}</button>
+      </div>
+    </div>` : ''}
   </div>`;
 }
 
@@ -10848,6 +10931,7 @@ async function handleAction(act, el){
         canApproveOther: !!data.customer.can_approve_other,
         canManagePettyCashFund: !!data.customer.can_manage_petty_cash_fund,
         canSettleCash: !!data.customer.can_settle_cash,
+        canApprovePr: !!data.customer.can_approve_pr,
       };
       S.view='dashboard'; S.page='overview';
       render();
@@ -10858,7 +10942,7 @@ async function handleAction(act, el){
     }
     return;
   }
-  if(act==='logout'){ S.currentUser=null; S.view='login'; S.customerUsersLoaded=false; S.approvalRulesLoaded=false; S.subcontractorsLoaded=false; S.pettyCashFundsLoaded=false; S.paymentVouchersLoadedByType={petty_cash:false, advance:false, other:false}; S.voucherActionKeys={}; S.voucherActionPending={}; S.approvalConditionsLoaded=false; S.jobPositionsLoaded=false; S.employeesLoaded=false; S.jobApplicationsLoaded=false; S.foreignWorkerDocumentsLoaded=false; S.tendersLoaded=false; S.notifications=[]; S.notificationsUnread=0; S.notifDropdownOpen=false; render(); return; }
+  if(act==='logout'){ S.currentUser=null; S.view='login'; S.customerUsersLoaded=false; S.approvalRulesLoaded=false; S.subcontractorsLoaded=false; S.pettyCashFundsLoaded=false; S.paymentVouchersLoadedByType={petty_cash:false, advance:false, other:false}; S.voucherActionKeys={}; S.voucherActionPending={}; S.approvalConditionsLoaded=false; S.jobPositionsLoaded=false; S.employeesLoaded=false; S.jobApplicationsLoaded=false; S.foreignWorkerDocumentsLoaded=false; S.tendersLoaded=false; S.purchaseRequestsLoaded=false; S.notifications=[]; S.notificationsUnread=0; S.notifDropdownOpen=false; render(); return; }
   if(act==='toggle-notif-dropdown'){ S.notifDropdownOpen = !S.notifDropdownOpen; render(); return; }
   if(act==='set-locale'){ await I18N.setLocale(el.dataset.locale); return; }
   if(act==='open-notification'){
@@ -10915,8 +10999,11 @@ async function handleAction(act, el){
     // โครงการ (client_projects) backs the project pickers on cost/revenue/labor forms, budget-vs-
     // actual, and the project list/detail pages themselves — load it once, on first visit to any
     // of them, rather than duplicating the load call in every single one of those page branches.
-    const PROJECT_DEPENDENT_PAGES = ['fin_projects','fin_project_add','fin_project_detail','fin_costs','fin_revenue','fin_retention','fin_receive_payment','fin_labor','fin_labor_pay','create_pr','fin_po','fin_po_add','fin_quotations','fin_quotation_add','fin_documents','fin_document_add','fin_petty_cash_funds','fin_vouchers_petty_cash','fin_vouchers_advance','fin_vouchers_other','fin_voucher_detail'];
+    const PROJECT_DEPENDENT_PAGES = ['fin_projects','fin_project_add','fin_project_detail','fin_costs','fin_revenue','fin_retention','fin_receive_payment','fin_labor','fin_labor_pay','create_pr','my_prs','all_prs','fin_po','fin_po_add','fin_quotations','fin_quotation_add','fin_documents','fin_document_add','fin_petty_cash_funds','fin_vouchers_petty_cash','fin_vouchers_advance','fin_vouchers_other','fin_voucher_detail'];
     if(PROJECT_DEPENDENT_PAGES.includes(S.page) && S.dataMode!=='demo' && !S.projectsLoaded) await loadRealProjects();
+    // PR (หัวข้อ 4) — ต่อ API จริงเสมอ ไม่มี demo dataset แล้ว (ดู pageOverview's comment)
+    if((S.page==='overview'||S.page==='my_prs'||S.page==='all_prs') && S.dataMode!=='demo' && !S.purchaseRequestsLoaded) await loadPurchaseRequests();
+    if(S.page==='pr_detail' && S.dataMode!=='demo') await loadPurchaseRequestDetail(S.selectedPurchaseRequestId);
     if(S.page==='fin_tender_overview' && S.dataMode!=='demo' && !S.tenderOverviewLoaded) await loadTenderOverview();
     if(S.page==='fin_project_schedule' && S.dataMode!=='demo') await loadProjectTasks(S.selectedProjectId);
     if(S.page==='fin_tenders' && S.dataMode!=='demo' && !S.tendersLoaded) await loadRealTenders();
@@ -11086,7 +11173,7 @@ async function handleAction(act, el){
 
   // ---- PR create ----
   if(act==='add-item'){
-    S.prForm.items.push({material:'',area:'',brand:'',size:'',qty:'',unit:'',price:''});
+    S.prForm.items.push({material:'',qty:'',unit:'',price:''});
     render();
     return;
   }
@@ -11103,6 +11190,7 @@ async function handleAction(act, el){
     S.prForm.projectSearchText = `${p.name} · ${p.code}`;
     S.prForm.projectResultsOpen = false;
     render();
+    if(S.prForm.source==='boq') loadPrBudgetForProject(p.id);
     return;
   }
   if(act==='goto-add-project-from-pr'){
@@ -11111,82 +11199,135 @@ async function handleAction(act, el){
     render();
     return;
   }
+  if(act==='filter-pr-status'){ S.purchaseRequestListFilter.status = el.value; render(); return; }
+  if(act==='filter-pr-project'){ S.purchaseRequestListFilter.projectId = el.value; render(); return; }
   if(act==='submit-pr'){
     const f = S.prForm;
     if(!f.projectId){ toast(tr('create_pr.project_required_err'),'err'); return; }
-    const project = DB.projects.find(p=>p.id===f.projectId);
-    if(!project){ toast(tr('create_pr.project_not_found_err'),'err'); return; }
-    const subCode = f.subCode.trim();
-    const date = f.reqDate || new Date().toISOString().slice(0,10);
-    const neededDate = f.neededDate;
-    const remark = f.remark.trim();
-    const items=[];
-    f.items.forEach(r=>{
-      const material = (r.material||'').trim();
-      const area = (r.area||'').trim();
-      const brand = (r.brand||'').trim();
-      const size = (r.size||'').trim();
-      const qty = parseFloat(r.qty)||0;
-      const unit = (r.unit||'').trim()||'-';
-      const price = parseFloat(r.price)||0;
-      if(material && qty>0) items.push({material,area,brand,size,qty,unit,price});
-    });
-    if(items.length===0){ toast('กรุณากรอกรายการวัสดุอย่างน้อย 1 รายการ','err'); return; }
-    const u = S.currentUser;
-    const foremanUserId = f.foreman;
-    const managerUserId = f.manager;
-    const foremanUser = foremanUserId ? DB.users.find(x=>String(x.id)===foremanUserId) : null;
-    const managerUser = managerUserId ? DB.users.find(x=>String(x.id)===managerUserId) : null;
-    let status, flow=[], histAction;
-    if(u.role==='super_user' || u.role==='single_auto'){
-      status='approved'; histAction='สร้างและอนุมัติอัตโนมัติ';
-    } else if(u.role==='single_dual'){
-      status='pending_approval'; histAction='สร้างรายการ (รออนุมัติคู่)';
+    let items = [];
+    if(f.source==='manual'){
+      f.items.forEach(r=>{
+        const material = (r.material||'').trim();
+        const qty = parseFloat(r.qty)||0;
+        const unit = (r.unit||'').trim()||'-';
+        const price = parseFloat(r.price)||0;
+        if(material && qty>0) items.push({material, unit, qtyRequested:qty, unitPrice:price});
+      });
     } else {
-      status='pending_check'; histAction='สร้างรายการ (รอตรวจสอบ)';
+      if(!f.boqBudget || !f.boqBudget.currentRevision){ toast(tr('create_pr.boq_no_approved_budget'),'err'); return; }
+      const boqItems = (f.boqBudget.currentItems||[]).filter(it=>!it.isGroup);
+      boqItems.forEach(it=>{
+        const qty = parseFloat(f.boqQty[it.id])||0;
+        if(qty<=0) return;
+        const price = f.boqUnitPrice[it.id]!=null && f.boqUnitPrice[it.id]!=='' ? parseFloat(f.boqUnitPrice[it.id]) : (it.qty>0 ? round2(it.amount/it.qty) : 0);
+        items.push({budgetItemId:it.id, material:it.description, unit:it.unit, qtyRequested:qty, unitPrice:price});
+      });
     }
-    const no = 'PR-'+String(2600+Math.floor(Math.random()*99))+'-'+String(DB.prs.length+1).padStart(4,'0');
-    DB.prs.push({
-      // site is kept in sync with the selected project's name purely for backward compatibility
-      // with older display code paths that still read pr.site directly (see renderPRTable) —
-      // projectId/projectName/projectCode are the real, authoritative fields going forward.
-      id:uid(), no, site:project.name, projectId:project.id, projectName:project.name, projectCode:project.code,
-      subCode, requester:u.name, requesterRole:u.role, requesterPosition:posLabel(u), date, requestDate:date, neededDate, remark, items,
-      foremanUserId: foremanUser?foremanUser.id:null, foremanName: foremanUser?foremanUser.name:'', foremanPosition: foremanUser?foremanUser.position:'', foremanDate:'',
-      managerUserId: managerUser?managerUser.id:null, managerName: managerUser?managerUser.name:'', managerPosition: managerUser?managerUser.position:'', managerDate:'',
-      status, flow, step:0,
-      history:[{who:u.name, action:histAction, at: nowStr()}]
-    });
-    toast('ส่งรายการ PR เรียบร้อยแล้ว');
-    S.prForm = null;
-    S.page='my_prs'; render(); return;
-  }
-
-  // ---- PR view / actions ----
-  if(act==='view-pr'){ S.modal={type:'view-pr', id:parseInt(el.dataset.id)}; render(); return; }
-  if(act==='close-modal'){ S.modal=null; render(); return; }
-  if(act==='pr-approve'){
-    const pr = DB.prs.find(p=>p.id===parseInt(el.dataset.id));
-    const u = S.currentUser;
-    const today = new Date().toISOString().slice(0,10);
-    if(pr.foremanUserId && String(pr.foremanUserId)===String(u.id) && !pr.foremanDate) pr.foremanDate = today;
-    if(pr.managerUserId && String(pr.managerUserId)===String(u.id) && !pr.managerDate) pr.managerDate = today;
-    if(pr.status==='pending_check' && u.role==='checker'){
-      pr.status='pending_approval';
-      pr.history.push({who:u.name, action:'ตรวจสอบผ่าน ส่งต่อผู้อนุมัติ', at:nowStr()});
-      toast('ส่งต่อให้ผู้อนุมัติเรียบร้อย');
-    } else {
-      pr.status='approved';
-      pr.history.push({who:u.name, action:'อนุมัติรายการ', at:nowStr()});
-      toast('อนุมัติรายการเรียบร้อยแล้ว');
-    }
+    if(items.length===0){ toast(tr('create_pr.items_required_err'),'err'); return; }
+    if(f.submitting) return;
+    f.submitting = true; render();
+    try{
+      const body = {
+        projectId: f.projectId, source: f.source,
+        budgetRevisionId: f.source==='boq' ? f.boqBudget.currentRevision.id : null,
+        neededDate: f.neededDate || null, note: f.note, items,
+      };
+      const data = await apiCall('POST', '/api/customer/purchase-requests', body, undefined, {'Idempotency-Key': f.idempotencyKey});
+      toast(tr('create_pr.create_success'));
+      S.prForm = null;
+      S.purchaseRequestsLoaded = false;
+      S.selectedPurchaseRequestId = data.purchaseRequest.id;
+      S.page = 'pr_detail';
+    } catch(e){ toast(e.message,'err'); if(S.prForm) S.prForm.submitting = false; }
     render(); return;
   }
-  if(act==='pr-reject'){
-    const pr = DB.prs.find(p=>p.id===parseInt(el.dataset.id));
-    pr.status='rejected';
-    pr.history.push({who:S.currentUser.name, action:'ปฏิเสธรายการ', at:nowStr()});
-    toast('ปฏิเสธรายการแล้ว','err');
+
+  // ---- PR detail / actions ----
+  if(act==='load-pr-item-adjustments'){ loadPrItemAdjustments(parseInt(el.dataset.itemId,10)); return; }
+  if(act==='open-pr-cancel-qty'){ S.prCancelQtyForm = {itemId:parseInt(el.dataset.itemId,10), qty:'', note:''}; render(); return; }
+  if(act==='cancel-pr-cancel-qty-form'){ S.prCancelQtyForm = null; render(); return; }
+  if(act==='submit-pr-cancel-qty'){
+    const itemId = parseInt(el.dataset.itemId,10), prId = parseInt(el.dataset.prId,10);
+    const cf = S.prCancelQtyForm;
+    if(!cf || !cf.note || !cf.note.trim()){ toast(tr('pr.cancel_qty_reason_required_err'),'err'); return; }
+    const qty = parseFloat(cf.qty);
+    if(!(qty>0)){ toast(tr('pr.cancel_qty_amount_required_err'),'err'); return; }
+    if(!confirm(tr('pr.cancel_qty_irreversible_confirm'))) return;
+    if(isVoucherActionPending('pr-cancel-qty', itemId)) return;
+    const key = voucherActionKey('pr-cancel-qty', itemId);
+    S.voucherActionPending['pr-cancel-qty-'+itemId] = true;
+    render();
+    try{
+      await apiCall('POST', `/api/customer/purchase-requests/${prId}/items/${itemId}/cancel-qty`, {qty, note:cf.note.trim()}, undefined, {'Idempotency-Key': key});
+      clearVoucherActionKey('pr-cancel-qty', itemId);
+      S.prCancelQtyForm = null;
+      await loadPurchaseRequestDetail(prId);
+      await loadPrItemAdjustments(itemId); // โหลดประวัติใหม่ทันที ให้เห็นรายการที่เพิ่งทำจริงโดยไม่ต้องกดดูอีกครั้ง
+      toast(tr('pr.cancel_qty_success'));
+    } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['pr-cancel-qty-'+itemId] = false;
+    render(); return;
+  }
+  if(act==='pr-submit'){
+    const id = parseInt(el.dataset.id,10);
+    if(isVoucherActionPending('pr-submit', id)) return;
+    const key = voucherActionKey('pr-submit', id);
+    S.voucherActionPending['pr-submit-'+id] = true;
+    render();
+    try{
+      await apiCall('POST', `/api/customer/purchase-requests/${id}/submit`, {}, undefined, {'Idempotency-Key': key});
+      clearVoucherActionKey('pr-submit', id);
+      S.purchaseRequestsLoaded = false;
+      await loadPurchaseRequestDetail(id);
+      toast(tr('pr.submit_success'));
+    } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['pr-submit-'+id] = false;
+    render(); return;
+  }
+  if(act==='pr-approve'){
+    const id = parseInt(el.dataset.id,10);
+    if(isVoucherActionPending('pr-approve', id)) return;
+    const key = voucherActionKey('pr-approve', id);
+    S.voucherActionPending['pr-approve-'+id] = true;
+    render();
+    try{
+      await apiCall('POST', `/api/customer/purchase-requests/${id}/approve`, {}, undefined, {'Idempotency-Key': key});
+      clearVoucherActionKey('pr-approve', id);
+      S.purchaseRequestsLoaded = false;
+      await loadPurchaseRequestDetail(id);
+      toast(tr('pr.approve_success'));
+    } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['pr-approve-'+id] = false;
+    render(); return;
+  }
+  if(act==='open-pr-reject'){ S.prRejectForm = {id:parseInt(el.dataset.id,10), reason:''}; render(); return; }
+  if(act==='cancel-pr-reject-form'){ S.prRejectForm = null; render(); return; }
+  if(act==='submit-pr-reject'){
+    const id = parseInt(el.dataset.id,10);
+    const reason = (S.prRejectForm && S.prRejectForm.reason || '').trim();
+    if(!reason){ toast(tr('pr.rejected_reason_required_err'),'err'); return; }
+    try{
+      await apiCall('POST', `/api/customer/purchase-requests/${id}/reject`, {reason});
+      S.prRejectForm = null;
+      S.purchaseRequestsLoaded = false;
+      await loadPurchaseRequestDetail(id);
+      toast(tr('pr.reject_success'));
+    } catch(e){ toast(e.message,'err'); }
+    render(); return;
+  }
+  if(act==='pr-cancel'){
+    const id = parseInt(el.dataset.id,10);
+    if(!confirm(tr('pr.cancel_confirm'))) return;
+    if(isVoucherActionPending('pr-cancel', id)) return;
+    S.voucherActionPending['pr-cancel-'+id] = true;
+    render();
+    try{
+      await apiCall('POST', `/api/customer/purchase-requests/${id}/cancel`, {});
+      S.purchaseRequestsLoaded = false;
+      await loadPurchaseRequestDetail(id);
+      toast(tr('pr.cancel_success'));
+    } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['pr-cancel-'+id] = false;
     render(); return;
   }
 

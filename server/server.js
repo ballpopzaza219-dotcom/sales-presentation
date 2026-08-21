@@ -6358,6 +6358,34 @@ async function loadBudgetDetail(runner, companyId, budgetId) {
     return rollupBoqGroupAmounts(items.rows.map(serializeBudgetItem));
   }
 
+  // ยอดที่ถูกขอซื้อไปแล้ว (ผ่าน PR) ต่อบรรทัด BOQ — เอาไว้ให้หน้าสร้าง PR แสดง "เหลืองบเท่าไหร่" ก่อน
+  // กรอก นับเฉพาะ budget_item_id ของ "revision ปัจจุบัน" (currentRevision) เท่านั้น เพราะ PR อ้างอิง
+  // budget_item_id ที่ผูกกับ revision ตอนสร้าง — ถ้า budget ถูก revise ใหม่ทีหลัง (delete+reinsert ทั้ง
+  // ก้อนตาม copyBoqItems) รายการ PR เก่าจะชี้ไปที่ budget_item_id ของ revision เก่าที่ไม่อยู่ใน
+  // currentItems ชุดนี้แล้ว จึงไม่ถูกนับ (ถูกต้องแล้ว เพราะ "เหลืองบ" ต้องเทียบกับ revision ปัจจุบันเท่านั้น)
+  // นับ PR ทุกสถานะยกเว้น rejected/cancelled (รวม draft ด้วย) เพราะเป้าหมายคือเตือนล่วงหน้าไม่ให้ของซ้ำ
+  // ซ้อนกันโดยไม่รู้ตัว ไม่ใช่ยอดที่ authoritative — ตรงกับ pattern "NOT IN สถานะจบแบบล้มเหลว" ที่
+  // CLAUDE.md ข้อ 23 แนะนำ (ปลอดภัยกว่าเมื่อมีสถานะใหม่เพิ่มมาทีหลัง)
+  async function attachPrRequestedTotals(items) {
+    const ids = items.filter(it => !it.isGroup).map(it => it.id);
+    if (ids.length === 0) return items;
+    const r = await runner.query(
+      `SELECT pri.budget_item_id, SUM(pri.qty_requested) AS qty, SUM(pri.estimated_amount) AS amount
+       FROM client_purchase_request_items pri
+       JOIN client_purchase_requests pr ON pr.id = pri.purchase_request_id
+       WHERE pri.company_id=$1 AND pri.budget_item_id = ANY($2::int[]) AND pr.status NOT IN ('rejected','cancelled')
+       GROUP BY pri.budget_item_id`,
+      [companyId, ids]
+    );
+    const byId = new Map(r.rows.map(row => [row.budget_item_id, { qty: Number(row.qty), amount: Number(row.amount) }]));
+    for (const it of items) {
+      const agg = byId.get(it.id);
+      it.requestedQty = agg ? agg.qty : 0;
+      it.requestedAmount = agg ? agg.amount : 0;
+    }
+    return items;
+  }
+
   // Resolves which TENDER the source bidding budget belongs to, so the frontend's "link back to the
   // originating tender" (on a project budget copied via rule #1) can navigate straight there instead
   // of just showing a bare source_budget_id with nowhere useful to go.
@@ -6372,7 +6400,7 @@ async function loadBudgetDetail(runner, companyId, budgetId) {
     sourceTenderId,
     revisions: revisions.rows.map(serializeBudgetRevision),
     currentRevision: currentRevision ? serializeBudgetRevision(currentRevision) : null,
-    currentItems: await itemsFor(currentRevision ? currentRevision.id : null),
+    currentItems: await attachPrRequestedTotals(await itemsFor(currentRevision ? currentRevision.id : null)),
     latestRevision: latestRevision ? serializeBudgetRevision(latestRevision) : null,
     latestItems: await itemsFor(latestRevision ? latestRevision.id : null),
   };
