@@ -132,8 +132,11 @@ function idemKey(label) { return `${label}-${Date.now()}-${idemCounter++}`; }
     await page.click('[data-act="submit-pr"]');
     await page.waitForTimeout(800);
     await shot(page, 'pr-detail-after-create-draft');
-    const draftUrl = page.url();
-    assert(true, `ส่งฟอร์มสร้าง PR แบบ manual แล้วพาไปหน้ารายละเอียดสำเร็จ (url: ${draftUrl})`);
+    // เช็คว่าหน้า detail โหลดข้อมูลจริงทันทีหลัง redirect มา (ไม่ค้างที่ "กำลังโหลด...") — สร้าง handler
+    // ตั้ง S.page ตรงๆ ไม่ผ่าน act==='nav' จึงไม่ trigger hook loadPurchaseRequestDetail อัตโนมัติ ต้อง
+    // เรียกเองในตัว handler เอง (บั๊กจริงที่เจอตอนเขียน po-ui.regression.js แล้วย้อนมาแก้ที่นี่ด้วย)
+    const editableFieldVisible = await page.locator('[data-act="pr-submit"]').count();
+    assert(editableFieldVisible === 1, 'หน้ารายละเอียดโหลดข้อมูลจริงทันทีหลังสร้าง ไม่ค้างที่ "กำลังโหลด..." (เห็นปุ่มยื่นขออนุมัติทันทีโดยไม่ต้อง nav ออกไปที่อื่นก่อน)');
     const draftRow = await pool.query(
       `SELECT id, status, total_amount FROM client_purchase_requests WHERE company_id=$1 AND project_id=$2 ORDER BY id DESC LIMIT 1`,
       [COMPANY_A_ID, projManual.project.id]
@@ -175,8 +178,9 @@ function idemKey(label) { return `${label}-${Date.now()}-${idemCounter++}`; }
     const approvedRow = await pool.query(`SELECT status, approved_amount FROM client_purchase_requests WHERE id=$1`, [prManualId]);
     assert(approvedRow.rows[0].status === 'approved', 'อนุมัติแล้วสถานะเป็น approved จริงใน DB');
     assert(Number(approvedRow.rows[0].approved_amount) === (50 * 165 + 100 * 78), 'approved_amount ถูก snapshot ไว้ตรงกับ total_amount ตอนอนุมัติ');
-    const notice = await page.locator('text=ยังไม่รองรับในระบบตอนนี้').count();
-    assert(notice >= 1, 'PR สถานะ approved แสดงข้อความแจ้งเตือน "การตัดยอดจาก PO ยังไม่รองรับ" ในหน้ารายละเอียด (requirement 4)');
+    // หมายเหตุ: เดิมมี assertion ตรงนี้ตรวจข้อความ "ตัดยอดจาก PO ยังไม่รองรับ" (requirement 4 ของหัวข้อ 4)
+    // — ลบไปแล้วตอนหัวข้อ 5 (PO) เขียนเสร็จจริง เพราะ consume ใช้งานได้จริงแล้ว ไม่ใช่ "ยังไม่รองรับ" อีก
+    // ต่อไป (ดู po-ui.regression.js สำหรับการตรวจ auto-consume/release แบบเต็ม)
     const progressText = await page.locator('text=คงเหลือ').first().textContent();
     assert(progressText.includes('50.0000') || progressText.includes('50'), `แถบความคืบหน้าของรายการแรกแสดง "คงเหลือ" = จำนวนที่ขอทั้งหมด (ยังไม่มีการตัดยอด PO เลย) (ได้ "${progressText}")`);
 

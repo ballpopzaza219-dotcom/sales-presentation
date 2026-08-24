@@ -609,7 +609,6 @@ let DB = {
   payables:[],       // {id, type, vendor, projectId, invoiceNo, date, amount, paidAmount}
   stockMoves:[],      // {id, material, unit, type:'in'|'out', qty, unitPrice, date, projectId, note}
   cashBank:[],        // {id, account:'cash'|'bank', type:'in'|'out', desc, date, amount, projectId}
-  purchaseOrders:[],  // real-backend (client ledger) — {id, poNo, projectId, prReference, supplierName, supplierContact, issueDate, expectedDeliveryDate, paymentTerms, status, items:[{material,qty,unit,unitPrice}], amount, note}
   quotations:[],       // real-backend (client ledger) — {id, quotationNo, projectId, clientName, issueDate, validUntil, amount, status, note}
   clientDocuments:[],  // real-backend (client ledger) — {id, docType:'contract'|'delivery'|'certification', docName, projectId, docDate, expiryDate, hasFile, note}
   closedYears:[],     // {id, year, closedDate, closedBy, snapshot:{...}}
@@ -728,8 +727,21 @@ let S = {
   prItemAdjustmentsByItemId:{}, // itemId -> array — โหลดแยกต่อรายการ (lazy, ตอนกด "ดูประวัติ" ต่อ item) ไม่โหลดรวมมากับ detail
   prCancelQtyForm:null,       // {itemId, qty:'', note:''} — set เมื่อเปิดฟอร์มลดยอดรายการ
   prRejectForm:null,          // {id, reason:''} — set เมื่อเปิดฟอร์มปฏิเสธ PR
+  purchaseOrders:[],
   purchaseOrdersLoaded:false,
-  poAddForm:null,             // set lazily on first render of pageFinPoAdd()
+  purchaseOrderListFilter:{status:'', projectId:''},
+  selectedPurchaseOrderId:null,
+  selectedPurchaseOrderDetail:null, // { purchaseOrder } — fetched fresh each time (ไม่ cache)
+  poForm:null,                // set lazily on first render of pageFinPoAdd() — {projectId, items:[{prItemId,...}], approvedPrs, pickerPrId, pickerPrItems, ...}
+  poRejectForm:null,          // {id, reason:''}
+  subcontractTerms:[],
+  subcontractTermsLoaded:false,
+  subcontractTermListFilter:{status:'', projectId:''},
+  selectedSubcontractTermId:null,
+  selectedSubcontractTermDetail:null, // { subcontractTerm } — fetched fresh each time (ไม่ cache)
+  woForm:null,                // set lazily on first render of pageFinWoAdd() — {subcontractorId, projectId, contractValue, advancePercent, retentionPercent, whtIncomeTypeCode, whtRate, startDate, endDate, note}
+  woRejectForm:null,          // {id, reason:''}
+  woTerminateForm:null,       // {id, reason:''}
   quotationsLoaded:false,
   quotationAddForm:null,      // set lazily on first render of pageFinQuotationAdd()
   clientDocumentsLoaded:false,
@@ -1379,20 +1391,68 @@ async function loadPrBudgetForProject(projectId){
   } catch(e){ toast(e.message, 'err'); if(S.prForm) S.prForm.boqBudget = null; }
   render();
 }
-function mapRealPurchaseOrder(p){
-  return {
-    id:p.id, poNo:p.poNo, projectId:p.projectId, projectName:p.projectName, prReference:p.prReference,
-    supplierName:p.supplierName, supplierContact:p.supplierContact, issueDate:p.issueDate,
-    expectedDeliveryDate:p.expectedDeliveryDate, paymentTerms:p.paymentTerms, status:p.status,
-    items:p.items||[], amount:p.amount, note:p.note, createdAt:p.createdAt,
-  };
-}
-async function loadRealPurchaseOrders(){
+// ---------- Purchase Orders (ใบสั่งซื้อ, หัวข้อ 5) — ต่อ API จริงทั้งหมด ----------
+async function loadPurchaseOrders(){
   try{
-    const data = await apiCall('GET', '/api/customer/purchase-orders');
-    DB.purchaseOrders = data.purchaseOrders.map(mapRealPurchaseOrder);
+    const params = new URLSearchParams();
+    if(S.purchaseOrderListFilter.status) params.set('status', S.purchaseOrderListFilter.status);
+    if(S.purchaseOrderListFilter.projectId) params.set('projectId', S.purchaseOrderListFilter.projectId);
+    const qs = params.toString();
+    const data = await apiCall('GET', '/api/customer/purchase-orders'+(qs?`?${qs}`:''));
+    S.purchaseOrders = data.purchaseOrders;
   } catch(e){ toast(e.message, 'err'); }
   S.purchaseOrdersLoaded = true; render();
+}
+async function loadPurchaseOrderDetail(id){
+  S.selectedPurchaseOrderDetail = null;
+  render();
+  try{
+    const data = await apiCall('GET', `/api/customer/purchase-orders/${id}`);
+    S.selectedPurchaseOrderDetail = data.purchaseOrder;
+  } catch(e){ toast(e.message, 'err'); }
+  render();
+}
+// ---------- ใบสั่งจ้างผู้รับเหมาช่วง (Work Order, หัวข้อ 5 รอบ B) — ต่อ API จริงทั้งหมด ----------
+async function loadSubcontractTerms(){
+  try{
+    const params = new URLSearchParams();
+    if(S.subcontractTermListFilter.status) params.set('status', S.subcontractTermListFilter.status);
+    if(S.subcontractTermListFilter.projectId) params.set('projectId', S.subcontractTermListFilter.projectId);
+    const qs = params.toString();
+    const data = await apiCall('GET', '/api/customer/subcontract-terms'+(qs?`?${qs}`:''));
+    S.subcontractTerms = data.subcontractTerms;
+  } catch(e){ toast(e.message, 'err'); }
+  S.subcontractTermsLoaded = true; render();
+}
+async function loadSubcontractTermDetail(id){
+  S.selectedSubcontractTermDetail = null;
+  render();
+  try{
+    const data = await apiCall('GET', `/api/customer/subcontract-terms/${id}`);
+    S.selectedSubcontractTermDetail = data.subcontractTerm;
+  } catch(e){ toast(e.message, 'err'); }
+  render();
+}
+// โหลด PR ที่อนุมัติแล้วของโครงการที่เลือกไว้ในฟอร์มสร้าง PO — ให้เลือกใบมาดึงรายการ (undefined=กำลังโหลด)
+async function loadApprovedPrsForPoProject(projectId){
+  if(!S.poForm) return;
+  S.poForm.approvedPrs = undefined;
+  render();
+  try{
+    const data = await apiCall('GET', `/api/customer/purchase-requests?projectId=${projectId}&status=approved`);
+    if(S.poForm) S.poForm.approvedPrs = data.purchaseRequests;
+  } catch(e){ toast(e.message,'err'); if(S.poForm) S.poForm.approvedPrs = []; }
+  render();
+}
+async function loadPrItemsForPoPicker(prId){
+  if(!S.poForm) return;
+  S.poForm.pickerPrItems = undefined;
+  render();
+  try{
+    const data = await apiCall('GET', `/api/customer/purchase-requests/${prId}`);
+    if(S.poForm) S.poForm.pickerPrItems = data.purchaseRequest.items;
+  } catch(e){ toast(e.message,'err'); if(S.poForm) S.poForm.pickerPrItems = []; }
+  render();
 }
 function mapRealQuotation(q){
   return {
@@ -2670,6 +2730,7 @@ function financeNavFor(u){
     {key:'fin_stock', label:tr('nav.fin_stock'), icon:'boxes'},
     {key:'fin_cashbank', label:tr('nav.fin_cashbank'), icon:'bank'},
     {key:'fin_po', label:tr('nav.fin_po'), icon:'fileStack'},
+    {key:'fin_wo', label:tr('nav.fin_wo'), icon:'fileStack'},
     {key:'fin_quotations', label:tr('nav.fin_quotations'), icon:'fileStack'},
     {key:'fin_documents', label:tr('nav.fin_documents'), icon:'fileStack'},
     {key:'section', label:tr('nav.section_analysis')},
@@ -2782,7 +2843,7 @@ function renderDashboard(){
   if(u.role!=='super_user' && u.canManagePo && S.module==='pr' && !nav.find(n=>n.key==='subcontractors')){
     nav.push({key:'subcontractors', label:tr('nav.subcontractors'), icon:'users'});
   }
-  const hiddenPages = ['emp_app_form','emp_app_print','fin_tender_add','fin_tender_detail','fin_budget_detail','fin_project_add','fin_project_detail','fin_project_schedule','fin_po_add','fin_quotation_add','fin_document_add','fin_voucher_detail','fin_wht_certificate_print','fin_advance_clearance_detail','pr_detail']; // reachable only via buttons, not listed in any sidebar nav
+  const hiddenPages = ['emp_app_form','emp_app_print','fin_tender_add','fin_tender_detail','fin_budget_detail','fin_project_add','fin_project_detail','fin_project_schedule','fin_po_add','fin_quotation_add','fin_document_add','fin_voucher_detail','fin_wht_certificate_print','fin_advance_clearance_detail','pr_detail','fin_po_detail','fin_wo_add','fin_wo_detail']; // reachable only via buttons, not listed in any sidebar nav
   if(!hiddenPages.includes(S.page) && !nav.find(n=>n.key===S.page && n.key!=='section')) S.page = S.module==='finance' ? 'fin_overview' : S.module==='employees' ? 'emp_overview' : S.module==='bidding' ? 'fin_tender_overview' : 'overview';
 
   return `
@@ -2932,6 +2993,10 @@ function renderPage(){
     case 'fin_cashbank': return pageLedger('cashbank');
     case 'fin_po': return pageFinPurchaseOrders();
     case 'fin_po_add': return pageFinPoAdd();
+    case 'fin_po_detail': return pageFinPurchaseOrderDetail();
+    case 'fin_wo': return pageFinWo();
+    case 'fin_wo_add': return pageFinWoAdd();
+    case 'fin_wo_detail': return pageFinWoDetail();
     case 'fin_quotations': return pageFinQuotations();
     case 'fin_quotation_add': return pageFinQuotationAdd();
     case 'fin_documents': return pageFinDocuments();
@@ -6366,27 +6431,40 @@ function renderProjectInstallmentsSection(){
     <div style="margin-top:8px; text-align:right; font-size:13px;"><span style="color:var(--text-muted);">${tr('fin_project_add.installment_total_label')}:</span> <span class="mono" style="font-weight:700;">${fmtMoney(instTotal)}</span></div>`;
 }
 
-// ---------------- ใบสั่งซื้อ (Purchase Orders) — real backend, client_purchase_orders ----------------
+// ---------------- ใบสั่งซื้อ (Purchase Orders, หัวข้อ 5) — real backend, client_purchase_orders ----------------
 function poStatusLabels(){
   return {
-    pending: tr('fin_po.status_pending'), ordered: tr('fin_po.status_ordered'),
-    received: tr('fin_po.status_received'), cancelled: tr('fin_po.status_cancelled'),
+    draft: tr('pr.status_draft'), submitted: tr('pr.status_submitted'), approved: tr('pr.status_approved'),
+    rejected: tr('pr.status_rejected'), cancelled: tr('pr.status_cancelled'),
   };
 }
 function poStatusBadgeClass(status){
-  return status==='received' ? 'badge-approved' : status==='cancelled' ? 'badge-suspended' : status==='ordered' ? 'badge-pending' : 'badge-draft';
+  return status==='approved' ? 'badge-approved' : status==='rejected' ? 'badge-rejected' : status==='cancelled' ? 'badge-suspended' : status==='submitted' ? 'badge-pending' : 'badge-draft';
 }
 function pageFinPurchaseOrders(){
-  if(S.dataMode==='demo'){
-    return `<div class="page-head"><div><h2>${tr('nav.fin_po')}</h2><div class="sub">${tr('fin_po.subtitle')}</div></div></div>
-    <div class="card" style="padding:20px 22px;"><div class="empty">${tr('fin_po.demo_not_available')}</div></div>`;
-  }
-  const list = DB.purchaseOrders.slice().reverse();
-  const total = sumBy(list, p=>p.amount);
+  const list = S.purchaseOrders;
+  const f = S.purchaseOrderListFilter;
+  const total = sumBy(list, p=>p.totalAmount);
   return `
   <div class="page-head">
     <div><h2>${tr('nav.fin_po')}</h2><div class="sub">${tr('fin_po.subtitle')}</div></div>
     <button class="btn btn-primary" data-act="nav" data-page="fin_po_add">${ICN.plus} ${tr('fin_po.add_po')}</button>
+  </div>
+  <div class="card" style="padding:16px 18px; margin-bottom:14px;">
+    <div class="split">
+      <div class="field"><label>${tr('pr.filter_status')}</label>
+        <select data-act="filter-po-status">
+          <option value="">${tr('pr.filter_status_all')}</option>
+          ${Object.entries(poStatusLabels()).map(([k,v])=>`<option value="${k}" ${f.status===k?'selected':''}>${v}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field"><label>${tr('pr.filter_project')}</label>
+        <select data-act="filter-po-project">
+          <option value="">${tr('pr.filter_project_all')}</option>
+          ${DB.projects.map(p=>`<option value="${p.id}" ${String(f.projectId)===String(p.id)?'selected':''}>${esc(p.name)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
   </div>
   <div class="grid-cards" style="grid-template-columns:repeat(auto-fit,minmax(200px,240px));">
     ${statCard('doc', tr('ledger.stat_count'), list.length, '')}
@@ -6399,37 +6477,71 @@ function pageFinPurchaseOrders(){
       <tbody>
         ${list.map(p=>`
           <tr>
-            <td class="mono">${esc(p.poNo)}</td>
+            <td class="mono">${p.poNo || `(${tr('pr.status_draft')})`}</td>
             <td>${esc(p.supplierName)}</td>
             <td>${p.projectName?esc(p.projectName):'-'}</td>
             <td>${p.issueDate||'-'}</td>
-            <td class="mono" style="font-weight:600;">${fmtMoney(p.amount)}</td>
+            <td class="mono" style="font-weight:600;">${fmtMoney(p.totalAmount)}</td>
             <td><span class="badge ${poStatusBadgeClass(p.status)}">${poStatusLabels()[p.status]||p.status}</span></td>
-            <td>
-              <select data-act="set-po-status" data-id="${p.id}" style="font-size:12px; padding:4px 8px;">
-                ${Object.entries(poStatusLabels()).map(([k,v])=>`<option value="${k}" ${p.status===k?'selected':''}>${v}</option>`).join('')}
-              </select>
-            </td>
+            <td><button class="btn btn-ghost btn-sm" data-act="nav" data-page="fin_po_detail" data-id="${p.id}" data-id-field="selectedPurchaseOrderId">${tr('common.view_detail')}</button></td>
           </tr>`).join('')}
       </tbody>
     </table></div>`}
   </div>`;
 }
+
+// รายการที่เพิ่มแล้วในฟอร์มสร้าง PO — ถ้า prItemId มีค่า แสดง badge อ้างอิง PR ต้นทาง (material/unit ยัง
+// แก้ไขได้อิสระ เผื่อชื่อบนใบสั่งซื้อจริงต่างจากที่ระบุใน PR เล็กน้อย — ไม่ล็อกฟิลด์)
+function poItemFormRow(idx, item={}){
+  return `<div class="pr-item-row" data-po-item-row="${idx}" style="grid-template-columns:2fr 1fr 1fr 1fr auto;">
+    <div>
+      ${item.prItemId ? `<div class="hint" style="margin-bottom:2px;">${tr('fin_po.linked_to_pr_badge', {qty: prVal(item.maxQty)})}</div>` : ''}
+      <input placeholder="${tr('create_pr.col_material')}" value="${prVal(item.material)}" oninput="S.poForm.items[${idx}].material=this.value;">
+    </div>
+    <input type="number" placeholder="0" value="${prVal(item.qty)}" oninput="S.poForm.items[${idx}].qty=this.value;">
+    <input placeholder="${tr('create_pr.col_unit')}" value="${prVal(item.unit)}" oninput="S.poForm.items[${idx}].unit=this.value;">
+    <input type="number" placeholder="0.00" value="${prVal(item.unitPrice)}" oninput="S.poForm.items[${idx}].unitPrice=this.value;">
+    <button class="remove-item" data-act="remove-po-item" data-idx="${idx}">✕</button>
+  </div>`;
+}
 function pageFinPoAdd(){
-  if(!S.poAddForm) S.poAddForm = {
-    supplierName:'', supplierContact:'', projectId:'', prReference:'', issueDate:new Date().toISOString().slice(0,10),
-    expectedDeliveryDate:'', paymentTerms:'', status:'pending', note:'',
-    items:[{material:'',qty:'',unit:'',unitPrice:''}],
+  if(!S.poForm) S.poForm = {
+    projectId:'', supplierName:'', supplierContact:'', issueDate:new Date().toISOString().slice(0,10),
+    expectedDeliveryDate:'', paymentTerms:'', note:'',
+    items:[{prItemId:null, material:'', unit:'', qty:'', unitPrice:''}],
+    approvedPrs:undefined, pickerPrId:'', pickerPrItems:undefined,
+    submitting:false, idempotencyKey: crypto.randomUUID(),
   };
-  const f = S.poAddForm;
-  const itemRow = (item,idx)=>`
-    <div class="pr-item-row" data-po-item-row="${idx}" style="grid-template-columns:2fr 1fr 1fr 1fr auto;">
-      <input placeholder="${tr('create_pr.col_material')}" value="${esc(item.material)}" oninput="S.poAddForm.items[${idx}].material=this.value;">
-      <input type="number" placeholder="${tr('create_pr.col_qty')}" value="${esc(item.qty)}" oninput="S.poAddForm.items[${idx}].qty=this.value;">
-      <input placeholder="${tr('create_pr.col_unit')}" value="${esc(item.unit)}" oninput="S.poAddForm.items[${idx}].unit=this.value;">
-      <input type="number" placeholder="${tr('create_pr.col_unit_price')}" value="${esc(item.unitPrice)}" oninput="S.poAddForm.items[${idx}].unitPrice=this.value;">
-      <button class="remove-item" data-act="remove-po-item">✕</button>
-    </div>`;
+  const f = S.poForm;
+
+  let prPickerSection = '';
+  if(f.projectId){
+    if(f.approvedPrs===undefined){
+      prPickerSection = `<div class="hint">${tr('common.loading')}</div>`;
+    } else if(f.approvedPrs.length===0){
+      prPickerSection = `<div class="hint">${tr('fin_po.no_approved_pr_for_project')}</div>`;
+    } else {
+      prPickerSection = `
+        <select data-act="pick-po-source-pr" style="max-width:320px;">
+          <option value="">${tr('fin_po.pick_pr_placeholder')}</option>
+          ${f.approvedPrs.map(pr=>`<option value="${pr.id}" ${String(f.pickerPrId)===String(pr.id)?'selected':''}>${pr.prNo}</option>`).join('')}
+        </select>`;
+      if(f.pickerPrId && f.pickerPrItems!==undefined){
+        const availableItems = f.pickerPrItems.filter(it=>Number(it.qtyRemaining)>0);
+        prPickerSection += availableItems.length===0
+          ? `<div class="hint" style="margin-top:8px;">${tr('fin_po.pr_no_remaining_items')}</div>`
+          : `<div class="table-wrap" style="margin-top:8px;"><table>
+              <thead><tr><th>${tr('create_pr.col_material')}</th><th>${tr('create_pr.col_unit')}</th><th>${tr('pr.progress_remaining')}</th><th></th></tr></thead>
+              <tbody>${availableItems.map(it=>`
+                <tr>
+                  <td>${esc(it.material)}</td><td>${esc(it.unit)}</td><td class="mono">${fmtMoney(it.qtyRemaining)}</td>
+                  <td><button class="btn btn-ghost btn-sm" data-act="add-po-item-from-pr" data-pr-item-id="${it.id}">${tr('fin_po.add_this_item')}</button></td>
+                </tr>`).join('')}</tbody>
+            </table></div>`;
+      }
+    }
+  }
+
   return `
   <div class="page-head">
     <div>
@@ -6437,33 +6549,304 @@ function pageFinPoAdd(){
       <h2>${tr('fin_po.add_po')}</h2><div class="sub">${tr('fin_po.add_subtitle')}</div>
     </div>
   </div>
-  <div class="card" style="padding:20px 22px; max-width:900px;">
+  <div class="card" style="padding:20px 22px; max-width:960px;">
     <div class="split">
-      <div class="field"><label>${tr('fin_po.supplier_label')} *</label><input id="po-supplier" value="${esc(f.supplierName)}" oninput="S.poAddForm.supplierName=this.value;"></div>
-      <div class="field"><label>${tr('fin_po.supplier_contact_label')}</label><input id="po-contact" value="${esc(f.supplierContact)}" oninput="S.poAddForm.supplierContact=this.value;"></div>
+      <div class="field"><label>${tr('fin_po.supplier_label')} *</label><input id="po-supplier" value="${esc(f.supplierName)}" oninput="S.poForm.supplierName=this.value;"></div>
+      <div class="field"><label>${tr('fin_po.supplier_contact_label')}</label><input id="po-contact" value="${esc(f.supplierContact)}" oninput="S.poForm.supplierContact=this.value;"></div>
     </div>
     <div class="split">
-      <div class="field"><label>${tr('ledger.col_project')}</label><select id="po-project" onchange="S.poAddForm.projectId=this.value;">${projectSelectOptions(f.projectId, true)}</select></div>
-      <div class="field"><label>${tr('fin_po.pr_reference_label')}</label><input id="po-pr-ref" placeholder="เช่น PR-2569-0012" value="${esc(f.prReference)}" oninput="S.poAddForm.prReference=this.value;"></div>
+      <div class="field"><label>${tr('ledger.col_project')}</label><select data-act="select-po-project">${projectSelectOptions(f.projectId, true)}</select></div>
+      <div class="field"><label>${tr('fin_po.expected_delivery_label')}</label><input id="po-delivery" type="date" value="${f.expectedDeliveryDate}" onchange="S.poForm.expectedDeliveryDate=this.value;"></div>
     </div>
     <div class="split">
-      <div class="field"><label>${tr('fin_po.issue_date_label')}</label><input id="po-issuedate" type="date" value="${f.issueDate}" onchange="S.poAddForm.issueDate=this.value;"></div>
-      <div class="field"><label>${tr('fin_po.expected_delivery_label')}</label><input id="po-delivery" type="date" value="${f.expectedDeliveryDate}" onchange="S.poAddForm.expectedDeliveryDate=this.value;"></div>
+      <div class="field"><label>${tr('fin_po.issue_date_label')}</label><input id="po-issuedate" type="date" value="${f.issueDate}" onchange="S.poForm.issueDate=this.value;"></div>
+      <div class="field"><label>${tr('fin_po.payment_terms_label')}</label><input id="po-terms" placeholder="เช่น เครดิต 30 วัน" value="${esc(f.paymentTerms)}" oninput="S.poForm.paymentTerms=this.value;"></div>
     </div>
-    <div class="split">
-      <div class="field"><label>${tr('fin_po.payment_terms_label')}</label><input id="po-terms" placeholder="เช่น เครดิต 30 วัน" value="${esc(f.paymentTerms)}" oninput="S.poAddForm.paymentTerms=this.value;"></div>
-      <div class="field"><label>${tr('common.col_status')}</label>
-        <select id="po-status" onchange="S.poAddForm.status=this.value;">${Object.entries(poStatusLabels()).map(([k,v])=>`<option value="${k}" ${f.status===k?'selected':''}>${v}</option>`).join('')}</select>
-      </div>
-    </div>
+
+    ${f.projectId ? `
+    <div class="section-title" style="margin-top:14px;">${tr('fin_po.section_from_pr')}</div>
+    <div class="hint" style="margin-top:-8px; margin-bottom:10px;">${tr('fin_po.section_from_pr_hint')}</div>
+    ${prPickerSection}
+    ` : ''}
+
     <div class="section-title" style="margin-top:14px;">${tr('create_pr.section_items')}</div>
-    <div id="po-items">${f.items.map(itemRow).join('')}</div>
+    <div id="po-items">
+      <div class="pr-item-row" style="grid-template-columns:2fr 1fr 1fr 1fr auto; font-size:11px; color:var(--text-muted); text-transform:uppercase;">
+        <div>${tr('create_pr.col_material')}</div><div>${tr('create_pr.col_qty')}</div><div>${tr('create_pr.col_unit')}</div><div>${tr('create_pr.col_unit_price')}</div><div></div>
+      </div>
+      ${f.items.map((item,idx)=>poItemFormRow(idx,item)).join('')}
+    </div>
     <button class="btn btn-ghost btn-sm" data-act="add-po-item" style="margin-top:4px;">+ ${tr('create_pr.add_item')}</button>
-    <div class="field" style="margin-top:18px;"><label>${tr('create_pr.remark_label')}</label><textarea id="po-note" oninput="S.poAddForm.note=this.value;">${esc(f.note)}</textarea></div>
+
+    <div class="field" style="margin-top:18px;"><label>${tr('create_pr.remark_label')}</label><textarea id="po-note" oninput="S.poForm.note=this.value;">${esc(f.note)}</textarea></div>
     <div class="small-btn-row" style="justify-content:flex-end; margin-top:6px;">
       <button class="btn btn-ghost" data-act="nav" data-page="fin_po">${tr('common.cancel')}</button>
-      <button class="btn btn-primary" data-act="save-po-full">${tr('common.save')}</button>
+      <button class="btn btn-primary" data-act="save-po-full" ${f.submitting?'disabled':''}>${f.submitting?tr('leave_public.submitting'):tr('common.save')}</button>
     </div>
+  </div>`;
+}
+
+function poAdjustmentTypeLabel(t){
+  return t==='consume' ? tr('pr.adjustment_consume') : t==='release' ? tr('pr.adjustment_release') : tr('pr.adjustment_cancel');
+}
+function pageFinPurchaseOrderDetail(){
+  const po = S.selectedPurchaseOrderDetail;
+  if(!po) return `<div class="page-head"><h2>${tr('common.loading')}</h2></div>`;
+  const u = S.currentUser;
+  const isOwner = u.id===po.createdBy || (po.submittedBy!=null && u.id===po.submittedBy);
+  const canApprove = u.role==='super_user' || u.canApprovePoWo===true;
+  const rf = S.poRejectForm;
+
+  return `
+  <div class="page-head">
+    <div>
+      <button class="btn btn-ghost btn-sm" data-act="nav" data-page="fin_po" style="margin-bottom:8px;">${ICN.chevronLeft} ${tr('common.back')}</button>
+      <h2>${po.poNo || `(${tr('pr.status_draft')})`} ${`<span class="badge ${poStatusBadgeClass(po.status)}">${poStatusLabels()[po.status]||po.status}</span>`}</h2>
+      <div class="sub">${esc(po.supplierName)}${po.projectName?' · '+esc(po.projectName):''}</div>
+    </div>
+  </div>
+
+  <div class="card" style="padding:20px 22px; margin-bottom:16px;">
+    <div class="split">
+      <div><div class="lbl">${tr('fin_po.supplier_label')}</div><div>${esc(po.supplierName)}${po.supplierContact?` (${esc(po.supplierContact)})`:''}</div></div>
+      <div><div class="lbl">${tr('fin_po.issue_date_label')}</div><div>${po.issueDate||'-'}</div></div>
+      <div><div class="lbl">${tr('fin_po.expected_delivery_label')}</div><div>${po.expectedDeliveryDate||'-'}</div></div>
+    </div>
+    ${po.paymentTerms ? `<div style="margin-top:10px;"><div class="lbl">${tr('fin_po.payment_terms_label')}</div><div>${esc(po.paymentTerms)}</div></div>` : ''}
+    ${po.note ? `<div style="margin-top:10px;"><div class="lbl">${tr('create_pr.remark_label')}</div><div>${esc(po.note)}</div></div>` : ''}
+    ${po.status==='rejected' && po.rejectedReason ? `<div style="margin-top:10px; color:var(--red);"><div class="lbl">${tr('pr.rejected_reason_label')}</div><div>${esc(po.rejectedReason)}</div></div>` : ''}
+    <div style="margin-top:10px; text-align:right; font-weight:700; color:var(--navy);">${tr('pr.col_total')}: <span class="mono">${fmtMoney(po.totalAmount)}</span></div>
+  </div>
+
+  ${po.status==='approved' ? `<div class="hint" style="background:#eef7ee; padding:10px 14px; border-radius:var(--radius-sm); margin-bottom:16px;">${tr('fin_po.approved_consumed_notice')}</div>` : ''}
+
+  <div class="card" style="padding:20px 22px; margin-bottom:16px;">
+    <div class="section-title">${tr('create_pr.section_items')}</div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>${tr('create_pr.col_material')}</th><th>${tr('create_pr.col_unit')}</th><th>${tr('create_pr.col_qty')}</th><th>${tr('create_pr.col_unit_price')}</th><th>${tr('pr.col_estimated_amount')}</th><th>${tr('fin_po.col_source_pr')}</th></tr></thead>
+      <tbody>
+      ${po.items.map(item=>`
+        <tr>
+          <td>${esc(item.material)}</td>
+          <td>${esc(item.unit)}</td>
+          <td class="mono">${fmtMoney(item.qty)}</td>
+          <td class="mono">${fmtMoney(item.unitPrice)}</td>
+          <td class="mono">${fmtMoney(item.amount)}</td>
+          <td>${item.sourcePrNo ? esc(item.sourcePrNo) : `<span class="hint">${tr('fin_po.no_source_pr')}</span>`}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>
+  </div>
+
+  <div class="card" style="padding:20px 22px;">
+    <div class="small-btn-row" style="justify-content:flex-end;">
+      ${po.status==='draft' && (isOwner||canApprove) ? `<button class="btn btn-primary btn-sm" data-act="submit-po" data-id="${po.id}" ${isVoucherActionPending('po-submit',po.id)?'disabled':''}>${tr('pr.action_submit')}</button>` : ''}
+      ${po.status==='submitted' && canApprove ? `<button class="btn btn-navy btn-sm" data-act="approve-po" data-id="${po.id}" ${isVoucherActionPending('po-approve',po.id)?'disabled':''}>${tr('pr.action_approve')}</button>` : ''}
+      ${po.status==='submitted' && canApprove ? `<button class="btn btn-danger btn-sm" data-act="open-po-reject" data-id="${po.id}">${tr('pr.action_reject')}</button>` : ''}
+      ${['draft','submitted','approved'].includes(po.status) && (isOwner||canApprove) ? `<button class="btn btn-ghost btn-sm" data-act="cancel-po" data-id="${po.id}" ${isVoucherActionPending('po-cancel',po.id)?'disabled':''}>${tr('pr.action_cancel')}</button>` : ''}
+    </div>
+    ${rf && rf.id===po.id ? `
+    <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border);">
+      <div class="field"><label>${tr('pr.rejected_reason_label')}</label><input id="po-reject-reason" value="${esc(rf.reason)}" oninput="S.poRejectForm.reason=this.value;"></div>
+      <div class="small-btn-row" style="justify-content:flex-end;">
+        <button class="btn btn-ghost btn-sm" data-act="cancel-po-reject-form">${tr('common.cancel')}</button>
+        <button class="btn btn-danger btn-sm" data-act="submit-po-reject" data-id="${po.id}">${tr('pr.action_reject')}</button>
+      </div>
+    </div>` : ''}
+  </div>`;
+}
+
+// ---------------- ใบสั่งจ้างผู้รับเหมาช่วง (Work Order, หัวข้อ 5 รอบ B) — real backend, client_subcontract_terms ----------------
+// สถานะเอกสาร (status) ใช้ label ชุดเดียวกับ PR/PO (draft/submitted/approved/rejected/cancelled — คีย์ pr.status_*)
+// ส่วน contract_status (active/completed/terminated) เป็นคนละมิติ มีเฉพาะตอน status='approved' เท่านั้น
+function woContractStatusLabels(){
+  return { active: tr('fin_wo.contract_status_active'), completed: tr('fin_wo.contract_status_completed'), terminated: tr('fin_wo.contract_status_terminated') };
+}
+function woContractStatusBadgeClass(cs){
+  return cs==='active' ? 'badge-pending' : cs==='completed' ? 'badge-approved' : cs==='terminated' ? 'badge-suspended' : 'badge-draft';
+}
+function pageFinWo(){
+  const list = S.subcontractTerms;
+  const f = S.subcontractTermListFilter;
+  const total = sumBy(list, w=>w.contractValue);
+  return `
+  <div class="page-head">
+    <div><h2>${tr('nav.fin_wo')}</h2><div class="sub">${tr('fin_wo.subtitle')}</div></div>
+    <button class="btn btn-primary" data-act="nav" data-page="fin_wo_add">${ICN.plus} ${tr('fin_wo.add_wo')}</button>
+  </div>
+  <div class="card" style="padding:16px 18px; margin-bottom:14px;">
+    <div class="split">
+      <div class="field"><label>${tr('pr.filter_status')}</label>
+        <select data-act="filter-wo-status">
+          <option value="">${tr('pr.filter_status_all')}</option>
+          ${['draft','submitted','approved','rejected','cancelled'].map(s=>`<option value="${s}" ${f.status===s?'selected':''}>${tr('pr.status_'+s)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field"><label>${tr('pr.filter_project')}</label>
+        <select data-act="filter-wo-project">
+          <option value="">${tr('pr.filter_project_all')}</option>
+          ${DB.projects.map(p=>`<option value="${p.id}" ${String(f.projectId)===String(p.id)?'selected':''}>${esc(p.name)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+  </div>
+  <div class="grid-cards" style="grid-template-columns:repeat(auto-fit,minmax(200px,240px));">
+    ${statCard('doc', tr('ledger.stat_count'), list.length, '')}
+    ${statCard('barChart', tr('ledger.stat_total'), fmtMoney(total)+' ฿', '')}
+  </div>
+  <div class="card" style="padding:20px 22px;">
+    ${list.length===0 ? `<div class="empty"><div class="em-icon">${ICN.box}</div>${tr('ledger.no_entries_yet')}</div>` : `
+    <div class="table-wrap"><table>
+      <thead><tr><th>${tr('fin_wo.col_contract_no')}</th><th>${tr('fin_wo.subcontractor_label')}</th><th>${tr('ledger.col_project')}</th><th>${tr('ledger.amount_label')}</th><th>${tr('common.col_status')}</th><th>${tr('fin_wo.contract_status_label')}</th><th></th></tr></thead>
+      <tbody>
+        ${list.map(w=>`
+          <tr>
+            <td class="mono">${w.contractNo || `(${tr('pr.status_draft')})`}</td>
+            <td>${esc(w.subcontractorName)}</td>
+            <td>${w.projectName?esc(w.projectName):'-'}</td>
+            <td class="mono" style="font-weight:600;">${fmtMoney(w.contractValue)}</td>
+            <td><span class="badge ${poStatusBadgeClass(w.status)}">${tr('pr.status_'+w.status)}</span></td>
+            <td>${w.contractStatus ? `<span class="badge ${woContractStatusBadgeClass(w.contractStatus)}">${woContractStatusLabels()[w.contractStatus]||w.contractStatus}</span>` : '-'}</td>
+            <td><button class="btn btn-ghost btn-sm" data-act="nav" data-page="fin_wo_detail" data-id="${w.id}" data-id-field="selectedSubcontractTermId">${tr('common.view_detail')}</button></td>
+          </tr>`).join('')}
+      </tbody>
+    </table></div>`}
+  </div>`;
+}
+function pageFinWoAdd(){
+  if(!S.woForm) S.woForm = {
+    subcontractorId:'', projectId:'', contractValue:'', advancePercent:'0', retentionPercent:'5',
+    whtIncomeTypeCode:'40_7', whtRate:'', startDate:'', endDate:'', note:'',
+    submitting:false, idempotencyKey: crypto.randomUUID(),
+  };
+  const f = S.woForm;
+  const activeSubcontractors = (S.subcontractors||[]).filter(s=>s.isActive);
+  const selectedWhtType = (S.whtIncomeTypes||[]).find(t=>t.code===f.whtIncomeTypeCode);
+  return `
+  <div class="page-head">
+    <div>
+      <button class="btn btn-ghost btn-sm" data-act="nav" data-page="fin_wo" style="margin-bottom:8px;">${ICN.chevronLeft} ${tr('common.back')}</button>
+      <h2>${tr('fin_wo.add_wo')}</h2><div class="sub">${tr('fin_wo.add_subtitle')}</div>
+    </div>
+  </div>
+  <div class="card" style="padding:20px 22px; max-width:820px;">
+    <div class="split">
+      <div class="field"><label>${tr('fin_wo.subcontractor_label')} *</label>
+        <select data-act="select-wo-subcontractor">
+          <option value="">${tr('fin_wo.pick_subcontractor_placeholder')}</option>
+          ${activeSubcontractors.map(s=>`<option value="${s.id}" ${String(f.subcontractorId)===String(s.id)?'selected':''}>${esc(s.name)}${s.taxId?` (${s.taxId})`:''}</option>`).join('')}
+        </select>
+        ${activeSubcontractors.length===0 ? `<div class="hint">${tr('fin_wo.no_active_subcontractors_hint')}</div>` : ''}
+      </div>
+      <div class="field"><label>${tr('ledger.col_project')} *</label><select data-act="select-wo-project">${projectSelectOptions(f.projectId, true)}</select></div>
+    </div>
+    <div class="split">
+      <div class="field"><label>${tr('fin_wo.contract_value_label')} *</label><input id="wo-contract-value" type="number" value="${prVal(f.contractValue)}" oninput="S.woForm.contractValue=this.value;"></div>
+      <div></div>
+    </div>
+    <div class="split">
+      <div class="field"><label>${tr('fin_wo.advance_percent_label')}</label><input id="wo-advance-percent" type="number" value="${prVal(f.advancePercent)}" oninput="S.woForm.advancePercent=this.value;"></div>
+      <div class="field"><label>${tr('fin_wo.retention_percent_label')}</label><input id="wo-retention-percent" type="number" value="${prVal(f.retentionPercent)}" oninput="S.woForm.retentionPercent=this.value;"></div>
+    </div>
+    <div class="split">
+      <div class="field"><label>${tr('fin_wo.wht_income_type_label')}</label>
+        <select data-act="select-wo-wht-type">
+          ${(S.whtIncomeTypes||[]).map(t=>`<option value="${t.code}" ${f.whtIncomeTypeCode===t.code?'selected':''}>${t.code} ${esc(t.nameTh)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field"><label>${tr('fin_wo.wht_rate_label')}</label>
+        <input id="wo-wht-rate" type="number" placeholder="${selectedWhtType && selectedWhtType.defaultRate!==null ? selectedWhtType.defaultRate+'%' : tr('fin_wo.wht_rate_hint_use_default')}" value="${prVal(f.whtRate)}" oninput="S.woForm.whtRate=this.value;">
+        ${selectedWhtType && selectedWhtType.defaultRate===null && !f.whtRate ? `<div class="hint" style="color:var(--red);">${tr('fin_wo.wht_rate_null_warning')}</div>` : ''}
+      </div>
+    </div>
+    <div class="split">
+      <div class="field"><label>${tr('fin_wo.start_date_label')}</label><input id="wo-start-date" type="date" value="${f.startDate}" onchange="S.woForm.startDate=this.value;"></div>
+      <div class="field"><label>${tr('fin_wo.end_date_label')}</label><input id="wo-end-date" type="date" value="${f.endDate}" onchange="S.woForm.endDate=this.value;"></div>
+    </div>
+    <div class="field"><label>${tr('create_pr.remark_label')}</label><textarea id="wo-note" oninput="S.woForm.note=this.value;">${esc(f.note)}</textarea></div>
+    <div class="small-btn-row" style="justify-content:flex-end; margin-top:6px;">
+      <button class="btn btn-ghost" data-act="nav" data-page="fin_wo">${tr('common.cancel')}</button>
+      <button class="btn btn-primary" data-act="save-wo-full" ${f.submitting?'disabled':''}>${f.submitting?tr('leave_public.submitting'):tr('common.save')}</button>
+    </div>
+  </div>`;
+}
+function pageFinWoDetail(){
+  const wo = S.selectedSubcontractTermDetail;
+  if(!wo) return `<div class="page-head"><h2>${tr('common.loading')}</h2></div>`;
+  const u = S.currentUser;
+  const isOwner = u.id===wo.createdBy || (wo.submittedBy!=null && u.id===wo.submittedBy);
+  const canApprove = u.role==='super_user' || u.canApprovePoWo===true;
+  const canManage = u.role==='super_user' || u.canManagePo===true;
+  const rf = S.woRejectForm;
+  const tf = S.woTerminateForm;
+
+  return `
+  <div class="page-head">
+    <div>
+      <button class="btn btn-ghost btn-sm" data-act="nav" data-page="fin_wo" style="margin-bottom:8px;">${ICN.chevronLeft} ${tr('common.back')}</button>
+      <h2>${wo.contractNo || `(${tr('pr.status_draft')})`} <span class="badge ${poStatusBadgeClass(wo.status)}">${tr('pr.status_'+wo.status)}</span>${wo.contractStatus ? ` <span class="badge ${woContractStatusBadgeClass(wo.contractStatus)}">${woContractStatusLabels()[wo.contractStatus]||wo.contractStatus}</span>` : ''}</h2>
+      <div class="sub">${esc(wo.subcontractorName)}${wo.projectName?' · '+esc(wo.projectName):''}</div>
+    </div>
+  </div>
+
+  <div class="card" style="padding:20px 22px; margin-bottom:16px;">
+    <div class="split">
+      <div><div class="lbl">${tr('fin_wo.subcontractor_label')}</div><div>${esc(wo.subcontractorName)}${wo.subcontractorTaxId?` (${esc(wo.subcontractorTaxId)})`:''}</div></div>
+      <div><div class="lbl">${tr('ledger.col_project')}</div><div>${esc(wo.projectName)}</div></div>
+    </div>
+    <div class="split" style="margin-top:10px;">
+      <div><div class="lbl">${tr('fin_wo.start_date_label')}</div><div>${wo.startDate||'-'}</div></div>
+      <div><div class="lbl">${tr('fin_wo.end_date_label')}</div><div>${wo.endDate||'-'}</div></div>
+    </div>
+    ${wo.note ? `<div style="margin-top:10px;"><div class="lbl">${tr('create_pr.remark_label')}</div><div>${esc(wo.note)}</div></div>` : ''}
+    ${wo.status==='rejected' && wo.rejectedReason ? `<div style="margin-top:10px; color:var(--red);"><div class="lbl">${tr('pr.rejected_reason_label')}</div><div>${esc(wo.rejectedReason)}</div></div>` : ''}
+  </div>
+
+  ${wo.status==='approved' ? `<div class="hint" style="background:#eef7ee; padding:10px 14px; border-radius:var(--radius-sm); margin-bottom:16px;">${tr('fin_wo.approved_active_notice')}</div>` : ''}
+
+  <div class="card" style="padding:20px 22px; margin-bottom:16px;">
+    <div class="section-title">${tr('fin_wo.money_section_title')}</div>
+    <div class="split" style="margin-top:8px;">
+      <div><div class="lbl">${tr('fin_wo.contract_value_label')}</div><div class="mono" style="font-weight:700; color:var(--navy);">${fmtMoney(wo.contractValue)}</div></div>
+      <div></div>
+    </div>
+    <div class="split" style="margin-top:10px;">
+      <div><div class="lbl">${tr('fin_wo.advance_percent_label')} (${wo.advancePercent}%)</div><div class="mono">${fmtMoney(wo.advanceAmount)}</div></div>
+      <div><div class="lbl">${tr('fin_wo.retention_percent_label')} (${wo.retentionPercent}%)</div><div class="mono">${fmtMoney(wo.retentionAmount)}</div></div>
+    </div>
+    <div style="margin-top:10px;">
+      <div class="lbl">${tr('fin_wo.wht_income_type_label')}</div>
+      <div>${wo.whtIncomeTypeCode} ${esc(wo.whtIncomeTypeName||'')} —
+        ${wo.whtRate!==null ? `${wo.whtRate}%` : (wo.whtDefaultRate!==null ? `${wo.whtDefaultRate}% (${tr('fin_wo.wht_rate_hint_use_default')})` : `<span style="color:var(--red);">${tr('fin_wo.wht_rate_null_warning')}</span>`)}
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="padding:20px 22px;">
+    <div class="small-btn-row" style="justify-content:flex-end;">
+      ${wo.status==='draft' && (isOwner||canApprove) ? `<button class="btn btn-primary btn-sm" data-act="submit-wo" data-id="${wo.id}" ${isVoucherActionPending('wo-submit',wo.id)?'disabled':''}>${tr('pr.action_submit')}</button>` : ''}
+      ${wo.status==='submitted' && canApprove ? `<button class="btn btn-navy btn-sm" data-act="approve-wo" data-id="${wo.id}" ${isVoucherActionPending('wo-approve',wo.id)?'disabled':''}>${tr('pr.action_approve')}</button>` : ''}
+      ${wo.status==='submitted' && canApprove ? `<button class="btn btn-danger btn-sm" data-act="open-wo-reject" data-id="${wo.id}">${tr('pr.action_reject')}</button>` : ''}
+      ${['draft','submitted'].includes(wo.status) && (isOwner||canApprove) ? `<button class="btn btn-ghost btn-sm" data-act="cancel-wo" data-id="${wo.id}" ${isVoucherActionPending('wo-cancel',wo.id)?'disabled':''}>${tr('pr.action_cancel')}</button>` : ''}
+      ${wo.status==='approved' && wo.contractStatus==='active' && canManage ? `<button class="btn btn-primary btn-sm" data-act="complete-wo" data-id="${wo.id}" ${isVoucherActionPending('wo-complete',wo.id)?'disabled':''}>${tr('fin_wo.action_complete')}</button>` : ''}
+      ${wo.status==='approved' && wo.contractStatus==='active' && canManage ? `<button class="btn btn-danger btn-sm" data-act="open-wo-terminate" data-id="${wo.id}">${tr('fin_wo.action_terminate')}</button>` : ''}
+    </div>
+    ${rf && rf.id===wo.id ? `
+    <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border);">
+      <div class="field"><label>${tr('pr.rejected_reason_label')}</label><input id="wo-reject-reason" value="${esc(rf.reason)}" oninput="S.woRejectForm.reason=this.value;"></div>
+      <div class="small-btn-row" style="justify-content:flex-end;">
+        <button class="btn btn-ghost btn-sm" data-act="cancel-wo-reject-form">${tr('common.cancel')}</button>
+        <button class="btn btn-danger btn-sm" data-act="submit-wo-reject" data-id="${wo.id}">${tr('pr.action_reject')}</button>
+      </div>
+    </div>` : ''}
+    ${tf && tf.id===wo.id ? `
+    <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border);">
+      <div class="field"><label>${tr('fin_wo.terminate_reason_label')}</label><input id="wo-terminate-reason" value="${esc(tf.reason)}" oninput="S.woTerminateForm.reason=this.value;"></div>
+      <div class="small-btn-row" style="justify-content:flex-end;">
+        <button class="btn btn-ghost btn-sm" data-act="cancel-wo-terminate-form">${tr('common.cancel')}</button>
+        <button class="btn btn-danger btn-sm" data-act="submit-wo-terminate" data-id="${wo.id}">${tr('fin_wo.action_terminate')}</button>
+      </div>
+    </div>` : ''}
   </div>`;
 }
 
@@ -7142,13 +7525,14 @@ function pageApprovalPermissions(){
           <th rowspan="2">${tr('common.col_position')}</th>
           <th rowspan="2">${tr('common.col_role')}</th>
           <th colspan="2">${tr('approval_permissions.group_other')}</th>
-          <th colspan="4">${tr('approval_permissions.group_doc_approval')}</th>
+          <th colspan="5">${tr('approval_permissions.group_doc_approval')}</th>
           <th colspan="3">${tr('approval_permissions.group_execution')}</th>
         </tr>
         <tr>
           <th>${tr('approval_permissions.col_permission')}</th>
           <th>${tr('approval_permissions.col_approve_budget')}</th>
           <th>${tr('approval_permissions.col_approve_pr')}</th>
+          <th>${tr('approval_permissions.col_approve_po_wo')}</th>
           <th>${tr('approval_permissions.col_approve_petty_cash')}</th>
           <th>${tr('approval_permissions.col_approve_advance')}</th>
           <th>${tr('approval_permissions.col_approve_other')}</th>
@@ -7158,7 +7542,7 @@ function pageApprovalPermissions(){
         </tr>
       </thead>
       <tbody>
-        ${rows.length===0 ? `<tr><td colspan="12"><div class="empty" style="padding:20px 0;">${tr('users.no_users_yet')}</div></td></tr>` : rows.map(cu=>{
+        ${rows.length===0 ? `<tr><td colspan="13"><div class="empty" style="padding:20px 0;">${tr('users.no_users_yet')}</div></td></tr>` : rows.map(cu=>{
           // ห้าม self-grant/self-revoke (ตรงกับ backend) — ซ่อนปุ่มบนแถวของตัวเอง แม้จะเป็น super_user
           const canManageThisRow = canManage && S.currentUser.id !== cu.id;
           return `
@@ -7169,6 +7553,7 @@ function pageApprovalPermissions(){
             <td><span class="badge ${cu.can_approve_applications?'badge-approved':'badge-draft'}">${cu.can_approve_applications?tr('approval_permissions.has_permission'):tr('approval_permissions.no_permission')}</span>${canManageThisRow ? `<button class="btn ${cu.can_approve_applications?'btn-danger':'btn-navy'} btn-sm" data-act="toggle-approval-permission" data-id="${cu.id}" data-current="${cu.can_approve_applications?'1':'0'}" style="margin-left:8px;">${cu.can_approve_applications?tr('approval_permissions.revoke'):tr('approval_permissions.grant')}</button>` : ''}</td>
             ${permFlagCell(cu, 'can_approve_budget', canManageThisRow)}
             ${permFlagCell(cu, 'can_approve_pr', canManageThisRow)}
+            ${permFlagCell(cu, 'can_approve_po_wo', canManageThisRow)}
             ${permFlagCell(cu, 'can_approve_petty_cash', canManageThisRow)}
             ${permFlagCell(cu, 'can_approve_advance', canManageThisRow)}
             ${permFlagCell(cu, 'can_approve_other', canManageThisRow)}
@@ -10640,10 +11025,11 @@ function prItemAdjustmentHistory(itemId){
   if(list===undefined) return `<button class="btn btn-ghost btn-sm" data-act="load-pr-item-adjustments" data-item-id="${itemId}">${tr('pr.view_adjustment_history')}</button>`;
   if(list.length===0) return `<div class="hint">${tr('pr.no_adjustment_history')}</div>`;
   return `<div class="table-wrap"><table>
-    <thead><tr><th>${tr('pr.adj_col_type')}</th><th>${tr('pr.adj_col_qty')}</th><th>${tr('pr.adj_col_note')}</th><th>${tr('pr.adj_col_by')}</th><th>${tr('pr.adj_col_at')}</th></tr></thead>
+    <thead><tr><th>${tr('pr.adj_col_type')}</th><th>${tr('pr.adj_col_qty')}</th><th>${tr('fin_po.col_source_pr')}</th><th>${tr('pr.adj_col_note')}</th><th>${tr('pr.adj_col_by')}</th><th>${tr('pr.adj_col_at')}</th></tr></thead>
     <tbody>${list.map(a=>`<tr>
       <td>${prAdjustmentTypeLabel(a.adjustmentType)}</td>
       <td class="mono">${fmtMoney(a.qty)}</td>
+      <td>${a.poId ? `<button class="btn btn-ghost btn-sm" data-act="nav" data-page="fin_po_detail" data-id="${a.poId}" data-id-field="selectedPurchaseOrderId" data-module="finance">${esc(a.poNo||('#'+a.poId))}</button>` : '-'}</td>
       <td>${esc(a.note||'-')}</td>
       <td>${esc(customerNameById(a.createdBy))}</td>
       <td>${a.createdAt ? new Date(a.createdAt).toLocaleString(I18N.getLocale()==='en'?'en-GB':'th-TH',{dateStyle:'medium',timeStyle:'short'}) : '-'}</td>
@@ -10680,7 +11066,6 @@ function pagePurchaseRequestDetail(u){
     <div style="margin-top:10px; text-align:right; font-weight:700; color:var(--navy);">${tr('pr.col_total')}: <span class="mono">${fmtMoney(pr.totalAmount)}</span> ${pr.approvedAmount!=null ? `<span style="font-weight:400; color:var(--text-muted); font-size:12.5px;">(${tr('pr.approved_amount_label')} ${fmtMoney(pr.approvedAmount)})</span>` : ''}</div>
   </div>
 
-  ${pr.status==='approved' ? `<div class="hint" style="background:#fff6e5; padding:10px 14px; border-radius:var(--radius-sm); margin-bottom:16px;">${tr('pr.po_not_supported_notice')}</div>` : ''}
 
   <div class="card" style="padding:20px 22px; margin-bottom:16px;">
     <div class="section-title">${tr('create_pr.section_items')}</div>
@@ -10725,7 +11110,7 @@ function pagePurchaseRequestDetail(u){
 
   <div class="card" style="padding:20px 22px;">
     <div class="small-btn-row" style="justify-content:flex-end;">
-      ${pr.status==='draft' && isOwner ? `<button class="btn btn-primary btn-sm" data-act="pr-submit" data-id="${pr.id}" ${isVoucherActionPending('pr-submit',pr.id)?'disabled':''}>${tr('pr.action_submit')}</button>` : ''}
+      ${pr.status==='draft' && (isOwner||canApprove) ? `<button class="btn btn-primary btn-sm" data-act="pr-submit" data-id="${pr.id}" ${isVoucherActionPending('pr-submit',pr.id)?'disabled':''}>${tr('pr.action_submit')}</button>` : ''}
       ${pr.status==='submitted' && canApprove ? `<button class="btn btn-navy btn-sm" data-act="pr-approve" data-id="${pr.id}" ${isVoucherActionPending('pr-approve',pr.id)?'disabled':''}>${tr('pr.action_approve')}</button>` : ''}
       ${pr.status==='submitted' && canApprove ? `<button class="btn btn-danger btn-sm" data-act="open-pr-reject" data-id="${pr.id}">${tr('pr.action_reject')}</button>` : ''}
       ${['draft','submitted','approved'].includes(pr.status) && (isOwner||canApprove) ? `<button class="btn btn-ghost btn-sm" data-act="pr-cancel" data-id="${pr.id}" ${isVoucherActionPending('pr-cancel',pr.id)?'disabled':''}>${tr('pr.action_cancel')}</button>` : ''}
@@ -10932,6 +11317,7 @@ async function handleAction(act, el){
         canManagePettyCashFund: !!data.customer.can_manage_petty_cash_fund,
         canSettleCash: !!data.customer.can_settle_cash,
         canApprovePr: !!data.customer.can_approve_pr,
+        canApprovePoWo: !!data.customer.can_approve_po_wo,
       };
       S.view='dashboard'; S.page='overview';
       render();
@@ -10999,7 +11385,7 @@ async function handleAction(act, el){
     // โครงการ (client_projects) backs the project pickers on cost/revenue/labor forms, budget-vs-
     // actual, and the project list/detail pages themselves — load it once, on first visit to any
     // of them, rather than duplicating the load call in every single one of those page branches.
-    const PROJECT_DEPENDENT_PAGES = ['fin_projects','fin_project_add','fin_project_detail','fin_costs','fin_revenue','fin_retention','fin_receive_payment','fin_labor','fin_labor_pay','create_pr','my_prs','all_prs','fin_po','fin_po_add','fin_quotations','fin_quotation_add','fin_documents','fin_document_add','fin_petty_cash_funds','fin_vouchers_petty_cash','fin_vouchers_advance','fin_vouchers_other','fin_voucher_detail'];
+    const PROJECT_DEPENDENT_PAGES = ['fin_projects','fin_project_add','fin_project_detail','fin_costs','fin_revenue','fin_retention','fin_receive_payment','fin_labor','fin_labor_pay','create_pr','my_prs','all_prs','fin_po','fin_po_add','fin_po_detail','fin_wo','fin_wo_add','fin_wo_detail','fin_quotations','fin_quotation_add','fin_documents','fin_document_add','fin_petty_cash_funds','fin_vouchers_petty_cash','fin_vouchers_advance','fin_vouchers_other','fin_voucher_detail'];
     if(PROJECT_DEPENDENT_PAGES.includes(S.page) && S.dataMode!=='demo' && !S.projectsLoaded) await loadRealProjects();
     // PR (หัวข้อ 4) — ต่อ API จริงเสมอ ไม่มี demo dataset แล้ว (ดู pageOverview's comment)
     if((S.page==='overview'||S.page==='my_prs'||S.page==='all_prs') && S.dataMode!=='demo' && !S.purchaseRequestsLoaded) await loadPurchaseRequests();
@@ -11019,7 +11405,14 @@ async function handleAction(act, el){
       await loadProjectBudget(S.selectedProjectId); // same "always refetch" reasoning as fin_tender_detail above
       await loadRealProjectDetail(S.selectedProjectId); // fetches the new detail fields + installments
     }
-    if(S.page==='fin_po' && S.dataMode!=='demo' && !S.purchaseOrdersLoaded) await loadRealPurchaseOrders();
+    if(S.page==='fin_po' && S.dataMode!=='demo' && !S.purchaseOrdersLoaded) await loadPurchaseOrders();
+    if(S.page==='fin_po_detail' && S.dataMode!=='demo') await loadPurchaseOrderDetail(S.selectedPurchaseOrderId);
+    if(S.page==='fin_wo' && S.dataMode!=='demo' && !S.subcontractTermsLoaded) await loadSubcontractTerms();
+    if(S.page==='fin_wo_add' && S.dataMode!=='demo'){
+      if(!S.subcontractorsLoaded) await loadSubcontractors();
+      if(!S.whtIncomeTypesLoaded) await loadWhtIncomeTypes();
+    }
+    if(S.page==='fin_wo_detail' && S.dataMode!=='demo') await loadSubcontractTermDetail(S.selectedSubcontractTermId);
     if(S.page==='fin_quotations' && S.dataMode!=='demo' && !S.quotationsLoaded) await loadRealQuotations();
     if(S.page==='fin_documents' && S.dataMode!=='demo' && !S.clientDocumentsLoaded) await loadRealClientDocuments();
     // pageFinProjectAdd()'s PM/foreman dropdowns are sourced from DB.employees, same as pageFinLabor()'s.
@@ -11238,6 +11631,11 @@ async function handleAction(act, el){
       S.purchaseRequestsLoaded = false;
       S.selectedPurchaseRequestId = data.purchaseRequest.id;
       S.page = 'pr_detail';
+      // set S.page ตรงๆ แบบนี้ไม่ผ่าน act==='nav' จึงไม่ trigger hook loadPurchaseRequestDetail ที่ผูกไว้
+      // กับ nav handler เท่านั้น — ต้องเรียกเองตรงนี้ ไม่งั้นหน้า detail จะค้างที่ "กำลังโหลด..." ตลอดไป
+      // (พบจริงตอนเขียนเทส po-ui.regression.js — กด submit ทันทีหลัง redirect มาที่หน้า detail ใหม่)
+      await loadPurchaseRequestDetail(data.purchaseRequest.id);
+      return;
     } catch(e){ toast(e.message,'err'); if(S.prForm) S.prForm.submitting = false; }
     render(); return;
   }
@@ -13147,48 +13545,258 @@ async function handleAction(act, el){
     return;
   }
 
-  // ---- Finance: ใบสั่งซื้อ (Purchase Orders) ----
+  // ---- Finance: ใบสั่งซื้อ (Purchase Orders, หัวข้อ 5) ----
+  if(act==='filter-po-status'){ S.purchaseOrderListFilter.status = el.value; await loadPurchaseOrders(); return; }
+  if(act==='filter-po-project'){ S.purchaseOrderListFilter.projectId = el.value; await loadPurchaseOrders(); return; }
   if(act==='add-po-item'){
-    S.poAddForm.items.push({material:'',qty:'',unit:'',unitPrice:''});
+    S.poForm.items.push({prItemId:null, material:'',qty:'',unit:'',unitPrice:''});
     render();
     return;
   }
   if(act==='remove-po-item'){
-    const row = el.closest('[data-po-item-row]');
-    if(row){ S.poAddForm.items.splice(parseInt(row.dataset.poItemRow,10), 1); render(); }
+    S.poForm.items.splice(parseInt(el.dataset.idx,10), 1);
+    render();
+    return;
+  }
+  if(act==='select-po-project'){
+    S.poForm.projectId = el.value;
+    S.poForm.pickerPrId = ''; S.poForm.pickerPrItems = undefined;
+    render();
+    if(el.value) loadApprovedPrsForPoProject(el.value);
+    return;
+  }
+  if(act==='pick-po-source-pr'){
+    S.poForm.pickerPrId = el.value;
+    S.poForm.pickerPrItems = undefined;
+    render();
+    if(el.value) loadPrItemsForPoPicker(el.value);
+    return;
+  }
+  if(act==='add-po-item-from-pr'){
+    const prItemId = parseInt(el.dataset.prItemId,10);
+    const src = (S.poForm.pickerPrItems||[]).find(it=>it.id===prItemId);
+    if(!src) return;
+    S.poForm.items.push({
+      prItemId: src.id, material: src.material, unit: src.unit,
+      qty: String(src.qtyRemaining), unitPrice: String(src.unitPrice), maxQty: src.qtyRemaining,
+    });
+    render();
     return;
   }
   if(act==='save-po-full'){
-    const f = S.poAddForm;
+    const f = S.poForm;
     if(!f.supplierName.trim()){ toast(tr('fin_po.supplier_required_err'),'err'); return; }
     const items = f.items
-      .map(it=>({material:(it.material||'').trim(), qty:parseFloat(it.qty)||0, unit:(it.unit||'').trim()||'-', unitPrice:parseFloat(it.unitPrice)||0}))
+      .map(it=>({prItemId: it.prItemId||null, material:(it.material||'').trim(), qty:parseFloat(it.qty)||0, unit:(it.unit||'').trim()||'-', unitPrice:parseFloat(it.unitPrice)||0}))
       .filter(it=>it.material && it.qty>0);
     if(items.length===0){ toast(tr('fin_po.items_required_err'),'err'); return; }
+    if(f.submitting) return;
+    f.submitting = true; render();
     try{
       const data = await apiCall('POST', '/api/customer/purchase-orders', {
-        projectId: f.projectId?parseInt(f.projectId,10):null, prReference:f.prReference, supplierName:f.supplierName,
+        projectId: f.projectId?parseInt(f.projectId,10):null, supplierName:f.supplierName,
         supplierContact:f.supplierContact, issueDate:f.issueDate||null, expectedDeliveryDate:f.expectedDeliveryDate||null,
-        paymentTerms:f.paymentTerms, status:f.status, items, note:f.note,
-      });
-      DB.purchaseOrders.push(mapRealPurchaseOrder(data.purchaseOrder));
+        paymentTerms:f.paymentTerms, items, note:f.note,
+      }, undefined, {'Idempotency-Key': f.idempotencyKey});
       toast(tr('fin_po.added_toast'));
-      S.poAddForm = null;
-      S.page = 'fin_po';
-      render();
-    } catch(e){ toast(e.message, 'err'); }
+      S.poForm = null;
+      S.purchaseOrdersLoaded = false;
+      S.selectedPurchaseOrderId = data.purchaseOrder.id;
+      S.page = 'fin_po_detail';
+      // เหตุผลเดียวกับ create-PR handler — set S.page ตรงๆ ไม่ผ่าน act==='nav' จึงไม่ trigger hook
+      // loadPurchaseOrderDetail ที่ผูกไว้กับ nav handler เท่านั้น ต้องเรียกเองตรงนี้
+      await loadPurchaseOrderDetail(data.purchaseOrder.id);
+      return;
+    } catch(e){ toast(e.message,'err'); if(S.poForm) S.poForm.submitting = false; }
+    render();
     return;
   }
-  if(act==='set-po-status'){
+  if(act==='submit-po'){
     const id = parseInt(el.dataset.id,10);
+    if(isVoucherActionPending('po-submit', id)) return;
+    const key = voucherActionKey('po-submit', id);
+    S.voucherActionPending['po-submit-'+id] = true;
+    render();
     try{
-      const data = await apiCall('PUT', `/api/customer/purchase-orders/${id}/status`, {status:el.value});
-      const idx = DB.purchaseOrders.findIndex(x=>x.id===id);
-      if(idx>=0) DB.purchaseOrders[idx] = mapRealPurchaseOrder(data.purchaseOrder);
-      toast(tr('fin_po.status_updated_toast'));
-      render();
-    } catch(e){ toast(e.message, 'err'); }
+      await apiCall('POST', `/api/customer/purchase-orders/${id}/submit`, {}, undefined, {'Idempotency-Key': key});
+      clearVoucherActionKey('po-submit', id);
+      S.purchaseOrdersLoaded = false;
+      await loadPurchaseOrderDetail(id);
+      toast(tr('pr.submit_success'));
+    } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['po-submit-'+id] = false;
+    render(); return;
+  }
+  if(act==='approve-po'){
+    const id = parseInt(el.dataset.id,10);
+    if(isVoucherActionPending('po-approve', id)) return;
+    const key = voucherActionKey('po-approve', id);
+    S.voucherActionPending['po-approve-'+id] = true;
+    render();
+    try{
+      await apiCall('POST', `/api/customer/purchase-orders/${id}/approve`, {}, undefined, {'Idempotency-Key': key});
+      clearVoucherActionKey('po-approve', id);
+      S.purchaseOrdersLoaded = false;
+      await loadPurchaseOrderDetail(id);
+      toast(tr('pr.approve_success'));
+    } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['po-approve-'+id] = false;
+    render(); return;
+  }
+  if(act==='open-po-reject'){ S.poRejectForm = {id:parseInt(el.dataset.id,10), reason:''}; render(); return; }
+  if(act==='cancel-po-reject-form'){ S.poRejectForm = null; render(); return; }
+  if(act==='submit-po-reject'){
+    const id = parseInt(el.dataset.id,10);
+    const reason = (S.poRejectForm && S.poRejectForm.reason || '').trim();
+    if(!reason){ toast(tr('pr.rejected_reason_required_err'),'err'); return; }
+    try{
+      await apiCall('POST', `/api/customer/purchase-orders/${id}/reject`, {reason});
+      S.poRejectForm = null;
+      S.purchaseOrdersLoaded = false;
+      await loadPurchaseOrderDetail(id);
+      toast(tr('pr.reject_success'));
+    } catch(e){ toast(e.message,'err'); }
+    render(); return;
+  }
+  if(act==='cancel-po'){
+    const id = parseInt(el.dataset.id,10);
+    if(!confirm(tr('pr.cancel_confirm'))) return;
+    if(isVoucherActionPending('po-cancel', id)) return;
+    S.voucherActionPending['po-cancel-'+id] = true;
+    render();
+    try{
+      await apiCall('POST', `/api/customer/purchase-orders/${id}/cancel`, {});
+      S.purchaseOrdersLoaded = false;
+      await loadPurchaseOrderDetail(id);
+      toast(tr('pr.cancel_success'));
+    } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['po-cancel-'+id] = false;
+    render(); return;
+  }
+
+  // ---- Finance: ใบสั่งจ้างผู้รับเหมาช่วง (Work Order, หัวข้อ 5 รอบ B) ----
+  if(act==='filter-wo-status'){ S.subcontractTermListFilter.status = el.value; await loadSubcontractTerms(); return; }
+  if(act==='filter-wo-project'){ S.subcontractTermListFilter.projectId = el.value; await loadSubcontractTerms(); return; }
+  if(act==='select-wo-subcontractor'){ S.woForm.subcontractorId = el.value; render(); return; }
+  if(act==='select-wo-project'){ S.woForm.projectId = el.value; render(); return; }
+  if(act==='select-wo-wht-type'){ S.woForm.whtIncomeTypeCode = el.value; render(); return; }
+  if(act==='save-wo-full'){
+    const f = S.woForm;
+    if(!f.subcontractorId){ toast(tr('fin_wo.subcontractor_required_err'),'err'); return; }
+    if(!f.projectId){ toast(tr('fin_wo.project_required_err'),'err'); return; }
+    if(!f.contractValue || parseFloat(f.contractValue)<=0){ toast(tr('fin_wo.contract_value_required_err'),'err'); return; }
+    if(f.submitting) return;
+    f.submitting = true; render();
+    try{
+      const data = await apiCall('POST', '/api/customer/subcontract-terms', {
+        subcontractorId: parseInt(f.subcontractorId,10), projectId: parseInt(f.projectId,10),
+        contractValue: f.contractValue, advancePercent: f.advancePercent||0, retentionPercent: f.retentionPercent||0,
+        whtIncomeTypeCode: f.whtIncomeTypeCode, whtRate: f.whtRate===''?null:f.whtRate,
+        startDate: f.startDate||null, endDate: f.endDate||null, note: f.note,
+      }, undefined, {'Idempotency-Key': f.idempotencyKey});
+      toast(tr('fin_wo.added_toast'));
+      S.woForm = null;
+      S.subcontractTermsLoaded = false;
+      S.selectedSubcontractTermId = data.subcontractTerm.id;
+      S.page = 'fin_wo_detail';
+      // set S.page ตรงๆ ไม่ผ่าน act==='nav' — ต้องเรียก loader เองตรงนี้ (เหตุผลเดียวกับ create-PO handler)
+      await loadSubcontractTermDetail(data.subcontractTerm.id);
+      return;
+    } catch(e){ toast(e.message,'err'); if(S.woForm) S.woForm.submitting = false; }
+    render();
     return;
+  }
+  if(act==='submit-wo'){
+    const id = parseInt(el.dataset.id,10);
+    if(isVoucherActionPending('wo-submit', id)) return;
+    const key = voucherActionKey('wo-submit', id);
+    S.voucherActionPending['wo-submit-'+id] = true;
+    render();
+    try{
+      await apiCall('POST', `/api/customer/subcontract-terms/${id}/submit`, {}, undefined, {'Idempotency-Key': key});
+      clearVoucherActionKey('wo-submit', id);
+      S.subcontractTermsLoaded = false;
+      await loadSubcontractTermDetail(id);
+      toast(tr('pr.submit_success'));
+    } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['wo-submit-'+id] = false;
+    render(); return;
+  }
+  if(act==='approve-wo'){
+    const id = parseInt(el.dataset.id,10);
+    if(isVoucherActionPending('wo-approve', id)) return;
+    const key = voucherActionKey('wo-approve', id);
+    S.voucherActionPending['wo-approve-'+id] = true;
+    render();
+    try{
+      await apiCall('POST', `/api/customer/subcontract-terms/${id}/approve`, {}, undefined, {'Idempotency-Key': key});
+      clearVoucherActionKey('wo-approve', id);
+      S.subcontractTermsLoaded = false;
+      await loadSubcontractTermDetail(id);
+      toast(tr('pr.approve_success'));
+    } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['wo-approve-'+id] = false;
+    render(); return;
+  }
+  if(act==='open-wo-reject'){ S.woRejectForm = {id:parseInt(el.dataset.id,10), reason:''}; render(); return; }
+  if(act==='cancel-wo-reject-form'){ S.woRejectForm = null; render(); return; }
+  if(act==='submit-wo-reject'){
+    const id = parseInt(el.dataset.id,10);
+    const reason = (S.woRejectForm && S.woRejectForm.reason || '').trim();
+    if(!reason){ toast(tr('pr.rejected_reason_required_err'),'err'); return; }
+    try{
+      await apiCall('POST', `/api/customer/subcontract-terms/${id}/reject`, {reason});
+      S.woRejectForm = null;
+      S.subcontractTermsLoaded = false;
+      await loadSubcontractTermDetail(id);
+      toast(tr('pr.reject_success'));
+    } catch(e){ toast(e.message,'err'); }
+    render(); return;
+  }
+  if(act==='cancel-wo'){
+    const id = parseInt(el.dataset.id,10);
+    if(!confirm(tr('pr.cancel_confirm'))) return;
+    if(isVoucherActionPending('wo-cancel', id)) return;
+    S.voucherActionPending['wo-cancel-'+id] = true;
+    render();
+    try{
+      await apiCall('POST', `/api/customer/subcontract-terms/${id}/cancel`, {});
+      S.subcontractTermsLoaded = false;
+      await loadSubcontractTermDetail(id);
+      toast(tr('pr.cancel_success'));
+    } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['wo-cancel-'+id] = false;
+    render(); return;
+  }
+  if(act==='complete-wo'){
+    const id = parseInt(el.dataset.id,10);
+    if(!confirm(tr('fin_wo.complete_confirm'))) return;
+    if(isVoucherActionPending('wo-complete', id)) return;
+    S.voucherActionPending['wo-complete-'+id] = true;
+    render();
+    try{
+      await apiCall('POST', `/api/customer/subcontract-terms/${id}/complete`, {});
+      S.subcontractTermsLoaded = false;
+      await loadSubcontractTermDetail(id);
+      toast(tr('fin_wo.complete_success'));
+    } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['wo-complete-'+id] = false;
+    render(); return;
+  }
+  if(act==='open-wo-terminate'){ S.woTerminateForm = {id:parseInt(el.dataset.id,10), reason:''}; render(); return; }
+  if(act==='cancel-wo-terminate-form'){ S.woTerminateForm = null; render(); return; }
+  if(act==='submit-wo-terminate'){
+    const id = parseInt(el.dataset.id,10);
+    const reason = (S.woTerminateForm && S.woTerminateForm.reason || '').trim();
+    if(!reason){ toast(tr('fin_wo.terminate_reason_required_err'),'err'); return; }
+    try{
+      await apiCall('POST', `/api/customer/subcontract-terms/${id}/terminate`, {reason});
+      S.woTerminateForm = null;
+      S.subcontractTermsLoaded = false;
+      await loadSubcontractTermDetail(id);
+      toast(tr('fin_wo.terminate_success'));
+    } catch(e){ toast(e.message,'err'); }
+    render(); return;
   }
 
   // ---- Finance: ใบเสนอราคา (Quotations) ----

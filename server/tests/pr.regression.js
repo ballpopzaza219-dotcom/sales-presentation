@@ -145,7 +145,7 @@ async function makeDraftPr(username, itemsQty = [{ material: 'ปูนซีเ
 
     const poNo = 'PO-SMOKE-' + Date.now();
     const poIns = await pool.query(
-      `INSERT INTO client_purchase_orders (company_id, po_no, supplier_name, status) VALUES ($1,$2,'Smoke Supplier','pending') RETURNING id`,
+      `INSERT INTO client_purchase_orders (company_id, po_no, supplier_name, status) VALUES ($1,$2,'Smoke Supplier','approved') RETURNING id`,
       [COMPANY_A_ID, poNo]
     );
     const poId = poIns.rows[0].id;

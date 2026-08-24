@@ -2512,7 +2512,7 @@ app.put('/api/customer/users/:id/budget-approval-permission', requireCustomerAut
 // updateUserPermissionFlag() กัน mass-assignment จริงจัง
 const MANAGE_PERMISSION_FLAG_COLUMNS = new Set([
   'can_manage_po', 'can_manage_petty_cash_fund', 'can_settle_cash',
-  'can_approve_budget', 'can_approve_pr', 'can_approve_petty_cash', 'can_approve_advance', 'can_approve_other',
+  'can_approve_budget', 'can_approve_pr', 'can_approve_po_wo', 'can_approve_petty_cash', 'can_approve_advance', 'can_approve_other',
 ]);
 app.put('/api/customer/users/:id/permission-flags', requireCustomerAuth, async (req, res) => {
   const targetId = parseInt(req.params.id, 10);
@@ -7457,122 +7457,483 @@ async function checkBudgetControl(companyId, projectId, workCode, amount) {
   return { warnings };
 }
 
-// ---------------- Customer: client ledger — ใบสั่งซื้อ (Purchase Orders) ----------------
-// No journal entry is posted here (same reasoning as client_projects) — a PO is a commitment,
-// not yet an actual expense; nothing debits/credits until it's paid (matching client_project_costs'
-// own cash-basis posting), and today there's no "mark PO as paid" flow to hang a posting off of.
+// ---------------- Customer: client ledger — ใบสั่งซื้อ (Purchase Orders, หัวข้อ 5) ----------------
+// เขียนใหม่ทั้งหมดตาม migration 0012 — ของเดิม (items เก็บเป็น JSONB, ไม่มี composite FK/approval
+// workflow/idempotency/audit log, DELETE เป็น hard delete) ถูก DROP ทิ้งแล้ว ดู migration 0012's
+// comment สำหรับเหตุผลเต็ม (0 แถวจริงในระบบตอน migrate, ตรวจยืนยันหลายรอบ)
+// ไม่โพสต์ journal เอง (เหตุผลเดียวกับของเดิม — เป็นแค่ commitment ยังไม่ใช่ค่าใช้จ่ายจริงจนกว่าจะจ่ายเงิน
+// ผ่าน payment voucher ประเภท other ในหัวข้อ 1.4 ซึ่งเป็นคนละ flow แยกต่างหาก ไม่ผูกกับ PO นี้เลยในเฟสนี้)
+function serializePoItem(row) {
+  return {
+    id: row.id,
+    prItemId: row.pr_item_id,
+    sourcePrNo: row.source_pr_no || null,
+    idx: row.idx,
+    material: row.material,
+    unit: row.unit,
+    qty: Number(row.qty),
+    unitPrice: Number(row.unit_price),
+    amount: Number(row.amount),
+  };
+}
 function serializePurchaseOrder(row) {
   return {
-    id: row.id, poNo: row.po_no, projectId: row.project_id, projectName: row.project_name || null,
-    prReference: row.pr_reference, supplierName: row.supplier_name, supplierContact: row.supplier_contact,
-    issueDate: row.issue_date, expectedDeliveryDate: row.expected_delivery_date, paymentTerms: row.payment_terms,
-    status: row.status, items: row.items, amount: Number(row.amount), note: row.note,
-    createdBy: row.created_by, createdAt: row.created_at,
+    id: row.id,
+    poNo: row.po_no,
+    projectId: row.project_id,
+    projectName: row.project_name || null,
+    supplierName: row.supplier_name,
+    supplierContact: row.supplier_contact,
+    issueDate: row.issue_date,
+    expectedDeliveryDate: row.expected_delivery_date,
+    paymentTerms: row.payment_terms,
+    status: row.status,
+    submittedBy: row.submitted_by,
+    submittedAt: row.submitted_at,
+    approvedBy: row.approved_by,
+    approvedAt: row.approved_at,
+    rejectedReason: row.rejected_reason,
+    totalAmount: Number(row.total_amount),
+    note: row.note,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
   };
 }
 const CLIENT_PO_SELECT = `
   SELECT po.id, po.po_no, po.project_id, cp.name AS project_name,
-    po.pr_reference, po.supplier_name, po.supplier_contact,
+    po.supplier_name, po.supplier_contact,
     to_char(po.issue_date,'YYYY-MM-DD') AS issue_date, to_char(po.expected_delivery_date,'YYYY-MM-DD') AS expected_delivery_date,
-    po.payment_terms, po.status, po.items, po.amount, po.note, po.created_by, po.created_at
+    po.payment_terms, po.status, po.submitted_by, po.submitted_at, po.approved_by, po.approved_at,
+    po.rejected_reason, po.total_amount, po.note, po.created_by, po.created_at
   FROM client_purchase_orders po
   LEFT JOIN client_projects cp ON cp.id = po.project_id`;
+const CLIENT_PO_ITEMS_SELECT = `
+  SELECT poi.id, poi.pr_item_id, poi.idx, poi.material, poi.unit, poi.qty, poi.unit_price, poi.amount,
+    pr.pr_no AS source_pr_no
+  FROM client_purchase_order_items poi
+  LEFT JOIN client_purchase_request_items pri ON pri.id = poi.pr_item_id
+  LEFT JOIN client_purchase_requests pr ON pr.id = pri.purchase_request_id
+  WHERE poi.purchase_order_id=$1 AND poi.company_id=$2 ORDER BY poi.idx`;
 
-async function generateClientPoNo(client, companyId) {
-  const year = new Date().getFullYear() + 543;
+async function fetchFullPurchaseOrder(dbClient, id, companyId) {
+  const r = await dbClient.query(`${CLIENT_PO_SELECT} WHERE po.id=$1 AND po.company_id=$2`, [id, companyId]);
+  if (r.rowCount === 0) return null;
+  const items = await dbClient.query(CLIENT_PO_ITEMS_SELECT, [id, companyId]);
+  const po = serializePurchaseOrder(r.rows[0]);
+  po.items = items.rows.map(serializePoItem);
+  return po;
+}
+
+async function generateClientPoNumber(client, companyId) {
+  const year = getBangkokYear() + 543;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const countRes = await client.query('SELECT COUNT(*)::int AS n FROM client_purchase_orders WHERE company_id=$1', [companyId]);
-    const no = `PO-${year}-` + String(countRes.rows[0].n + 1 + attempt).padStart(4, '0');
+    const seq = await nextDocumentSeq(client, companyId, 'purchase_order');
+    const no = `PO-${year}-` + String(seq).padStart(4, '0');
     const exists = await client.query('SELECT 1 FROM client_purchase_orders WHERE company_id=$1 AND po_no=$2', [companyId, no]);
     if (exists.rowCount === 0) return no;
   }
-  throw new Error('ไม่สามารถสร้างเลขที่ใบสั่งซื้อได้');
+  throw new Error('ไม่สามารถสร้างเลขที่ PO ได้');
+}
+
+// total_amount เขียนจาก SUM(items.amount) เสมอ ในทรานแซกชันเดียวกับที่แก้ items — ไม่เคยเชื่อค่าที่ client
+// ส่งมาตรงๆ (กฎเดียวกับ client_purchase_requests.total_amount)
+async function recomputeClientPoTotalAmount(client, companyId, poId) {
+  await client.query(
+    `UPDATE client_purchase_orders SET total_amount = COALESCE(
+       (SELECT SUM(amount) FROM client_purchase_order_items WHERE purchase_order_id=$1), 0)
+     WHERE id=$1 AND company_id=$2`,
+    [poId, companyId]
+  );
+}
+
+// ตรวจ input ร่วมของ POST (สร้างใหม่) และ PUT (แก้ไข) — คืน {error} หรือ {safeItems}
+// prItemId เป็น optional เสมอ (ซื้อด่วนไม่ผ่าน PR ได้ ตาม migration 0012's comment) — ถ้าระบุมา ต้องมีอยู่
+// จริงในบริษัทนี้เท่านั้น ส่วนเช็คว่า PR ต้นทาง approved แล้วหรือยัง/qty เกินไหม เลื่อนไปเช็คตอน
+// submit(เตือน)/approve(บังคับจริง) เท่านั้น เพราะ pr_item_id ที่อ้างอิงอาจเปลี่ยนสถานะไปได้ระหว่างที่ PO
+// ยังเป็น draft (รอแก้ไขอยู่นาน)
+async function validatePoInput(dbClient = pool, companyId, { projectId, supplierName, items }) {
+  if (!supplierName || !supplierName.trim()) return { error: 'กรุณากรอกชื่อซัพพลายเออร์' };
+  if (projectId) {
+    const proj = await dbClient.query('SELECT 1 FROM client_projects WHERE id=$1 AND company_id=$2', [projectId, companyId]);
+    if (proj.rowCount === 0) return { error: 'ไม่พบโครงการนี้ในบริษัทของคุณ' };
+  }
+
+  const safeItems = [];
+  for (const it of (Array.isArray(items) ? items : [])) {
+    const material = String(it.material || '').trim();
+    const qty = parsePositiveNumericValue(it.qty);
+    if (!material || qty === null) continue;
+    const unitPrice = parseNonNegativeNumericValue(it.unitPrice);
+    if (unitPrice === null) return { error: `รายการ "${material}" ระบุราคาต่อหน่วยไม่ถูกต้อง` };
+    safeItems.push({ prItemId: it.prItemId || null, material, unit: String(it.unit || '').trim() || '-', qty, unitPrice });
+  }
+  if (safeItems.length === 0) return { error: 'กรุณากรอกรายการอย่างน้อย 1 รายการ' };
+
+  const prItemIds = [...new Set(safeItems.filter(it => it.prItemId).map(it => it.prItemId))];
+  if (prItemIds.length > 0) {
+    const check = await dbClient.query(
+      'SELECT COUNT(*)::int AS n FROM client_purchase_request_items WHERE id = ANY($1::int[]) AND company_id=$2',
+      [prItemIds, companyId]
+    );
+    if (check.rows[0].n !== prItemIds.length) return { error: 'มีรายการอ้างอิง PR item ที่ไม่พบในบริษัทของคุณ' };
+  }
+
+  return { safeItems };
 }
 
 app.get('/api/customer/purchase-orders', requireCustomerAuth, async (req, res) => {
   const companyId = req.customer.company_id;
-  const r = await pool.query(`${CLIENT_PO_SELECT} WHERE po.company_id=$1 ORDER BY po.id DESC`, [companyId]);
+  const { status, projectId } = req.query;
+  const conditions = ['po.company_id=$1'];
+  const params = [companyId];
+  if (status) { params.push(status); conditions.push(`po.status=$${params.length}`); }
+  if (projectId) { params.push(parseInt(projectId, 10)); conditions.push(`po.project_id=$${params.length}`); }
+  const r = await pool.query(`${CLIENT_PO_SELECT} WHERE ${conditions.join(' AND ')} ORDER BY po.id DESC`, params);
   res.json({ purchaseOrders: r.rows.map(serializePurchaseOrder) });
 });
 
 app.get('/api/customer/purchase-orders/:id', requireCustomerAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const r = await pool.query(`${CLIENT_PO_SELECT} WHERE po.id=$1 AND po.company_id=$2`, [id, req.customer.company_id]);
-  if (r.rowCount === 0) return res.status(404).json({ error: 'ไม่พบใบสั่งซื้อ' });
-  res.json({ purchaseOrder: serializePurchaseOrder(r.rows[0]) });
+  const companyId = req.customer.company_id;
+  const po = await fetchFullPurchaseOrder(pool, id, companyId);
+  if (!po) return res.status(404).json({ error: 'ไม่พบใบสั่งซื้อ' });
+  res.json({ purchaseOrder: po });
 });
 
+// ต้องมี Idempotency-Key เสมอ — กันกดสร้างซ้ำ (double-click) ได้ PO ซ้ำสองใบจากคำขอเดียวกัน
 app.post('/api/customer/purchase-orders', requireCustomerAuth, async (req, res) => {
-  const companyId = req.customer.company_id;
-  const {
-    poNo, projectId, prReference, supplierName, supplierContact, issueDate, expectedDeliveryDate,
-    paymentTerms, status, items, note,
-  } = req.body || {};
-  if (!supplierName || !supplierName.trim()) return res.status(400).json({ error: 'กรุณากรอกชื่อซัพพลายเออร์' });
-  const safeItems = Array.isArray(items) ? items
-    .map(it => ({
-      material: String(it.material || '').trim(), qty: Number(it.qty) || 0,
-      unit: String(it.unit || '').trim() || '-', unitPrice: Number(it.unitPrice) || 0,
-    }))
-    .filter(it => it.material && it.qty > 0) : [];
-  if (safeItems.length === 0) return res.status(400).json({ error: 'กรุณากรอกรายการสินค้าอย่างน้อย 1 รายการ' });
-  const amount = safeItems.reduce((sum, it) => sum + it.qty * it.unitPrice, 0);
-  const allowedStatus = ['pending', 'ordered', 'received', 'cancelled'];
-  const safeStatus = allowedStatus.includes(status) ? status : 'pending';
+  await withIdempotency(req, res, 'purchase-orders-create', async (client) => {
+    const companyId = req.customer.company_id;
+    const { projectId, supplierName, supplierContact, issueDate, expectedDeliveryDate, paymentTerms, note, items } = req.body || {};
 
-  if (projectId) {
-    const proj = await pool.query('SELECT 1 FROM client_projects WHERE id=$1 AND company_id=$2', [projectId, companyId]);
-    if (proj.rowCount === 0) return res.status(400).json({ error: 'ไม่พบโครงการนี้ในบริษัทของคุณ' });
-  }
+    const validation = await validatePoInput(client, companyId, { projectId, supplierName, items });
+    if (validation.error) return { status: 400, body: { error: validation.error } };
+    const { safeItems } = validation;
+
+    const insert = await client.query(
+      `INSERT INTO client_purchase_orders (company_id, project_id, supplier_name, supplier_contact, issue_date, expected_delivery_date, payment_terms, note, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+      [companyId, projectId || null, supplierName.trim(), (supplierContact || '').trim(),
+       issueDate || new Date().toISOString().slice(0, 10), expectedDeliveryDate || null, (paymentTerms || '').trim(),
+       (note || '').trim(), req.customer.id]
+    );
+    const poId = insert.rows[0].id;
+    for (let i = 0; i < safeItems.length; i++) {
+      const it = safeItems[i];
+      await client.query(
+        `INSERT INTO client_purchase_order_items (purchase_order_id, company_id, pr_item_id, idx, material, unit, qty, unit_price)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [poId, companyId, it.prItemId, i, it.material, it.unit, it.qty, it.unitPrice]
+      );
+    }
+    await recomputeClientPoTotalAmount(client, companyId, poId);
+
+    const poResult = await fetchFullPurchaseOrder(client, poId, companyId); // client เดิม (ยังไม่ commit)
+    return { status: 200, body: { purchaseOrder: poResult } };
+  });
+});
+
+// แก้ไขได้เฉพาะ draft เท่านั้น (gate ด้านล่าง) — ไม่มีทางมี qty_ordered/qty_cancelled บนบรรทัดใดเลยตอนนั้น
+// (consume เกิดตอน approve เท่านั้น) จึง delete+reinsert ทั้งก้อนได้อย่างปลอดภัย ไม่ต้องทำ diff แบบซับซ้อน
+// เหมือน PUT ของ PR (ซึ่งต้องกัน "ลบรายการที่ถูกตัดยอดไปแล้ว" — เคสนั้นเกิดไม่ได้ที่นี่เลย)
+app.put('/api/customer/purchase-orders/:id', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const { projectId, supplierName, supplierContact, issueDate, expectedDeliveryDate, paymentTerms, note, items } = req.body || {};
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const trimmedNo = (poNo || '').trim();
-    const finalNo = trimmedNo || await generateClientPoNo(client, companyId);
-    const dup = await client.query('SELECT 1 FROM client_purchase_orders WHERE company_id=$1 AND po_no=$2', [companyId, finalNo]);
-    if (dup.rowCount > 0) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'เลขที่ใบสั่งซื้อนี้มีอยู่แล้ว' }); }
-    const insert = await client.query(
-      `INSERT INTO client_purchase_orders (company_id, po_no, project_id, pr_reference, supplier_name, supplier_contact,
-         issue_date, expected_delivery_date, payment_terms, status, items, amount, note, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
-      [companyId, finalNo, projectId || null, (prReference || '').trim(), supplierName.trim(), (supplierContact || '').trim(),
-       issueDate || new Date().toISOString().slice(0, 10), expectedDeliveryDate || null, (paymentTerms || '').trim(),
-       safeStatus, JSON.stringify(safeItems), amount, (note || '').trim(), req.customer.id]
+    const poRes = await client.query('SELECT status FROM client_purchase_orders WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (poRes.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบใบสั่งซื้อ' }); }
+    if (poRes.rows[0].status !== 'draft') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'แก้ไขได้เฉพาะใบสั่งซื้อสถานะร่างเท่านั้น' });
+    }
+
+    const validation = await validatePoInput(client, companyId, { projectId, supplierName, items });
+    if (validation.error) { await client.query('ROLLBACK'); return res.status(400).json({ error: validation.error }); }
+    const { safeItems } = validation;
+
+    await client.query('DELETE FROM client_purchase_order_items WHERE purchase_order_id=$1', [id]);
+    for (let i = 0; i < safeItems.length; i++) {
+      const it = safeItems[i];
+      await client.query(
+        `INSERT INTO client_purchase_order_items (purchase_order_id, company_id, pr_item_id, idx, material, unit, qty, unit_price)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [id, companyId, it.prItemId, i, it.material, it.unit, it.qty, it.unitPrice]
+      );
+    }
+
+    await client.query(
+      `UPDATE client_purchase_orders SET project_id=$1, supplier_name=$2, supplier_contact=$3, issue_date=$4, expected_delivery_date=$5, payment_terms=$6, note=$7 WHERE id=$8`,
+      [projectId || null, supplierName.trim(), (supplierContact || '').trim(),
+       issueDate || new Date().toISOString().slice(0, 10), expectedDeliveryDate || null, (paymentTerms || '').trim(), (note || '').trim(), id]
     );
-    const poId = insert.rows[0].id;
+    await recomputeClientPoTotalAmount(client, companyId, id);
     await client.query('COMMIT');
-    const r = await pool.query(`${CLIENT_PO_SELECT} WHERE po.id=$1`, [poId]);
-    res.json({ purchaseOrder: serializePurchaseOrder(r.rows[0]) });
+    res.json({ purchaseOrder: await fetchFullPurchaseOrder(pool, id, companyId) });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error(err);
-    res.status(500).json({ error: 'บันทึกใบสั่งซื้อไม่สำเร็จ' });
+    res.status(500).json({ error: 'แก้ไขใบสั่งซื้อไม่สำเร็จ' });
   } finally {
     client.release();
   }
 });
 
-app.put('/api/customer/purchase-orders/:id/status', requireCustomerAuth, async (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  const companyId = req.customer.company_id;
-  const { status } = req.body || {};
-  const allowedStatus = ['pending', 'ordered', 'received', 'cancelled'];
-  if (!allowedStatus.includes(status)) return res.status(400).json({ error: 'สถานะไม่ถูกต้อง' });
-  const r = await pool.query(
-    'UPDATE client_purchase_orders SET status=$1 WHERE id=$2 AND company_id=$3 RETURNING id',
-    [status, id, companyId]
-  );
-  if (r.rowCount === 0) return res.status(404).json({ error: 'ไม่พบใบสั่งซื้อ' });
-  const full = await pool.query(`${CLIENT_PO_SELECT} WHERE po.id=$1`, [id]);
-  res.json({ purchaseOrder: serializePurchaseOrder(full.rows[0]) });
+// endpoint string ผูก :id ไว้ด้วยเสมอ (เหตุผลเดียวกับ PR — กันข้าม PO คนละใบ)
+app.post('/api/customer/purchase-orders/:id/submit', requireCustomerAuth, async (req, res) => {
+  await withIdempotency(req, res, `purchase-orders-submit:${req.params.id}`, async (client) => {
+    const id = parseInt(req.params.id, 10);
+    const companyId = req.customer.company_id;
+
+    const r = await client.query('SELECT * FROM client_purchase_orders WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) return { status: 404, body: { error: 'ไม่พบใบสั่งซื้อ' } };
+    const po = r.rows[0];
+    if (po.status !== 'draft') return { status: 409, body: { error: 'ยื่นได้เฉพาะใบสั่งซื้อสถานะร่างเท่านั้น' } };
+
+    if (req.customer.id !== po.created_by) {
+      const permCheck = await canApprove(client, req.customer, 'po_wo', po.total_amount, {
+        companyId, originators: [po.created_by],
+      }, { enforceAmountLimit: false });
+      if (!permCheck.allowed) {
+        return { status: 403, body: { error: 'ไม่มีสิทธิ์ยื่นใบสั่งซื้อนี้ (ต้องเป็นผู้สร้าง หรือมีสิทธิ์อนุมัติ)', code: permCheck.code } };
+      }
+    }
+
+    const zeroCheck = await client.query('SELECT (total_amount <= 0) AS is_zero FROM client_purchase_orders WHERE id=$1', [id]);
+    if (zeroCheck.rows[0].is_zero) {
+      return { status: 400, body: { error: 'ไม่สามารถยื่นใบสั่งซื้อที่มียอดรวมเป็นศูนย์ได้' } };
+    }
+
+    const itemCount = await client.query('SELECT COUNT(*)::int AS n FROM client_purchase_order_items WHERE purchase_order_id=$1', [id]);
+    if (itemCount.rows[0].n === 0) return { status: 400, body: { error: 'ใบสั่งซื้อต้องมีรายการอย่างน้อย 1 รายการ' } };
+
+    // เตือนล่วงหน้าถ้าเกิน qty_remaining ของ PR item ที่อ้างอิง (ไม่ FOR UPDATE — แค่เตือน ยังไม่บังคับจริง
+    // การเช็คบังคับจริงเกิดตอน /approve เท่านั้น เพราะ PR item อาจถูกใบอื่นตัดยอดไปหลังจากนี้ได้อีก)
+    // group ด้วย pr_item_id+qty_remaining เท่านั้น (ไม่รวม material) กัน SUM แตกกลุ่มผิดถ้าผู้ใช้พิมพ์ material
+    // ไม่เหมือนกันเป๊ะในหลายบรรทัดที่อ้าง pr_item_id เดียวกัน
+    const overCheck = await client.query(
+      `SELECT poi.pr_item_id, MIN(poi.material) AS material, SUM(poi.qty) AS requested_qty, pri.qty_remaining, pr.status AS pr_status
+       FROM client_purchase_order_items poi
+       JOIN client_purchase_request_items pri ON pri.id = poi.pr_item_id
+       JOIN client_purchase_requests pr ON pr.id = pri.purchase_request_id
+       WHERE poi.purchase_order_id=$1 AND poi.pr_item_id IS NOT NULL
+       GROUP BY poi.pr_item_id, pri.qty_remaining, pr.status
+       HAVING SUM(poi.qty) > pri.qty_remaining OR pr.status <> 'approved'`,
+      [id]
+    );
+    if (overCheck.rowCount > 0) {
+      const notApproved = overCheck.rows.filter(l => l.pr_status !== 'approved');
+      const overQty = overCheck.rows.filter(l => l.pr_status === 'approved');
+      const parts = [];
+      if (notApproved.length > 0) parts.push(`PR ต้นทางยังไม่อนุมัติ: ${notApproved.map(l => `"${l.material}"`).join(', ')}`);
+      if (overQty.length > 0) parts.push(`ขอเกินยอดคงเหลือ: ${overQty.map(l => `"${l.material}" (คงเหลือ ${l.qty_remaining})`).join(', ')}`);
+      return { status: 400, body: { error: parts.join(' / ') } };
+    }
+
+    const poNo = await generateClientPoNumber(client, companyId);
+    await client.query(
+      `UPDATE client_purchase_orders SET po_no=$1, status='submitted', submitted_by=$2, submitted_at=now() WHERE id=$3`,
+      [poNo, req.customer.id, id]
+    );
+    await writeAuditLog(client, {
+      companyId, docType: 'purchase_order', docId: id, action: 'submit',
+      fromStatus: 'draft', toStatus: 'submitted', performedBy: req.customer.id,
+    });
+
+    const poResult = await fetchFullPurchaseOrder(client, id, companyId);
+    return { status: 200, body: { purchaseOrder: poResult } };
+  });
 });
 
-app.delete('/api/customer/purchase-orders/:id', requireCustomerAuth, async (req, res) => {
+app.post('/api/customer/purchase-orders/:id/approve', requireCustomerAuth, async (req, res) => {
+  await withIdempotency(req, res, `purchase-orders-approve:${req.params.id}`, async (client) => {
+    const id = parseInt(req.params.id, 10);
+    const companyId = req.customer.company_id;
+
+    const r = await client.query('SELECT * FROM client_purchase_orders WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) return { status: 404, body: { error: 'ไม่พบใบสั่งซื้อ' } };
+    const po = r.rows[0];
+    if (po.status !== 'submitted') return { status: 409, body: { error: 'อนุมัติได้เฉพาะใบสั่งซื้อที่ยื่นแล้วเท่านั้น' } };
+
+    const result = await canApprove(client, req.customer, 'po_wo', po.total_amount, {
+      companyId, originators: [po.created_by, po.submitted_by],
+    });
+    if (!result.allowed) return { status: 403, body: { error: result.message, code: result.code } };
+
+    const poItems = await client.query(
+      'SELECT id, pr_item_id, material, qty FROM client_purchase_order_items WHERE purchase_order_id=$1 ORDER BY idx',
+      [id]
+    );
+    const prItemIds = [...new Set(poItems.rows.filter(it => it.pr_item_id).map(it => it.pr_item_id))].sort((a, b) => a - b);
+
+    if (prItemIds.length > 0) {
+      // ลำดับล็อกคงที่ตาม id (กันเดดล็อกกับ endpoint อื่นที่ล็อก PR items หลายแถวเหมือนกัน) — statement
+      // ล็อกอย่างเดียวแยกจาก statement คำนวณ SUM เสมอ ตาม CLAUDE.md ข้อ 7 (ห้ามรวม FOR UPDATE กับ
+      // correlated subquery ที่อ่านตารางอื่นไว้ query เดียวกันถ้าผลจะถูกใช้ตัดสินใจ)
+      await client.query('SELECT id FROM client_purchase_request_items WHERE id = ANY($1::int[]) FOR UPDATE', [prItemIds]);
+      const checkRes = await client.query(
+        `SELECT pri.id, pri.qty_remaining, pr.status AS pr_status,
+           COALESCE((SELECT SUM(qty) FROM client_purchase_order_items WHERE pr_item_id=pri.id AND purchase_order_id=$2), 0) AS requested_qty
+         FROM client_purchase_request_items pri
+         JOIN client_purchase_requests pr ON pr.id = pri.purchase_request_id
+         WHERE pri.id = ANY($1::int[])`,
+        [prItemIds, id]
+      );
+      const materialById = new Map(poItems.rows.filter(it => it.pr_item_id).map(it => [it.pr_item_id, it.material]));
+      const overLines = checkRes.rows.filter(row => Number(row.requested_qty) > Number(row.qty_remaining) || row.pr_status !== 'approved');
+      if (overLines.length > 0) {
+        const notApproved = overLines.filter(l => l.pr_status !== 'approved');
+        const overQty = overLines.filter(l => l.pr_status === 'approved');
+        const parts = [];
+        if (notApproved.length > 0) parts.push(`PR ต้นทางไม่ใช่สถานะอนุมัติแล้ว: ${notApproved.map(l => `"${materialById.get(l.id)}"`).join(', ')}`);
+        if (overQty.length > 0) parts.push(`เกินยอดคงเหลือ (อาจถูกใบอื่นตัดยอดไปก่อนหลังจากยื่นใบนี้): ${overQty.map(l => `"${materialById.get(l.id)}" (คงเหลือ ${l.qty_remaining}, ใบนี้ขอ ${l.requested_qty})`).join(', ')}`);
+        return { status: 400, body: { error: `อนุมัติไม่ได้ — ${parts.join(' / ')}` } };
+      }
+
+      // auto-consume: 1 บรรทัด PO item = 1 แถว adjustment (ไม่ sum รวมข้ามบรรทัด แม้จะอ้าง pr_item_id
+      // เดียวกันหลายบรรทัดก็ตาม — เพื่อให้ประวัติสืบย้อนกลับไปที่บรรทัด PO ต้นทางแต่ละบรรทัดได้ตรงไปตรงมา)
+      for (const it of poItems.rows) {
+        if (!it.pr_item_id) continue;
+        await client.query(
+          `INSERT INTO client_purchase_request_item_adjustments (pr_item_id, company_id, adjustment_type, qty, po_id, note, created_by)
+           VALUES ($1,$2,'consume',$3,$4,$5,$6)`,
+          [it.pr_item_id, companyId, it.qty, id, `ตัดยอดจาก PO ${po.po_no}`, req.customer.id]
+        );
+        await client.query('UPDATE client_purchase_request_items SET qty_ordered = qty_ordered + $1 WHERE id=$2', [it.qty, it.pr_item_id]);
+      }
+    }
+
+    await client.query(
+      `UPDATE client_purchase_orders SET status='approved', approved_by=$1, approved_at=now() WHERE id=$2`,
+      [req.customer.id, id]
+    );
+    const reason = result.isOverride
+      ? 'อนุมัติโดย super_user (override ข้ามการตรวจสอบ rule/เพดานปกติ)'
+      : `อนุมัติผ่าน rule #${result.ruleId} (เพดาน ${result.maxAmountRaw} บาท)`;
+    await writeAuditLog(client, {
+      companyId, docType: 'purchase_order', docId: id, action: 'approve',
+      fromStatus: 'submitted', toStatus: 'approved', performedBy: req.customer.id,
+      isOverride: result.isOverride, reason,
+    });
+
+    const poResult = await fetchFullPurchaseOrder(client, id, companyId);
+    return { status: 200, body: { purchaseOrder: poResult } };
+  });
+});
+
+app.post('/api/customer/purchase-orders/:id/reject', requireCustomerAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const r = await pool.query('DELETE FROM client_purchase_orders WHERE id=$1 AND company_id=$2', [id, req.customer.company_id]);
-  if (r.rowCount === 0) return res.status(404).json({ error: 'ไม่พบใบสั่งซื้อ' });
-  res.json({ ok: true });
+  const companyId = req.customer.company_id;
+  const { reason } = req.body || {};
+  if (!reason || !reason.trim()) return res.status(400).json({ error: 'กรุณาระบุเหตุผลการปฏิเสธ' });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM client_purchase_orders WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบใบสั่งซื้อ' }); }
+    const po = r.rows[0];
+    if (po.status !== 'submitted') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'ปฏิเสธได้เฉพาะใบสั่งซื้อที่ยื่นแล้วเท่านั้น' });
+    }
+
+    const permCheck = await canApprove(client, req.customer, 'po_wo', po.total_amount, {
+      companyId, originators: [po.created_by, po.submitted_by],
+    }, { enforceAmountLimit: false });
+    if (!permCheck.allowed) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: permCheck.message, code: permCheck.code });
+    }
+
+    await client.query(`UPDATE client_purchase_orders SET status='rejected', rejected_reason=$1 WHERE id=$2`, [reason.trim(), id]);
+    await writeAuditLog(client, {
+      companyId, docType: 'purchase_order', docId: id, action: 'reject',
+      fromStatus: 'submitted', toStatus: 'rejected', performedBy: req.customer.id,
+      isOverride: permCheck.isOverride, reason: reason.trim(),
+    });
+    await client.query('COMMIT');
+    res.json({ purchaseOrder: await fetchFullPurchaseOrder(pool, id, companyId) });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'ปฏิเสธใบสั่งซื้อไม่สำเร็จ' });
+  } finally {
+    client.release();
+  }
+});
+
+// ยกเลิกได้จาก draft/submitted/approved ทั้งหมดในเฟสนี้ — ระบบยังไม่มีกลไก "รับของ" (goods receipt) หรือ
+// payment voucher ผูกกับ PO เลยแม้แต่นิดเดียว จึงยังไม่มีอะไรให้เช็คจริงว่า "รับของ/จ่ายเงินไปแล้วบางส่วน"
+// ⚠️ เมื่อมีระบบรับของในอนาคต ต้องเพิ่มเงื่อนไขห้าม cancel ถ้ารับของแล้วบางส่วน (mirror PR's qty_ordered>0
+// ก่อน cancel) และถ้ามี payment voucher อ้างอิง PO นี้แล้วต้องบล็อกด้วย — ดู pr-module-known-limitations.md
+app.post('/api/customer/purchase-orders/:id/cancel', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM client_purchase_orders WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบใบสั่งซื้อ' }); }
+    const po = r.rows[0];
+    const status = po.status;
+    if (!['draft', 'submitted', 'approved'].includes(status)) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'ไม่สามารถยกเลิกใบสั่งซื้อในสถานะนี้ได้' });
+    }
+
+    const isOwner = req.customer.id === po.created_by || (po.submitted_by != null && req.customer.id === po.submitted_by);
+    let cancelIsOverride = false;
+    if (!isOwner) {
+      const permCheck = await canApprove(client, req.customer, 'po_wo', po.total_amount, {
+        companyId, originators: [po.created_by, po.submitted_by],
+      }, { enforceAmountLimit: false });
+      if (!permCheck.allowed) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ error: 'ไม่มีสิทธิ์ยกเลิกใบสั่งซื้อนี้ (ต้องเป็นผู้สร้าง/ผู้ยื่น หรือมีสิทธิ์อนุมัติ)', code: permCheck.code });
+      }
+      cancelIsOverride = permCheck.isOverride;
+    }
+
+    if (status === 'approved') {
+      // auto-release: คืนยอดทุกบรรทัดที่เคย consume ไปตอน approve — 1 บรรทัด PO item ถูก consume แค่ครั้ง
+      // เดียวตอน approve เท่านั้น (ไม่มีทาง consume ซ้ำ) จึง release เท่ากับ qty เดิมของบรรทัดนั้นได้ตรงๆ
+      // โดยไม่ต้องเช็ค SUM(release)<=SUM(consume) แบบ endpoint /release แบบ manual (คำนวณ 1:1 อยู่แล้ว)
+      const poItems = await client.query(
+        'SELECT id, pr_item_id, qty FROM client_purchase_order_items WHERE purchase_order_id=$1 AND pr_item_id IS NOT NULL',
+        [id]
+      );
+      const prItemIds = [...new Set(poItems.rows.map(it => it.pr_item_id))].sort((a, b) => a - b);
+      if (prItemIds.length > 0) {
+        await client.query('SELECT id FROM client_purchase_request_items WHERE id = ANY($1::int[]) FOR UPDATE', [prItemIds]);
+      }
+      for (const it of poItems.rows) {
+        await client.query(
+          `INSERT INTO client_purchase_request_item_adjustments (pr_item_id, company_id, adjustment_type, qty, po_id, note, created_by)
+           VALUES ($1,$2,'release',$3,$4,$5,$6)`,
+          [it.pr_item_id, companyId, it.qty, id, `คืนยอด — ยกเลิก PO ${po.po_no}`, req.customer.id]
+        );
+        await client.query('UPDATE client_purchase_request_items SET qty_ordered = qty_ordered - $1 WHERE id=$2', [it.qty, it.pr_item_id]);
+      }
+    }
+
+    await client.query(`UPDATE client_purchase_orders SET status='cancelled' WHERE id=$1`, [id]);
+    await writeAuditLog(client, {
+      companyId, docType: 'purchase_order', docId: id, action: 'cancel',
+      fromStatus: status, toStatus: 'cancelled', performedBy: req.customer.id, isOverride: cancelIsOverride,
+    });
+    await client.query('COMMIT');
+    res.json({ purchaseOrder: await fetchFullPurchaseOrder(pool, id, companyId) });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'ยกเลิกใบสั่งซื้อไม่สำเร็จ' });
+  } finally {
+    client.release();
+  }
 });
 
 // ---------------- Customer: client ledger — PR Module: canApprove() + audit log (ใช้ร่วมข้อ 4 และ
@@ -8807,14 +9168,27 @@ app.put('/api/customer/subcontractors/:id', requireCustomerAuth, async (req, res
     const old = existing.rows[0];
     const v = validateSubcontractorInput(req.body || {});
     if (v.error) { await client.query('ROLLBACK'); return res.status(400).json({ error: v.error }); }
-    // ⚠️ TODO เมื่อสร้าง client_subcontract_terms/client_subcontract_billings แล้ว (batch ถัดไป): ปิด
-    // ใช้งาน (is_active=false) ผู้รับเหมาช่วงที่ยังมีสัญญา/ใบเบิกสถานะ active (draft/submitted/approved
-    // ที่ยังไม่ settled/cancelled) อ้างอิงอยู่ต้องถูกบล็อก 409 — ตอนนี้ไม่มีตารางเหล่านั้นให้เช็คเลย จึง
-    // ปิดใช้งานได้อิสระ อย่าลืมเพิ่มเช็คนี้ตอนสร้าง 2 ตารางนั้น ไม่งั้นจะปิดใช้งานผู้รับเหมาที่มีงานค้างอยู่
-    // ได้เงียบๆ โดยไม่มีอะไรเตือน (เหมือนกับที่กัน DROP TABLE ใน migration 0009 down.sql ไว้แล้ว —
-    // หลักการเดียวกัน แค่คนละชั้น: DB-level guard ตอน rollback schema vs application-level guard ตอน
-    // เปลี่ยนสถานะข้อมูลจริง)
     const isActive = req.body && typeof req.body.isActive === 'boolean' ? req.body.isActive : true;
+
+    // ทำตาม TODO ที่เขียนไว้ล่วงหน้าตอนสร้าง client_subcontractors (หัวข้อ 2) — ตอนนี้ client_subcontract_terms
+    // มีจริงแล้ว (migration 0012, หัวข้อ 5 รอบ B) ต้องกันปิดใช้งานผู้รับเหมาที่ยังมีสัญญาค้างอยู่ ใช้ pattern
+    // NOT IN กับสถานะ "จบแล้ว" (CLAUDE.md ข้อ 23 — ปลอดภัยต่อสถานะใหม่ในอนาคตมากกว่า IN กับสถานะ active)
+    // เอกสารนับว่า "จบแล้ว" เมื่อ status IN ('rejected','cancelled') (ไม่เคยกลายเป็นสัญญาจริง) หรือ
+    // contract_status IN ('completed','terminated') (เป็นสัญญาจริงแต่จบงานหรือเลิกสัญญาไปแล้ว) — ที่เหลือ
+    // (draft/submitted/approved ที่ contract_status='active') ถือว่ายังค้างอยู่ ปิดใช้งานไม่ได้
+    if (old.is_active === true && isActive === false) {
+      const activeTermsCheck = await client.query(
+        `SELECT COUNT(*)::int AS n FROM client_subcontract_terms
+         WHERE company_id=$1 AND subcontractor_id=$2
+           AND status NOT IN ('rejected','cancelled')
+           AND (contract_status IS NULL OR contract_status NOT IN ('completed','terminated'))`,
+        [companyId, id]
+      );
+      if (activeTermsCheck.rows[0].n > 0) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: `ปิดใช้งานไม่ได้ — ผู้รับเหมาช่วงนี้ยังมีสัญญา/หนังสือสั่งจ้างที่ยังไม่จบ ${activeTermsCheck.rows[0].n} ฉบับ (ยังไม่ถูกปฏิเสธ/ยกเลิก/จบงาน/เลิกสัญญา)` });
+      }
+    }
 
     const update = await client.query(
       `UPDATE client_subcontractors SET
@@ -8858,6 +9232,412 @@ app.put('/api/customer/subcontractors/:id', requireCustomerAuth, async (req, res
       return res.status(409).json({ error: isDupTaxId ? 'มีผู้รับเหมาช่วงที่ใช้เลขผู้เสียภาษีนี้อยู่แล้ว' : 'มีผู้รับเหมาช่วงชื่อนี้อยู่แล้ว (เทียบแบบไม่สนตัวพิมพ์เล็ก-ใหญ่และคำนำหน้านิติบุคคล)' });
     }
     throw err;
+  } finally {
+    client.release();
+  }
+});
+
+// ---------------- ใบสั่งจ้างผู้รับเหมาช่วง (Work Order / client_subcontract_terms, หัวข้อ 5 รอบ B) ----------------
+// เอกสารเดียวกับที่ร่างไว้ตอนวางแผนหัวข้อ 2 (ตอนนั้นชื่อ client_subcontract_terms เตรียมไว้ล่วงหน้า) ดึงมา
+// รวมกับหัวข้อ 5 ตามที่ตกลงกันไว้ — ไม่มีตาราง items ย่อยเหมือน PO (เป็นสัญญาก้อนเดียว ไม่ใช่รายการวัสดุ)
+// สิทธิ์จัดการ (create/edit) ใช้ can_manage_po ร่วมกับ PO/subcontractor master (เหตุผลเดียวกับที่เขียนไว้ที่
+// hasSubcontractorManagePermission ด้านบน) ส่วนสิทธิ์อนุมัติใช้ doc_type='po_wo' ร่วมกับ PO (เพดานวงเงินเดียวกัน
+// ตามที่ตกลงตอนวางแผน migration 0012/0013) — ไม่โพสต์ journal เอง (เป็นแค่สัญญาผูกพัน ยังไม่ใช่ค่าใช้จ่ายจริง
+// จนกว่าจะมีการเบิกงวดงาน/จ่ายเงินจริงในหัวข้อถัดไป ซึ่งเป็นคนละ flow แยกต่างหาก)
+function serializeSubcontractTerm(row) {
+  return {
+    id: row.id,
+    contractNo: row.contract_no,
+    subcontractorId: row.subcontractor_id,
+    subcontractorName: row.subcontractor_name,
+    subcontractorTaxId: row.subcontractor_tax_id,
+    projectId: row.project_id,
+    projectName: row.project_name,
+    contractValue: Number(row.contract_value),
+    advancePercent: Number(row.advance_percent),
+    retentionPercent: Number(row.retention_percent),
+    advanceAmount: Number(row.advance_amount),
+    retentionAmount: Number(row.retention_amount),
+    whtIncomeTypeCode: row.wht_income_type_code,
+    whtIncomeTypeName: row.wht_income_type_name,
+    whtRate: row.wht_rate === null ? null : Number(row.wht_rate),
+    whtDefaultRate: row.wht_default_rate === null ? null : Number(row.wht_default_rate),
+    status: row.status,
+    contractStatus: row.contract_status,
+    submittedBy: row.submitted_by,
+    submittedAt: row.submitted_at,
+    approvedBy: row.approved_by,
+    approvedAt: row.approved_at,
+    rejectedReason: row.rejected_reason,
+    startDate: row.start_date,
+    endDate: row.end_date,
+    note: row.note,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+  };
+}
+// advance_amount/retention_amount คำนวณฝั่ง SQL ด้วย numeric arithmetic เสมอ (ไม่ใช้ JS Number คำนวณ) ตาม
+// CLAUDE.md ข้อ 3 — แสดงผลอย่างเดียวในเฟสนี้ ยังไม่ post journal หรือใช้ตัดสินใจอะไรเลย
+const CLIENT_WO_SELECT = `
+  SELECT wo.id, wo.contract_no, wo.subcontractor_id, sc.name AS subcontractor_name, sc.tax_id AS subcontractor_tax_id,
+    wo.project_id, cp.name AS project_name,
+    wo.contract_value, wo.advance_percent, wo.retention_percent,
+    ROUND(wo.contract_value * wo.advance_percent / 100, 2) AS advance_amount,
+    ROUND(wo.contract_value * wo.retention_percent / 100, 2) AS retention_amount,
+    wo.wht_income_type_code, wit.name_th AS wht_income_type_name, wo.wht_rate, wit.default_rate AS wht_default_rate,
+    wo.status, wo.contract_status,
+    wo.submitted_by, wo.submitted_at, wo.approved_by, wo.approved_at, wo.rejected_reason,
+    to_char(wo.start_date,'YYYY-MM-DD') AS start_date, to_char(wo.end_date,'YYYY-MM-DD') AS end_date,
+    wo.note, wo.created_by, wo.created_at
+  FROM client_subcontract_terms wo
+  JOIN client_subcontractors sc ON sc.id = wo.subcontractor_id
+  JOIN client_projects cp ON cp.id = wo.project_id
+  LEFT JOIN client_wht_income_types wit ON wit.code = wo.wht_income_type_code`;
+
+async function generateClientWoNumber(client, companyId) {
+  const year = getBangkokYear() + 543;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const seq = await nextDocumentSeq(client, companyId, 'subcontract_term');
+    const no = `WO-${year}-` + String(seq).padStart(4, '0');
+    const exists = await client.query('SELECT 1 FROM client_subcontract_terms WHERE company_id=$1 AND contract_no=$2', [companyId, no]);
+    if (exists.rowCount === 0) return no;
+  }
+  throw new Error('ไม่สามารถสร้างเลขที่สัญญา/หนังสือสั่งจ้างได้');
+}
+
+// ทั้ง POST/PUT ใช้ร่วมกัน — whtRate เป็น optional เสมอ (ไม่ส่งมา = NULL = ใช้ default_rate จาก master ตอน
+// แสดงผล) ห้าม fallback เป็น 0 เด็ดขาดตาม CLAUDE.md ข้อ 17 (โดยเฉพาะ 40(1) ที่ default_rate เป็น NULL เอง)
+async function validateWoInput(dbClient = pool, companyId, { subcontractorId, projectId, contractValue, advancePercent, retentionPercent, whtIncomeTypeCode, whtRate, startDate, endDate }) {
+  if (!subcontractorId) return { error: 'กรุณาเลือกผู้รับเหมาช่วง' };
+  const sc = await dbClient.query('SELECT 1 FROM client_subcontractors WHERE id=$1 AND company_id=$2 AND is_active=true', [subcontractorId, companyId]);
+  if (sc.rowCount === 0) return { error: 'ไม่พบผู้รับเหมาช่วงนี้ หรือถูกปิดใช้งานแล้ว' };
+
+  if (!projectId) return { error: 'กรุณาเลือกโครงการ' };
+  const proj = await dbClient.query('SELECT 1 FROM client_projects WHERE id=$1 AND company_id=$2', [projectId, companyId]);
+  if (proj.rowCount === 0) return { error: 'ไม่พบโครงการนี้ในบริษัทของคุณ' };
+
+  const safeContractValue = parsePositiveNumericValue(contractValue);
+  if (safeContractValue === null) return { error: 'กรุณาระบุมูลค่าสัญญาให้ถูกต้อง (ต้องมากกว่า 0)' };
+
+  const safeAdvancePercent = parseNonNegativeNumericValue(advancePercent ?? 0);
+  if (safeAdvancePercent === null || Number(safeAdvancePercent) > 100) return { error: 'ระบุเปอร์เซ็นต์เงินล่วงหน้าไม่ถูกต้อง (0-100)' };
+
+  const safeRetentionPercent = parseNonNegativeNumericValue(retentionPercent ?? 5);
+  if (safeRetentionPercent === null || Number(safeRetentionPercent) > 100) return { error: 'ระบุเปอร์เซ็นต์เงินประกันผลงานไม่ถูกต้อง (0-100)' };
+
+  const safeWhtIncomeTypeCode = whtIncomeTypeCode ? String(whtIncomeTypeCode).trim() : '40_7';
+  const witCheck = await dbClient.query('SELECT 1 FROM client_wht_income_types WHERE code=$1 AND is_active=true', [safeWhtIncomeTypeCode]);
+  if (witCheck.rowCount === 0) return { error: 'ระบุประเภทเงินได้ตามมาตรา 40 ไม่ถูกต้อง หรือถูกปิดใช้งานแล้ว' };
+
+  let safeWhtRate = null;
+  if (whtRate !== undefined && whtRate !== null && whtRate !== '') {
+    safeWhtRate = parseNonNegativeNumericValue(whtRate);
+    if (safeWhtRate === null || Number(safeWhtRate) > 100) return { error: 'ระบุอัตราหัก ณ ที่จ่ายไม่ถูกต้อง (0-100)' };
+  }
+
+  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+  const safeStartDate = startDate && dateRe.test(startDate) ? startDate : null;
+  const safeEndDate = endDate && dateRe.test(endDate) ? endDate : null;
+  if (startDate && !safeStartDate) return { error: 'รูปแบบวันที่เริ่มสัญญาไม่ถูกต้อง' };
+  if (endDate && !safeEndDate) return { error: 'รูปแบบวันที่สิ้นสุดสัญญาไม่ถูกต้อง' };
+  // เทียบแบบ string ตรงๆ (รูปแบบ YYYY-MM-DD เรียงตามตัวอักษร = เรียงตามเวลาจริงพอดี) ไม่ใช้ JS Date เลย
+  // กันปัญหา timezone แบบเดียวกับ CLAUDE.md ข้อ 22
+  if (safeStartDate && safeEndDate && safeEndDate < safeStartDate) return { error: 'วันที่สิ้นสุดสัญญาต้องไม่ก่อนวันที่เริ่มสัญญา' };
+
+  return {
+    safeSubcontractorId: subcontractorId, safeProjectId: projectId, safeContractValue, safeAdvancePercent, safeRetentionPercent,
+    safeWhtIncomeTypeCode, safeWhtRate, safeStartDate, safeEndDate,
+  };
+}
+
+app.get('/api/customer/subcontract-terms', requireCustomerAuth, async (req, res) => {
+  const companyId = req.customer.company_id;
+  const { status, projectId, subcontractorId } = req.query;
+  const conditions = ['wo.company_id=$1'];
+  const params = [companyId];
+  if (status) { params.push(status); conditions.push(`wo.status=$${params.length}`); }
+  if (projectId) { params.push(parseInt(projectId, 10)); conditions.push(`wo.project_id=$${params.length}`); }
+  if (subcontractorId) { params.push(parseInt(subcontractorId, 10)); conditions.push(`wo.subcontractor_id=$${params.length}`); }
+  const r = await pool.query(`${CLIENT_WO_SELECT} WHERE ${conditions.join(' AND ')} ORDER BY wo.id DESC`, params);
+  res.json({ subcontractTerms: r.rows.map(serializeSubcontractTerm) });
+});
+
+app.get('/api/customer/subcontract-terms/:id', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const r = await pool.query(`${CLIENT_WO_SELECT} WHERE wo.id=$1 AND wo.company_id=$2`, [id, companyId]);
+  if (r.rowCount === 0) return res.status(404).json({ error: 'ไม่พบสัญญา/หนังสือสั่งจ้างนี้' });
+  res.json({ subcontractTerm: serializeSubcontractTerm(r.rows[0]) });
+});
+
+app.post('/api/customer/subcontract-terms', requireCustomerAuth, async (req, res) => {
+  if (!hasSubcontractorManagePermission(req.customer)) return res.status(403).json({ error: 'ไม่มีสิทธิ์สร้างสัญญา/หนังสือสั่งจ้าง' });
+  await withIdempotency(req, res, 'subcontract-terms-create', async (client) => {
+    const companyId = req.customer.company_id;
+    const { subcontractorId, projectId, contractValue, advancePercent, retentionPercent, whtIncomeTypeCode, whtRate, startDate, endDate, note } = req.body || {};
+    const v = await validateWoInput(client, companyId, { subcontractorId, projectId, contractValue, advancePercent, retentionPercent, whtIncomeTypeCode, whtRate, startDate, endDate });
+    if (v.error) return { status: 400, body: { error: v.error } };
+
+    const insert = await client.query(
+      `INSERT INTO client_subcontract_terms
+         (company_id, subcontractor_id, project_id, contract_value, advance_percent, retention_percent, wht_income_type_code, wht_rate, start_date, end_date, note, created_by)
+       VALUES ($1,$2,$3,$4::numeric,$5::numeric,$6::numeric,$7,$8::numeric,$9,$10,$11,$12) RETURNING id`,
+      [companyId, v.safeSubcontractorId, v.safeProjectId, v.safeContractValue, v.safeAdvancePercent, v.safeRetentionPercent,
+       v.safeWhtIncomeTypeCode, v.safeWhtRate, v.safeStartDate, v.safeEndDate, (note || '').trim(), req.customer.id]
+    );
+    const woId = insert.rows[0].id;
+    const r = await client.query(`${CLIENT_WO_SELECT} WHERE wo.id=$1 AND wo.company_id=$2`, [woId, companyId]);
+    return { status: 200, body: { subcontractTerm: serializeSubcontractTerm(r.rows[0]) } };
+  });
+});
+
+// แก้ไขได้เฉพาะ draft เท่านั้น (ไม่มี items ย่อยให้ delete+reinsert เหมือน PO — UPDATE ตรงๆ ทั้งแถว)
+app.put('/api/customer/subcontract-terms/:id', requireCustomerAuth, async (req, res) => {
+  if (!hasSubcontractorManagePermission(req.customer)) return res.status(403).json({ error: 'ไม่มีสิทธิ์แก้ไขสัญญา/หนังสือสั่งจ้าง' });
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const { subcontractorId, projectId, contractValue, advancePercent, retentionPercent, whtIncomeTypeCode, whtRate, startDate, endDate, note } = req.body || {};
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const woRes = await client.query('SELECT status FROM client_subcontract_terms WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (woRes.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบสัญญา/หนังสือสั่งจ้างนี้' }); }
+    if (woRes.rows[0].status !== 'draft') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'แก้ไขได้เฉพาะสถานะร่างเท่านั้น' });
+    }
+    const v = await validateWoInput(client, companyId, { subcontractorId, projectId, contractValue, advancePercent, retentionPercent, whtIncomeTypeCode, whtRate, startDate, endDate });
+    if (v.error) { await client.query('ROLLBACK'); return res.status(400).json({ error: v.error }); }
+
+    await client.query(
+      `UPDATE client_subcontract_terms SET
+         subcontractor_id=$1, project_id=$2, contract_value=$3::numeric, advance_percent=$4::numeric, retention_percent=$5::numeric,
+         wht_income_type_code=$6, wht_rate=$7::numeric, start_date=$8, end_date=$9, note=$10
+       WHERE id=$11`,
+      [v.safeSubcontractorId, v.safeProjectId, v.safeContractValue, v.safeAdvancePercent, v.safeRetentionPercent,
+       v.safeWhtIncomeTypeCode, v.safeWhtRate, v.safeStartDate, v.safeEndDate, (note || '').trim(), id]
+    );
+    await client.query('COMMIT');
+    const r = await pool.query(`${CLIENT_WO_SELECT} WHERE wo.id=$1 AND wo.company_id=$2`, [id, companyId]);
+    res.json({ subcontractTerm: serializeSubcontractTerm(r.rows[0]) });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'แก้ไขสัญญา/หนังสือสั่งจ้างไม่สำเร็จ' });
+  } finally {
+    client.release();
+  }
+});
+
+app.post('/api/customer/subcontract-terms/:id/submit', requireCustomerAuth, async (req, res) => {
+  await withIdempotency(req, res, `subcontract-terms-submit:${req.params.id}`, async (client) => {
+    const id = parseInt(req.params.id, 10);
+    const companyId = req.customer.company_id;
+    const r = await client.query('SELECT * FROM client_subcontract_terms WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) return { status: 404, body: { error: 'ไม่พบสัญญา/หนังสือสั่งจ้างนี้' } };
+    const wo = r.rows[0];
+    if (wo.status !== 'draft') return { status: 409, body: { error: 'ยื่นได้เฉพาะสถานะร่างเท่านั้น' } };
+
+    if (req.customer.id !== wo.created_by) {
+      const permCheck = await canApprove(client, req.customer, 'po_wo', wo.contract_value, {
+        companyId, originators: [wo.created_by],
+      }, { enforceAmountLimit: false });
+      if (!permCheck.allowed) {
+        return { status: 403, body: { error: 'ไม่มีสิทธิ์ยื่นสัญญานี้ (ต้องเป็นผู้สร้าง หรือมีสิทธิ์อนุมัติ)', code: permCheck.code } };
+      }
+    }
+
+    const contractNo = await generateClientWoNumber(client, companyId);
+    await client.query(
+      `UPDATE client_subcontract_terms SET contract_no=$1, status='submitted', submitted_by=$2, submitted_at=now() WHERE id=$3`,
+      [contractNo, req.customer.id, id]
+    );
+    await writeAuditLog(client, {
+      companyId, docType: 'subcontract_term', docId: id, action: 'submit',
+      fromStatus: 'draft', toStatus: 'submitted', performedBy: req.customer.id,
+    });
+    const full = await client.query(`${CLIENT_WO_SELECT} WHERE wo.id=$1 AND wo.company_id=$2`, [id, companyId]);
+    return { status: 200, body: { subcontractTerm: serializeSubcontractTerm(full.rows[0]) } };
+  });
+});
+
+app.post('/api/customer/subcontract-terms/:id/approve', requireCustomerAuth, async (req, res) => {
+  await withIdempotency(req, res, `subcontract-terms-approve:${req.params.id}`, async (client) => {
+    const id = parseInt(req.params.id, 10);
+    const companyId = req.customer.company_id;
+    const r = await client.query('SELECT * FROM client_subcontract_terms WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) return { status: 404, body: { error: 'ไม่พบสัญญา/หนังสือสั่งจ้างนี้' } };
+    const wo = r.rows[0];
+    if (wo.status !== 'submitted') return { status: 409, body: { error: 'อนุมัติได้เฉพาะที่ยื่นแล้วเท่านั้น' } };
+
+    const result = await canApprove(client, req.customer, 'po_wo', wo.contract_value, {
+      companyId, originators: [wo.created_by, wo.submitted_by],
+    });
+    if (!result.allowed) return { status: 403, body: { error: result.message, code: result.code } };
+
+    // อนุมัติแล้ว = สัญญาเริ่มมีผลจริงทันที (contract_status='active') — ตรงกับ CHECK
+    // client_subcontract_terms_status_pair_check (status='approved' ต้องคู่กับ contract_status ที่ไม่ใช่ NULL)
+    await client.query(
+      `UPDATE client_subcontract_terms SET status='approved', contract_status='active', approved_by=$1, approved_at=now() WHERE id=$2`,
+      [req.customer.id, id]
+    );
+    const reason = result.isOverride
+      ? 'อนุมัติโดย super_user (override ข้ามการตรวจสอบ rule/เพดานปกติ)'
+      : `อนุมัติผ่าน rule #${result.ruleId} (เพดาน ${result.maxAmountRaw} บาท)`;
+    await writeAuditLog(client, {
+      companyId, docType: 'subcontract_term', docId: id, action: 'approve',
+      fromStatus: 'submitted', toStatus: 'approved', performedBy: req.customer.id,
+      isOverride: result.isOverride, reason,
+    });
+    const full = await client.query(`${CLIENT_WO_SELECT} WHERE wo.id=$1 AND wo.company_id=$2`, [id, companyId]);
+    return { status: 200, body: { subcontractTerm: serializeSubcontractTerm(full.rows[0]) } };
+  });
+});
+
+app.post('/api/customer/subcontract-terms/:id/reject', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const { reason } = req.body || {};
+  if (!reason || !reason.trim()) return res.status(400).json({ error: 'กรุณาระบุเหตุผลการปฏิเสธ' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM client_subcontract_terms WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบสัญญา/หนังสือสั่งจ้างนี้' }); }
+    const wo = r.rows[0];
+    if (wo.status !== 'submitted') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'ปฏิเสธได้เฉพาะที่ยื่นแล้วเท่านั้น' }); }
+
+    const permCheck = await canApprove(client, req.customer, 'po_wo', wo.contract_value, {
+      companyId, originators: [wo.created_by, wo.submitted_by],
+    }, { enforceAmountLimit: false });
+    if (!permCheck.allowed) { await client.query('ROLLBACK'); return res.status(403).json({ error: permCheck.message, code: permCheck.code }); }
+
+    await client.query(`UPDATE client_subcontract_terms SET status='rejected', rejected_reason=$1 WHERE id=$2`, [reason.trim(), id]);
+    await writeAuditLog(client, {
+      companyId, docType: 'subcontract_term', docId: id, action: 'reject',
+      fromStatus: 'submitted', toStatus: 'rejected', performedBy: req.customer.id,
+      isOverride: permCheck.isOverride, reason: reason.trim(),
+    });
+    await client.query('COMMIT');
+    const full = await pool.query(`${CLIENT_WO_SELECT} WHERE wo.id=$1 AND wo.company_id=$2`, [id, companyId]);
+    res.json({ subcontractTerm: serializeSubcontractTerm(full.rows[0]) });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'ปฏิเสธสัญญา/หนังสือสั่งจ้างไม่สำเร็จ' });
+  } finally {
+    client.release();
+  }
+});
+
+// ยกเลิกได้เฉพาะก่อนอนุมัติเท่านั้น (draft/submitted) — ต่างจาก PO ที่ยกเลิกได้แม้ approved แล้ว เพราะสัญญาที่
+// อนุมัติแล้วถือเป็นสัญญาจริงที่มีผลผูกพันทางกฎหมาย ต้องใช้ "เลิกสัญญา" (terminate, ดู endpoint ด้านล่าง) แทน
+// ไม่ใช่ "ยกเลิก" เอกสารเฉยๆ — สอง action นี้มีความหมายทางธุรกิจต่างกันชัดเจน แยก endpoint ให้ตรงความหมาย
+app.post('/api/customer/subcontract-terms/:id/cancel', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM client_subcontract_terms WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบสัญญา/หนังสือสั่งจ้างนี้' }); }
+    const wo = r.rows[0];
+    const status = wo.status;
+    if (!['draft', 'submitted'].includes(status)) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'ยกเลิกได้เฉพาะสถานะร่างหรือยื่นแล้วเท่านั้น (สัญญาที่อนุมัติแล้วต้องใช้ "เลิกสัญญา" แทน)' });
+    }
+
+    const isOwner = req.customer.id === wo.created_by || (wo.submitted_by != null && req.customer.id === wo.submitted_by);
+    if (!isOwner) {
+      const permCheck = await canApprove(client, req.customer, 'po_wo', wo.contract_value, {
+        companyId, originators: [wo.created_by, wo.submitted_by],
+      }, { enforceAmountLimit: false });
+      if (!permCheck.allowed) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ error: 'ไม่มีสิทธิ์ยกเลิกสัญญานี้ (ต้องเป็นผู้สร้าง/ผู้ยื่น หรือมีสิทธิ์อนุมัติ)', code: permCheck.code });
+      }
+    }
+
+    await client.query(`UPDATE client_subcontract_terms SET status='cancelled' WHERE id=$1`, [id]);
+    await writeAuditLog(client, {
+      companyId, docType: 'subcontract_term', docId: id, action: 'cancel',
+      fromStatus: status, toStatus: 'cancelled', performedBy: req.customer.id,
+    });
+    await client.query('COMMIT');
+    const full = await pool.query(`${CLIENT_WO_SELECT} WHERE wo.id=$1 AND wo.company_id=$2`, [id, companyId]);
+    res.json({ subcontractTerm: serializeSubcontractTerm(full.rows[0]) });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'ยกเลิกสัญญา/หนังสือสั่งจ้างไม่สำเร็จ' });
+  } finally {
+    client.release();
+  }
+});
+
+// ปิดงาน/เลิกสัญญา — action ระดับ "จัดการสัญญา" ไม่ใช่ "อนุมัติธุรกรรม" จึงใช้ can_manage_po (สิทธิ์เดียวกับที่
+// จัดการ master data ผู้รับเหมาช่วง/PO) ไม่ใช่ can_approve_po_wo ตาม CLAUDE.md ข้อ 14 (แยกสิทธิ์ตั้งค่า/จัดการ
+// ออกจากสิทธิ์อนุมัติธุรกรรมเสมอ) — งานฝ่ายจัดซื้อ/ไซต์งานที่ปิดงานสัญญาไม่จำเป็นต้องมีสิทธิ์อนุมัติวงเงินเลย
+app.post('/api/customer/subcontract-terms/:id/complete', requireCustomerAuth, async (req, res) => {
+  if (!hasSubcontractorManagePermission(req.customer)) return res.status(403).json({ error: 'ไม่มีสิทธิ์ปิดงานสัญญานี้' });
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM client_subcontract_terms WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบสัญญา/หนังสือสั่งจ้างนี้' }); }
+    const wo = r.rows[0];
+    if (wo.status !== 'approved' || wo.contract_status !== 'active') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'ปิดงานได้เฉพาะสัญญาที่อนุมัติแล้วและยังดำเนินอยู่ (active) เท่านั้น' });
+    }
+    await client.query(`UPDATE client_subcontract_terms SET contract_status='completed' WHERE id=$1`, [id]);
+    await writeAuditLog(client, {
+      companyId, docType: 'subcontract_term', docId: id, action: 'complete',
+      fromStatus: 'active', toStatus: 'completed', performedBy: req.customer.id,
+    });
+    await client.query('COMMIT');
+    const full = await pool.query(`${CLIENT_WO_SELECT} WHERE wo.id=$1 AND wo.company_id=$2`, [id, companyId]);
+    res.json({ subcontractTerm: serializeSubcontractTerm(full.rows[0]) });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'ปิดงานสัญญาไม่สำเร็จ' });
+  } finally {
+    client.release();
+  }
+});
+
+app.post('/api/customer/subcontract-terms/:id/terminate', requireCustomerAuth, async (req, res) => {
+  if (!hasSubcontractorManagePermission(req.customer)) return res.status(403).json({ error: 'ไม่มีสิทธิ์เลิกสัญญานี้' });
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const { reason } = req.body || {};
+  if (!reason || !reason.trim()) return res.status(400).json({ error: 'กรุณาระบุเหตุผลการเลิกสัญญา' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM client_subcontract_terms WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบสัญญา/หนังสือสั่งจ้างนี้' }); }
+    const wo = r.rows[0];
+    if (wo.status !== 'approved' || wo.contract_status !== 'active') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'เลิกสัญญาได้เฉพาะสัญญาที่อนุมัติแล้วและยังดำเนินอยู่ (active) เท่านั้น' });
+    }
+    await client.query(`UPDATE client_subcontract_terms SET contract_status='terminated' WHERE id=$1`, [id]);
+    await writeAuditLog(client, {
+      companyId, docType: 'subcontract_term', docId: id, action: 'terminate',
+      fromStatus: 'active', toStatus: 'terminated', performedBy: req.customer.id, reason: reason.trim(),
+    });
+    await client.query('COMMIT');
+    const full = await pool.query(`${CLIENT_WO_SELECT} WHERE wo.id=$1 AND wo.company_id=$2`, [id, companyId]);
+    res.json({ subcontractTerm: serializeSubcontractTerm(full.rows[0]) });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'เลิกสัญญาไม่สำเร็จ' });
   } finally {
     client.release();
   }
@@ -9054,14 +9834,16 @@ app.get('/api/customer/purchase-requests/:id/items/:itemId/adjustments', require
     [itemId, companyId]
   );
   const r = await pool.query(
-    `SELECT id, adjustment_type, qty, po_id, note, created_by, created_at
-     FROM client_purchase_request_item_adjustments WHERE pr_item_id=$1 AND company_id=$2 ORDER BY id
+    `SELECT a.id, a.adjustment_type, a.qty, a.po_id, po.po_no, a.note, a.created_by, a.created_at
+     FROM client_purchase_request_item_adjustments a
+     LEFT JOIN client_purchase_orders po ON po.id = a.po_id
+     WHERE a.pr_item_id=$1 AND a.company_id=$2 ORDER BY a.id
      LIMIT $3 OFFSET $4`,
     [itemId, companyId, pageSize, offset]
   );
   res.json({
     adjustments: r.rows.map(row => ({
-      id: row.id, adjustmentType: row.adjustment_type, qty: Number(row.qty), poId: row.po_id,
+      id: row.id, adjustmentType: row.adjustment_type, qty: Number(row.qty), poId: row.po_id, poNo: row.po_no || null,
       note: row.note, createdBy: row.created_by, createdAt: row.created_at,
     })),
     total: countRes.rows[0].n,

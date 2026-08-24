@@ -13,7 +13,7 @@ const PASSWORD = 'TestPass123!';
 const USERS = [
   { username: 'fx_maker', companyId: COMPANY_A_ID, role: 'maker', flags: {} },
   { username: 'fx_maker2', companyId: COMPANY_A_ID, role: 'maker', flags: {} },
-  { username: 'fx_approver_mid', companyId: COMPANY_A_ID, role: 'approver', flags: { can_approve_pr: true, can_approve_petty_cash: true, can_approve_advance: true, can_approve_other: true } },
+  { username: 'fx_approver_mid', companyId: COMPANY_A_ID, role: 'approver', flags: { can_approve_pr: true, can_approve_po_wo: true, can_approve_petty_cash: true, can_approve_advance: true, can_approve_other: true } },
   { username: 'fx_approver_floor', companyId: COMPANY_A_ID, role: 'approver', flags: { can_approve_pr: true, can_approve_petty_cash: true, can_approve_advance: true, can_approve_other: true } },
   { username: 'fx_approver_norule', companyId: COMPANY_A_ID, role: 'approver', flags: { can_approve_pr: true, can_approve_petty_cash: true, can_approve_advance: true, can_approve_other: true } },
   { username: 'fx_super', companyId: COMPANY_A_ID, role: 'super_user', flags: {} },
@@ -27,6 +27,7 @@ const USERS = [
 // [username, docType, minAmount, maxAmount] — fx_approver_norule ตั้งใจไม่มี rule เลย (เทส no_rule)
 const RULES = [
   ['fx_approver_mid', 'pr', 0, 50000],
+  ['fx_approver_mid', 'po_wo', 0, 50000],
   ['fx_approver_mid', 'petty_cash', 0, 50000],
   ['fx_approver_mid', 'advance', 0, 50000],
   ['fx_approver_mid', 'other', 0, 50000],

@@ -31,7 +31,9 @@
     "test:external-payment-ui": "node tests/external-payment-ui.regression.js",
     "test:advance-clearance-ui": "node tests/advance-clearance-ui.regression.js",
     "test:advance-clearance-settle-ui": "node tests/advance-clearance-settle-ui.regression.js",
-    "test:pr-ui": "node tests/pr-ui.regression.js"
+    "test:pr-ui": "node tests/pr-ui.regression.js",
+    "test:po-ui": "node tests/po-ui.regression.js",
+    "test:wo-ui": "node tests/wo-ui.regression.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
