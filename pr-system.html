@@ -752,6 +752,16 @@ let S = {
   progressClaimCertifyForm:null,  // {id, certifiedAmount, certifyNote, items:[{itemId,budgetItemId,certifiedPercent}]}
   progressClaimApproveForm:null,  // {id, applyAdvanceAmount} — เฉพาะ claimType='progress'
   outstandingAdvanceByProject:{}, // projectId -> amount (cache)
+  subcontractBillings:[],
+  subcontractBillingsLoaded:false,
+  subcontractBillingListFilter:{status:'', subcontractTermId:'', billingType:''},
+  selectedSubcontractBillingId:null,
+  selectedSubcontractBillingDetail:null,
+  subcontractBillingForm:null,     // set lazily on first render of pageFinSubcontractBillingAdd()
+  subcontractBillingRejectForm:null,   // {id, reason:''}
+  approvedSubcontractTermsForBilling:undefined, // สัญญาที่ status='approved' — ตัวเลือกในฟอร์มสร้างใบเบิกเงิน
+  subcontractTermBalanceById:{},   // subcontractTermId -> {contractValue, progressBilledTotal, advanceOutstanding, retentionHeld}
+  progressBillingsForRetentionPicker:undefined, // งวด progress ที่อนุมัติแล้วของสัญญาที่เลือก (สำหรับ retention_release)
   quotationsLoaded:false,
   quotationAddForm:null,      // set lazily on first render of pageFinQuotationAdd()
   clientDocumentsLoaded:false,
@@ -1493,6 +1503,53 @@ async function loadOutstandingAdvance(projectId){
     const data = await apiCall('GET', `/api/customer/projects/${projectId}/outstanding-advance`);
     S.outstandingAdvanceByProject[projectId] = data.outstandingAdvance;
   } catch(e){ toast(e.message, 'err'); }
+  render();
+}
+// ---------- ใบเบิกเงินตามใบสั่งจ้าง (Subcontract Billing, หัวข้อ 2.1-2.3) — ต่อ API จริงทั้งหมด ----------
+async function loadSubcontractBillings(){
+  try{
+    const params = new URLSearchParams();
+    if(S.subcontractBillingListFilter.status) params.set('status', S.subcontractBillingListFilter.status);
+    if(S.subcontractBillingListFilter.subcontractTermId) params.set('subcontractTermId', S.subcontractBillingListFilter.subcontractTermId);
+    if(S.subcontractBillingListFilter.billingType) params.set('billingType', S.subcontractBillingListFilter.billingType);
+    const qs = params.toString();
+    const data = await apiCall('GET', '/api/customer/subcontract-billings'+(qs?`?${qs}`:''));
+    S.subcontractBillings = data.subcontractBillings;
+  } catch(e){ toast(e.message, 'err'); }
+  S.subcontractBillingsLoaded = true; render();
+}
+async function loadSubcontractBillingDetail(id){
+  S.selectedSubcontractBillingDetail = null;
+  render();
+  try{
+    const data = await apiCall('GET', `/api/customer/subcontract-billings/${id}`);
+    S.selectedSubcontractBillingDetail = data.subcontractBilling;
+  } catch(e){ toast(e.message, 'err'); }
+  render();
+}
+async function loadApprovedSubcontractTermsForBilling(){
+  S.approvedSubcontractTermsForBilling = undefined;
+  render();
+  try{
+    const data = await apiCall('GET', '/api/customer/subcontract-terms?status=approved');
+    S.approvedSubcontractTermsForBilling = data.subcontractTerms;
+  } catch(e){ toast(e.message, 'err'); S.approvedSubcontractTermsForBilling = []; }
+  render();
+}
+async function loadSubcontractTermBalance(termId){
+  try{
+    const data = await apiCall('GET', `/api/customer/subcontract-terms/${termId}/balance`);
+    S.subcontractTermBalanceById[termId] = data;
+  } catch(e){ toast(e.message, 'err'); }
+  render();
+}
+async function loadProgressBillingsForRetentionPicker(termId){
+  S.progressBillingsForRetentionPicker = undefined;
+  render();
+  try{
+    const data = await apiCall('GET', `/api/customer/subcontract-billings?subcontractTermId=${termId}&billingType=progress&status=approved`);
+    S.progressBillingsForRetentionPicker = data.subcontractBillings;
+  } catch(e){ toast(e.message, 'err'); S.progressBillingsForRetentionPicker = []; }
   render();
 }
 // โหลด PR ที่อนุมัติแล้วของโครงการที่เลือกไว้ในฟอร์มสร้าง PO — ให้เลือกใบมาดึงรายการ (undefined=กำลังโหลด)
@@ -2774,6 +2831,7 @@ function financeNavFor(u){
     {key:'section', label:tr('nav.section_revenue_cost')},
     {key:'fin_revenue', label:tr('nav.fin_revenue'), icon:'trendUp'},
     {key:'fin_progress_claims', label:tr('nav.fin_progress_claims'), icon:'fileStack'},
+    {key:'fin_subcontract_billings', label:tr('nav.fin_subcontract_billings'), icon:'fileStack'},
     {key:'fin_receive_payment', label:tr('nav.fin_receive_payment'), icon:'wallet'},
     {key:'fin_costs', label:tr('nav.fin_costs'), icon:'trendDown'},
     {key:'fin_office', label:tr('nav.fin_office'), icon:'building'},
@@ -2906,7 +2964,7 @@ function renderDashboard(){
   if(u.role!=='super_user' && u.canManagePo && S.module==='pr' && !nav.find(n=>n.key==='subcontractors')){
     nav.push({key:'subcontractors', label:tr('nav.subcontractors'), icon:'users'});
   }
-  const hiddenPages = ['emp_app_form','emp_app_print','fin_tender_add','fin_tender_detail','fin_budget_detail','fin_project_add','fin_project_detail','fin_project_schedule','fin_po_add','fin_quotation_add','fin_document_add','fin_voucher_detail','fin_wht_certificate_print','fin_advance_clearance_detail','pr_detail','fin_po_detail','fin_wo_add','fin_wo_detail','fin_progress_claim_add','fin_progress_claim_detail']; // reachable only via buttons, not listed in any sidebar nav
+  const hiddenPages = ['emp_app_form','emp_app_print','fin_tender_add','fin_tender_detail','fin_budget_detail','fin_project_add','fin_project_detail','fin_project_schedule','fin_po_add','fin_quotation_add','fin_document_add','fin_voucher_detail','fin_wht_certificate_print','fin_advance_clearance_detail','pr_detail','fin_po_detail','fin_wo_add','fin_wo_detail','fin_progress_claim_add','fin_progress_claim_detail','fin_subcontract_billing_add','fin_subcontract_billing_detail']; // reachable only via buttons, not listed in any sidebar nav
   if(!hiddenPages.includes(S.page) && !nav.find(n=>n.key===S.page && n.key!=='section')) S.page = S.module==='finance' ? 'fin_overview' : S.module==='employees' ? 'emp_overview' : S.module==='bidding' ? 'fin_tender_overview' : 'overview';
 
   return `
@@ -3063,6 +3121,9 @@ function renderPage(){
     case 'fin_progress_claims': return pageFinProgressClaims();
     case 'fin_progress_claim_add': return pageFinProgressClaimAdd();
     case 'fin_progress_claim_detail': return pageFinProgressClaimDetail();
+    case 'fin_subcontract_billings': return pageFinSubcontractBillings();
+    case 'fin_subcontract_billing_add': return pageFinSubcontractBillingAdd();
+    case 'fin_subcontract_billing_detail': return pageFinSubcontractBillingDetail();
     case 'fin_quotations': return pageFinQuotations();
     case 'fin_quotation_add': return pageFinQuotationAdd();
     case 'fin_documents': return pageFinDocuments();
@@ -7199,6 +7260,225 @@ function pageFinProgressClaimDetail(){
   </div>`;
 }
 
+// ---------------- ใบเบิกเงินตามใบสั่งจ้าง (Subcontract Billing, หัวข้อ 2.1-2.3) — real backend ----------------
+function subcontractBillingTypeLabels(){
+  return { advance: tr('fin_sbill.type_advance'), progress: tr('fin_sbill.type_progress'), retention_release: tr('fin_sbill.type_retention_release') };
+}
+function subcontractBillingStatusLabels(){
+  return {
+    draft: tr('pr.status_draft'), submitted: tr('pr.status_submitted'), approved: tr('pr.status_approved'),
+    rejected: tr('pr.status_rejected'), cancelled: tr('pr.status_cancelled'), voided: tr('fin_sbill.status_voided'),
+  };
+}
+function subcontractBillingStatusBadgeClass(status){
+  return status==='approved' ? 'badge-approved' : (status==='rejected'||status==='cancelled'||status==='voided') ? 'badge-suspended' : status==='submitted' ? 'badge-pending' : 'badge-draft';
+}
+function pageFinSubcontractBillings(){
+  const list = S.subcontractBillings;
+  const f = S.subcontractBillingListFilter;
+  const total = sumBy(list, b=>b.netPayableAmount);
+  return `
+  <div class="page-head">
+    <div><h2>${tr('nav.fin_subcontract_billings')}</h2><div class="sub">${tr('fin_sbill.subtitle')}</div></div>
+    <button class="btn btn-primary" data-act="nav" data-page="fin_subcontract_billing_add">${ICN.plus} ${tr('fin_sbill.add_billing')}</button>
+  </div>
+  <div class="card" style="padding:16px 18px; margin-bottom:14px;">
+    <div class="split">
+      <div class="field"><label>${tr('pr.filter_status')}</label>
+        <select data-act="filter-sbill-status">
+          <option value="">${tr('pr.filter_status_all')}</option>
+          ${Object.entries(subcontractBillingStatusLabels()).map(([k,v])=>`<option value="${k}" ${f.status===k?'selected':''}>${v}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field"><label>${tr('common.col_type')}</label>
+        <select data-act="filter-sbill-type">
+          <option value="">${tr('pr.filter_status_all')}</option>
+          ${Object.entries(subcontractBillingTypeLabels()).map(([k,v])=>`<option value="${k}" ${f.billingType===k?'selected':''}>${v}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+  </div>
+  <div class="grid-cards" style="grid-template-columns:repeat(auto-fit,minmax(200px,240px));">
+    ${statCard('doc', tr('ledger.stat_count'), list.length, '')}
+    ${statCard('barChart', tr('ledger.stat_total'), fmtMoney(total)+' ฿', '')}
+  </div>
+  <div class="card" style="padding:20px 22px;">
+    ${list.length===0 ? `<div class="empty"><div class="em-icon">${ICN.box}</div>${tr('ledger.no_entries_yet')}</div>` : `
+    <div class="table-wrap"><table>
+      <thead><tr><th>${tr('fin_sbill.col_billing_no')}</th><th>${tr('fin_sbill.col_subcontractor')}</th><th>${tr('common.col_type')}</th><th>${tr('fin_sbill.col_gross')}</th><th>${tr('fin_sbill.col_net_payable')}</th><th>${tr('common.col_status')}</th><th></th></tr></thead>
+      <tbody>
+        ${list.map(b=>`
+          <tr>
+            <td class="mono">${b.billingNo || `(${tr('pr.status_draft')})`}</td>
+            <td>${b.subcontractorName?esc(b.subcontractorName):'-'}</td>
+            <td>${subcontractBillingTypeLabels()[b.billingType]||b.billingType}</td>
+            <td class="mono">${fmtMoney(b.grossAmount)}</td>
+            <td class="mono" style="font-weight:600;">${fmtMoney(b.netPayableAmount)}</td>
+            <td><span class="badge ${subcontractBillingStatusBadgeClass(b.status)}">${subcontractBillingStatusLabels()[b.status]||b.status}</span></td>
+            <td><button class="btn btn-ghost btn-sm" data-act="nav" data-page="fin_subcontract_billing_detail" data-id="${b.id}" data-id-field="selectedSubcontractBillingId">${tr('common.view_detail')}</button></td>
+          </tr>`).join('')}
+      </tbody>
+    </table></div>`}
+  </div>`;
+}
+function pageFinSubcontractBillingAdd(){
+  if(!S.subcontractBillingForm) S.subcontractBillingForm = {
+    subcontractTermId:'', billingType:'advance', billingDate:new Date().toISOString().slice(0,10),
+    grossAmount:'', hasTaxInvoice:false, vatRate:'7', whtIncomeTypeCode:'', whtRate:'',
+    retentionItems:{}, // sourceProgressBillingId -> amount string
+    note:'', submitting:false, idempotencyKey: crypto.randomUUID(),
+  };
+  const f = S.subcontractBillingForm;
+  const term = (S.approvedSubcontractTermsForBilling||[]).find(t=>String(t.id)===String(f.subcontractTermId));
+  const bal = f.subcontractTermId ? S.subcontractTermBalanceById[f.subcontractTermId] : null;
+
+  let balanceSection = '';
+  if(f.subcontractTermId){
+    balanceSection = !bal ? `<div class="hint">${tr('common.loading')}</div>` : `
+      <div class="split" style="margin-top:6px;">
+        <div><div class="lbl">${tr('fin_sbill.contract_value_label')}</div><div class="mono">${fmtMoney(bal.contractValue)}</div></div>
+        <div><div class="lbl">${tr('fin_sbill.progress_billed_label')}</div><div class="mono">${fmtMoney(bal.progressBilledTotal)}</div></div>
+      </div>
+      <div class="split" style="margin-top:6px;">
+        <div><div class="lbl">${tr('fin_sbill.advance_outstanding_label')}</div><div class="mono">${fmtMoney(bal.advanceOutstanding)}</div></div>
+        <div><div class="lbl">${tr('fin_sbill.retention_held_label')}</div><div class="mono">${fmtMoney(bal.retentionHeld)}</div></div>
+      </div>`;
+  }
+
+  let typeSection = '';
+  if(f.billingType==='retention_release'){
+    if(S.progressBillingsForRetentionPicker===undefined){
+      typeSection = `<div class="hint">${tr('common.loading')}</div>`;
+    } else if(S.progressBillingsForRetentionPicker.length===0){
+      typeSection = `<div class="hint">${tr('fin_sbill.no_progress_billings_hint')}</div>`;
+    } else {
+      typeSection = `
+        <div class="table-wrap"><table>
+          <thead><tr><th>${tr('fin_sbill.col_billing_no')}</th><th>${tr('fin_sbill.retention_amount_of_billing_label')}</th><th>${tr('fin_sbill.release_amount_label')}</th></tr></thead>
+          <tbody>${S.progressBillingsForRetentionPicker.map(pb=>`
+            <tr>
+              <td class="mono">${esc(pb.billingNo)}</td>
+              <td class="mono">${fmtMoney(pb.retentionAmount)}</td>
+              <td><input type="number" min="0" style="width:120px;" value="${f.retentionItems[pb.id]||''}" oninput="S.subcontractBillingForm.retentionItems['${pb.id}']=this.value; render();"></td>
+            </tr>`).join('')}</tbody>
+        </table></div>`;
+    }
+  } else {
+    typeSection = `
+      <div class="field"><label>${tr('fin_sbill.gross_amount_label')} *</label><input id="sbill-gross" type="number" value="${prVal(f.grossAmount)}" oninput="S.subcontractBillingForm.grossAmount=this.value;"></div>
+      <div class="split">
+        <div class="field">
+          <label><input type="checkbox" ${f.hasTaxInvoice?'checked':''} onchange="S.subcontractBillingForm.hasTaxInvoice=this.checked; render();"> ${tr('fin_sbill.has_tax_invoice_label')}</label>
+        </div>
+        ${f.hasTaxInvoice ? `<div class="field"><label>${tr('fin_sbill.vat_rate_label')}</label><input id="sbill-vat-rate" type="number" value="${prVal(f.vatRate)}" oninput="S.subcontractBillingForm.vatRate=this.value;"></div>` : '<div></div>'}
+      </div>
+      <div class="split">
+        <div class="field"><label>${tr('fin_sbill.wht_income_type_label')}</label>
+          <select data-act="select-sbill-wht-type">
+            <option value="">${tr('fin_sbill.wht_use_default_placeholder')}</option>
+            ${(S.whtIncomeTypes||[]).map(t=>`<option value="${t.code}" ${f.whtIncomeTypeCode===t.code?'selected':''}>${t.code} ${esc(t.nameTh)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>${tr('fin_sbill.wht_rate_label')}</label>
+          <input id="sbill-wht-rate" type="number" placeholder="${f.billingType==='progress'?tr('fin_sbill.wht_rate_auto_hint'):tr('fin_sbill.wht_rate_blank_hint')}" value="${prVal(f.whtRate)}" oninput="S.subcontractBillingForm.whtRate=this.value;">
+        </div>
+      </div>
+      ${f.billingType==='advance' ? `<div class="hint">${tr('fin_sbill.advance_wht_vat_optional_hint')}</div>` : ''}
+    `;
+  }
+
+  return `
+  <div class="page-head">
+    <div>
+      <button class="btn btn-ghost btn-sm" data-act="nav" data-page="fin_subcontract_billings" style="margin-bottom:8px;">${ICN.chevronLeft} ${tr('common.back')}</button>
+      <h2>${tr('fin_sbill.add_billing')}</h2><div class="sub">${tr('fin_sbill.add_subtitle')}</div>
+    </div>
+  </div>
+  <div class="card" style="padding:20px 22px; max-width:900px;">
+    <div class="split">
+      <div class="field"><label>${tr('fin_sbill.subcontract_term_label')} *</label>
+        <select data-act="select-sbill-term">
+          <option value="">${tr('fin_sbill.pick_term_placeholder')}</option>
+          ${(S.approvedSubcontractTermsForBilling||[]).map(t=>`<option value="${t.id}" ${String(f.subcontractTermId)===String(t.id)?'selected':''}>${t.contractNo} — ${esc(t.subcontractorName)}</option>`).join('')}
+        </select>
+        ${(S.approvedSubcontractTermsForBilling||[]).length===0 && S.approvedSubcontractTermsForBilling!==undefined ? `<div class="hint">${tr('fin_sbill.no_approved_terms_hint')}</div>` : ''}
+      </div>
+      <div class="field"><label>${tr('common.col_type')} *</label>
+        <select data-act="select-sbill-type">
+          ${Object.entries(subcontractBillingTypeLabels()).map(([k,v])=>`<option value="${k}" ${f.billingType===k?'selected':''}>${v}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    ${balanceSection}
+    <div class="section-title" style="margin-top:14px;">${tr('fin_sbill.details_section_title')}</div>
+    ${typeSection}
+    <div class="field" style="margin-top:14px;"><label>${tr('create_pr.remark_label')}</label><textarea id="sbill-note" oninput="S.subcontractBillingForm.note=this.value;">${esc(f.note)}</textarea></div>
+    <div class="small-btn-row" style="justify-content:flex-end; margin-top:6px;">
+      <button class="btn btn-ghost" data-act="nav" data-page="fin_subcontract_billings">${tr('common.cancel')}</button>
+      <button class="btn btn-primary" data-act="save-sbill-full" ${f.submitting?'disabled':''}>${f.submitting?tr('leave_public.submitting'):tr('common.save')}</button>
+    </div>
+  </div>`;
+}
+function pageFinSubcontractBillingDetail(){
+  const b = S.selectedSubcontractBillingDetail;
+  if(!b) return `<div class="page-head"><h2>${tr('common.loading')}</h2></div>`;
+  const u = S.currentUser;
+  const isOwner = u.id===b.createdBy || (b.submittedBy!=null && u.id===b.submittedBy);
+  const canApprove = u.role==='super_user' || u.canApproveSubcontractBilling===true;
+  const rf = S.subcontractBillingRejectForm;
+
+  return `
+  <div class="page-head">
+    <div>
+      <button class="btn btn-ghost btn-sm" data-act="nav" data-page="fin_subcontract_billings" style="margin-bottom:8px;">${ICN.chevronLeft} ${tr('common.back')}</button>
+      <h2>${b.billingNo || `(${tr('pr.status_draft')})`} <span class="badge ${subcontractBillingStatusBadgeClass(b.status)}">${subcontractBillingStatusLabels()[b.status]||b.status}</span></h2>
+      <div class="sub">${subcontractBillingTypeLabels()[b.billingType]||b.billingType}${b.subcontractorName?' · '+esc(b.subcontractorName):''}${b.contractNo?' · '+esc(b.contractNo):''}</div>
+    </div>
+  </div>
+
+  <div class="card" style="padding:20px 22px; margin-bottom:16px;">
+    <div class="split">
+      <div><div class="lbl">${tr('fin_sbill.gross_amount_label')}</div><div class="mono" style="font-weight:700; color:var(--navy);">${fmtMoney(b.grossAmount)}</div></div>
+      <div><div class="lbl">${tr('fin_sbill.col_net_payable')}</div><div class="mono" style="font-weight:700;">${fmtMoney(b.netPayableAmount)}</div></div>
+    </div>
+    ${b.billingType==='progress' ? `
+    <div class="split" style="margin-top:10px;">
+      <div><div class="lbl">${tr('fin_progress.applied_advance_label')}</div><div class="mono">${fmtMoney(b.advanceRecoveryAmount)}</div></div>
+      <div><div class="lbl">${tr('fin_wo.retention_percent_label')}</div><div class="mono">${fmtMoney(b.retentionAmount)}</div></div>
+    </div>` : ''}
+    ${Number(b.vatAmount)>0 ? `<div style="margin-top:10px;"><div class="lbl">${tr('fin_sbill.vat_amount_label')}</div><div class="mono">${fmtMoney(b.vatAmount)} (${b.vatRate}%)</div></div>` : ''}
+    ${Number(b.whtAmount)>0 ? `<div style="margin-top:10px;"><div class="lbl">${tr('fin_sbill.wht_amount_label')}</div><div class="mono">${fmtMoney(b.whtAmount)} (${b.whtIncomeTypeCode} ${esc(b.whtIncomeTypeName||'')} ${b.whtRate}%)</div></div>` : ''}
+    ${b.note ? `<div style="margin-top:10px;"><div class="lbl">${tr('create_pr.remark_label')}</div><div>${esc(b.note)}</div></div>` : ''}
+    ${b.status==='rejected' && b.rejectedReason ? `<div style="margin-top:10px; color:var(--red);"><div class="lbl">${tr('pr.rejected_reason_label')}</div><div>${esc(b.rejectedReason)}</div></div>` : ''}
+  </div>
+
+  ${b.billingType==='retention_release' && b.retentionReleaseItems && b.retentionReleaseItems.length>0 ? `
+  <div class="card" style="padding:20px 22px; margin-bottom:16px;">
+    <div class="section-title">${tr('fin_sbill.retention_items_section_title')}</div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>${tr('fin_sbill.col_billing_no')}</th><th>${tr('fin_sbill.release_amount_label')}</th></tr></thead>
+      <tbody>${b.retentionReleaseItems.map(it=>`<tr><td class="mono">${esc(it.sourceBillingNo)}</td><td class="mono">${fmtMoney(it.amount)}</td></tr>`).join('')}</tbody>
+    </table></div>
+  </div>` : ''}
+
+  <div class="card" style="padding:20px 22px;">
+    <div class="small-btn-row" style="justify-content:flex-end;">
+      ${b.status==='draft' && (isOwner||canApprove) ? `<button class="btn btn-primary btn-sm" data-act="submit-sbill" data-id="${b.id}" ${isVoucherActionPending('sbill-submit',b.id)?'disabled':''}>${tr('pr.action_submit')}</button>` : ''}
+      ${b.status==='submitted' && canApprove ? `<button class="btn btn-navy btn-sm" data-act="approve-sbill" data-id="${b.id}" ${isVoucherActionPending('sbill-approve',b.id)?'disabled':''}>${tr('pr.action_approve')}</button>` : ''}
+      ${b.status==='submitted' && canApprove ? `<button class="btn btn-danger btn-sm" data-act="open-sbill-reject" data-id="${b.id}">${tr('pr.action_reject')}</button>` : ''}
+      ${['draft','submitted'].includes(b.status) && (isOwner||canApprove) ? `<button class="btn btn-ghost btn-sm" data-act="cancel-sbill" data-id="${b.id}" ${isVoucherActionPending('sbill-cancel',b.id)?'disabled':''}>${tr('pr.action_cancel')}</button>` : ''}
+    </div>
+    ${rf && rf.id===b.id ? `
+    <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border);">
+      <div class="field"><label>${tr('pr.rejected_reason_label')}</label><input id="sbill-reject-reason" value="${esc(rf.reason)}" oninput="S.subcontractBillingRejectForm.reason=this.value;"></div>
+      <div class="small-btn-row" style="justify-content:flex-end;">
+        <button class="btn btn-ghost btn-sm" data-act="cancel-sbill-reject-form">${tr('common.cancel')}</button>
+        <button class="btn btn-danger btn-sm" data-act="submit-sbill-reject" data-id="${b.id}">${tr('pr.action_reject')}</button>
+      </div>
+    </div>` : ''}
+  </div>`;
+}
+
 // ---------------- ใบเสนอราคา (Quotations, customer → their own client) — real backend, client_quotations ----------------
 function quotationStatusLabels(){
   return {
@@ -7874,7 +8154,7 @@ function pageApprovalPermissions(){
           <th rowspan="2">${tr('common.col_position')}</th>
           <th rowspan="2">${tr('common.col_role')}</th>
           <th colspan="2">${tr('approval_permissions.group_other')}</th>
-          <th colspan="7">${tr('approval_permissions.group_doc_approval')}</th>
+          <th colspan="8">${tr('approval_permissions.group_doc_approval')}</th>
           <th colspan="3">${tr('approval_permissions.group_execution')}</th>
         </tr>
         <tr>
@@ -7887,13 +8167,14 @@ function pageApprovalPermissions(){
           <th>${tr('approval_permissions.col_approve_other')}</th>
           <th>${tr('approval_permissions.col_certify_progress')}</th>
           <th>${tr('approval_permissions.col_approve_progress')}</th>
+          <th>${tr('approval_permissions.col_approve_subcontract_billing')}</th>
           <th>${tr('approval_permissions.col_manage_po')}</th>
           <th>${tr('approval_permissions.col_manage_petty_cash_fund')}</th>
           <th>${tr('approval_permissions.col_settle_cash')}</th>
         </tr>
       </thead>
       <tbody>
-        ${rows.length===0 ? `<tr><td colspan="15"><div class="empty" style="padding:20px 0;">${tr('users.no_users_yet')}</div></td></tr>` : rows.map(cu=>{
+        ${rows.length===0 ? `<tr><td colspan="16"><div class="empty" style="padding:20px 0;">${tr('users.no_users_yet')}</div></td></tr>` : rows.map(cu=>{
           // ห้าม self-grant/self-revoke (ตรงกับ backend) — ซ่อนปุ่มบนแถวของตัวเอง แม้จะเป็น super_user
           const canManageThisRow = canManage && S.currentUser.id !== cu.id;
           return `
@@ -7910,6 +8191,7 @@ function pageApprovalPermissions(){
             ${permFlagCell(cu, 'can_approve_other', canManageThisRow)}
             ${permFlagCell(cu, 'can_certify_progress', canManageThisRow)}
             ${permFlagCell(cu, 'can_approve_progress', canManageThisRow)}
+            ${permFlagCell(cu, 'can_approve_subcontract_billing', canManageThisRow)}
             ${permFlagCell(cu, 'can_manage_po', canManageThisRow)}
             ${permFlagCell(cu, 'can_manage_petty_cash_fund', canManageThisRow)}
             ${permFlagCell(cu, 'can_settle_cash', canManageThisRow)}
@@ -11673,6 +11955,7 @@ async function handleAction(act, el){
         canApprovePoWo: !!data.customer.can_approve_po_wo,
         canCertifyProgress: !!data.customer.can_certify_progress,
         canApproveProgress: !!data.customer.can_approve_progress,
+        canApproveSubcontractBilling: !!data.customer.can_approve_subcontract_billing,
       };
       S.view='dashboard'; S.page='overview';
       render();
@@ -11770,6 +12053,12 @@ async function handleAction(act, el){
     if(S.page==='fin_wo_detail' && S.dataMode!=='demo') await loadSubcontractTermDetail(S.selectedSubcontractTermId);
     if(S.page==='fin_progress_claims' && S.dataMode!=='demo' && !S.progressClaimsLoaded) await loadProgressClaims();
     if(S.page==='fin_progress_claim_detail' && S.dataMode!=='demo') await loadProgressClaimDetail(S.selectedProgressClaimId);
+    if(S.page==='fin_subcontract_billings' && S.dataMode!=='demo' && !S.subcontractBillingsLoaded) await loadSubcontractBillings();
+    if(S.page==='fin_subcontract_billing_add' && S.dataMode!=='demo'){
+      if(S.approvedSubcontractTermsForBilling===undefined) await loadApprovedSubcontractTermsForBilling();
+      if(!S.whtIncomeTypesLoaded) await loadWhtIncomeTypes();
+    }
+    if(S.page==='fin_subcontract_billing_detail' && S.dataMode!=='demo') await loadSubcontractBillingDetail(S.selectedSubcontractBillingId);
     if(S.page==='fin_quotations' && S.dataMode!=='demo' && !S.quotationsLoaded) await loadRealQuotations();
     if(S.page==='fin_documents' && S.dataMode!=='demo' && !S.clientDocumentsLoaded) await loadRealClientDocuments();
     // pageFinProjectAdd()'s PM/foreman dropdowns are sourced from DB.employees, same as pageFinLabor()'s.
@@ -14324,6 +14613,121 @@ async function handleAction(act, el){
       toast(tr('pr.cancel_success'));
     } catch(e){ toast(e.message,'err'); }
     S.voucherActionPending['pc-cancel-'+id] = false;
+    render(); return;
+  }
+
+  // ---- Finance: ใบเบิกเงินตามใบสั่งจ้าง (Subcontract Billing, หัวข้อ 2.1-2.3) ----
+  if(act==='filter-sbill-status'){ S.subcontractBillingListFilter.status = el.value; await loadSubcontractBillings(); return; }
+  if(act==='filter-sbill-type'){ S.subcontractBillingListFilter.billingType = el.value; await loadSubcontractBillings(); return; }
+  if(act==='select-sbill-term'){
+    S.subcontractBillingForm.subcontractTermId = el.value;
+    render();
+    if(el.value){
+      await loadSubcontractTermBalance(el.value);
+      if(S.subcontractBillingForm.billingType==='retention_release') await loadProgressBillingsForRetentionPicker(el.value);
+    }
+    return;
+  }
+  if(act==='select-sbill-type'){
+    S.subcontractBillingForm.billingType = el.value;
+    S.subcontractBillingForm.retentionItems = {};
+    render();
+    if(el.value==='retention_release' && S.subcontractBillingForm.subcontractTermId) await loadProgressBillingsForRetentionPicker(S.subcontractBillingForm.subcontractTermId);
+    return;
+  }
+  if(act==='select-sbill-wht-type'){ S.subcontractBillingForm.whtIncomeTypeCode = el.value; render(); return; }
+  if(act==='save-sbill-full'){
+    const f = S.subcontractBillingForm;
+    if(!f.subcontractTermId){ toast(tr('fin_sbill.term_required_err'),'err'); return; }
+    let body = { subcontractTermId: parseInt(f.subcontractTermId,10), billingType: f.billingType, billingDate: f.billingDate, note: f.note };
+    if(f.billingType==='retention_release'){
+      const items = Object.entries(f.retentionItems).filter(([,v])=>v && parseFloat(v)>0).map(([sourceProgressBillingId,amount])=>({sourceProgressBillingId:parseInt(sourceProgressBillingId,10), amount}));
+      if(items.length===0){ toast(tr('fin_sbill.retention_items_required_err'),'err'); return; }
+      body.items = items;
+    } else {
+      if(!f.grossAmount || parseFloat(f.grossAmount)<=0){ toast(tr('fin_sbill.gross_amount_required_err'),'err'); return; }
+      body.grossAmount = f.grossAmount;
+      body.hasTaxInvoice = f.hasTaxInvoice;
+      if(f.hasTaxInvoice) body.vatRate = f.vatRate;
+      if(f.whtRate!=='') { body.whtRate = f.whtRate; body.whtIncomeTypeCode = f.whtIncomeTypeCode || undefined; }
+    }
+    if(f.submitting) return;
+    f.submitting = true; render();
+    try{
+      const data = await apiCall('POST', '/api/customer/subcontract-billings', body, undefined, {'Idempotency-Key': f.idempotencyKey});
+      toast(tr('fin_sbill.added_toast'));
+      S.subcontractBillingForm = null;
+      S.subcontractBillingsLoaded = false;
+      S.selectedSubcontractBillingId = data.subcontractBilling.id;
+      S.page = 'fin_subcontract_billing_detail';
+      await loadSubcontractBillingDetail(data.subcontractBilling.id);
+      return;
+    } catch(e){ toast(e.message,'err'); if(S.subcontractBillingForm) S.subcontractBillingForm.submitting = false; }
+    render();
+    return;
+  }
+  if(act==='submit-sbill'){
+    const id = parseInt(el.dataset.id,10);
+    if(isVoucherActionPending('sbill-submit', id)) return;
+    const key = voucherActionKey('sbill-submit', id);
+    S.voucherActionPending['sbill-submit-'+id] = true;
+    render();
+    try{
+      await apiCall('POST', `/api/customer/subcontract-billings/${id}/submit`, {}, undefined, {'Idempotency-Key': key});
+      clearVoucherActionKey('sbill-submit', id);
+      S.subcontractBillingsLoaded = false;
+      await loadSubcontractBillingDetail(id);
+      toast(tr('pr.submit_success'));
+    } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['sbill-submit-'+id] = false;
+    render(); return;
+  }
+  if(act==='approve-sbill'){
+    const id = parseInt(el.dataset.id,10);
+    if(isVoucherActionPending('sbill-approve', id)) return;
+    const key = voucherActionKey('sbill-approve', id);
+    S.voucherActionPending['sbill-approve-'+id] = true;
+    render();
+    try{
+      await apiCall('POST', `/api/customer/subcontract-billings/${id}/approve`, {}, undefined, {'Idempotency-Key': key});
+      clearVoucherActionKey('sbill-approve', id);
+      S.subcontractBillingsLoaded = false;
+      await loadSubcontractBillingDetail(id);
+      toast(tr('pr.approve_success'));
+    } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['sbill-approve-'+id] = false;
+    render(); return;
+  }
+  if(act==='open-sbill-reject'){ S.subcontractBillingRejectForm = {id:parseInt(el.dataset.id,10), reason:''}; render(); return; }
+  if(act==='cancel-sbill-reject-form'){ S.subcontractBillingRejectForm = null; render(); return; }
+  if(act==='submit-sbill-reject'){
+    const id = parseInt(el.dataset.id,10);
+    const reason = (S.subcontractBillingRejectForm && S.subcontractBillingRejectForm.reason || '').trim();
+    if(!reason){ toast(tr('pr.rejected_reason_required_err'),'err'); return; }
+    try{
+      await apiCall('POST', `/api/customer/subcontract-billings/${id}/reject`, {reason});
+      S.subcontractBillingRejectForm = null;
+      S.subcontractBillingsLoaded = false;
+      await loadSubcontractBillingDetail(id);
+      toast(tr('pr.reject_success'));
+    } catch(e){ toast(e.message,'err'); }
+    render(); return;
+  }
+  if(act==='cancel-sbill'){
+    const id = parseInt(el.dataset.id,10);
+    if(!confirm(tr('pr.cancel_confirm'))) return;
+    if(isVoucherActionPending('sbill-cancel', id)) return;
+    const key = voucherActionKey('sbill-cancel', id);
+    S.voucherActionPending['sbill-cancel-'+id] = true;
+    render();
+    try{
+      await apiCall('POST', `/api/customer/subcontract-billings/${id}/cancel`, {}, undefined, {'Idempotency-Key': key});
+      clearVoucherActionKey('sbill-cancel', id);
+      S.subcontractBillingsLoaded = false;
+      await loadSubcontractBillingDetail(id);
+      toast(tr('pr.cancel_success'));
+    } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['sbill-cancel-'+id] = false;
     render(); return;
   }
 

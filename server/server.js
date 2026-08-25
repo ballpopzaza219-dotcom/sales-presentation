@@ -2513,7 +2513,7 @@ app.put('/api/customer/users/:id/budget-approval-permission', requireCustomerAut
 const MANAGE_PERMISSION_FLAG_COLUMNS = new Set([
   'can_manage_po', 'can_manage_petty_cash_fund', 'can_settle_cash',
   'can_approve_budget', 'can_approve_pr', 'can_approve_po_wo', 'can_approve_petty_cash', 'can_approve_advance', 'can_approve_other',
-  'can_certify_progress', 'can_approve_progress',
+  'can_certify_progress', 'can_approve_progress', 'can_approve_subcontract_billing',
 ]);
 app.put('/api/customer/users/:id/permission-flags', requireCustomerAuth, async (req, res) => {
   const targetId = parseInt(req.params.id, 10);
@@ -8645,6 +8645,7 @@ const APPROVAL_DOC_TYPE_FLAG_COLUMN = {
   advance: 'can_approve_advance',
   other: 'can_approve_other',
   progress: 'can_approve_progress',
+  subcontractor_billing: 'can_approve_subcontract_billing',
 };
 const APPROVAL_DOC_TYPE_LABEL_TH = {
   pr: 'ใบขอซื้อ (PR)',
@@ -8653,6 +8654,7 @@ const APPROVAL_DOC_TYPE_LABEL_TH = {
   advance: 'เงินทดรองจ่าย',
   other: 'จ่ายเจ้าหนี้ภายนอก',
   progress: 'ใบขอเบิกความคืบหน้าโครงการ',
+  subcontractor_billing: 'ใบเบิกเงินตามสัญญาจ้างผู้รับเหมาช่วง',
 };
 // docType ของ canApprove จาก voucher_type — ใช้ร่วมกันทุก endpoint ของ payment-vouchers (submit/approve/
 // reject/cancel) กันพิมพ์ ternary ซ้ำคนละจุดแล้วพลาดไม่ตรงกัน
@@ -8891,7 +8893,7 @@ async function writeAuditLog(client, { companyId, docType, docId, action, fromSt
 // ให้ตั้ง rule เลยจนถึงตอนนี้ — จุดนี้เองที่ทำให้โมดูล 1.2/1.4 อนุมัติจริงไม่ได้แม้ flag จะตั้งได้แล้ว)
 // doc_type ที่รองรับตรงกับ CHECK ของตาราง (ขยายไปแล้วโดย migration 0004/0006 ให้รองรับ advance/other —
 // ตรวจยืนยันจาก DB จริงแล้วว่าไม่ต้องมี migration ใหม่)
-const APPROVAL_RULE_DOC_TYPES = new Set(['pr', 'po_wo', 'petty_cash', 'advance', 'other', 'progress']);
+const APPROVAL_RULE_DOC_TYPES = new Set(['pr', 'po_wo', 'petty_cash', 'advance', 'other', 'progress', 'subcontractor_billing']);
 
 // ตั้ง rule ใหม่ทับของเดิมเสมอ (ไม่มี "แก้เพดานในที่เดิม") — ปิด rule เก่าเป็น is_active=false ก่อนเสมอ
 // (ไม่ลบ เก็บประวัติไว้ตรวจย้อนหลังได้ตามที่ตกลง) แล้วค่อย INSERT แถวใหม่ — ต้องเรียงลำดับ UPDATE-ก่อน-
@@ -10336,6 +10338,637 @@ app.post('/api/customer/subcontract-terms/:id/terminate', requireCustomerAuth, a
   } finally {
     client.release();
   }
+});
+
+// ---------------- ใบเบิกเงินตามใบสั่งจ้าง (Subcontract Billing, หัวข้อ 2.1-2.3) ----------------
+// migration 0015 — 3 ประเภทรวมตารางเดียว (advance/progress/retention_release) คล้าย client_payment_vouchers
+// ที่รวม petty_cash/advance/other ด้วย voucher_type — journal ไม่ swallow error (posting journal ตอนอนุมัติ
+// "เป็นจุดประสงค์หลัก" ของ endpoint นี้ เหตุผลเดียวกับ progress-claims/release-retention) — sourceType ของ
+// client_journal_entries ใช้ 'subcontract_billing' เฉพาะของโมดูลนี้ (เพิ่มเข้า CHECK ผ่าน migration 0016
+// ทั้ง 3 ประเภท ไม่ใช้ 'manual' เพราะ 'manual' สงวนไว้เฉพาะรายการที่คนบันทึกเองด้วยมือจริงๆ ทุกโมดูลเบิกจ่าย/
+// รับเงินอื่นในระบบมี source_type เฉพาะของตัวเอง (payment_voucher, advance_clearance,
+// petty_cash_replenishment) — รายงานที่กรอง source_type='manual' เพื่อดู "รายการที่คนบันทึกเอง" ต้องไม่มี
+// รายการอัตโนมัติปนเข้ามา แม้ source_id จะชี้กลับไปที่แถว billing แม่นยำอยู่แล้วก็ตาม)
+function serializeSubcontractBillingRetentionItem(row) {
+  return {
+    id: row.id,
+    sourceProgressBillingId: row.source_progress_billing_id,
+    sourceBillingNo: row.source_billing_no,
+    sourceRetentionAmount: row.source_retention_amount !== undefined ? Number(row.source_retention_amount) : undefined,
+    amount: Number(row.amount),
+  };
+}
+function serializeSubcontractBilling(row) {
+  return {
+    id: row.id,
+    subcontractTermId: row.subcontract_term_id,
+    contractNo: row.contract_no || null,
+    subcontractorName: row.subcontractor_name || null,
+    projectName: row.project_name || null,
+    billingNo: row.billing_no,
+    billingType: row.billing_type,
+    billingDate: row.billing_date,
+    grossAmount: Number(row.gross_amount),
+    advanceRecoveryAmount: Number(row.advance_recovery_amount),
+    retentionAmount: Number(row.retention_amount),
+    hasTaxInvoice: row.has_tax_invoice,
+    vatRate: row.vat_rate !== null ? Number(row.vat_rate) : null,
+    vatAmount: Number(row.vat_amount),
+    whtIncomeTypeCode: row.wht_income_type_code,
+    whtIncomeTypeName: row.wht_income_type_name || null,
+    whtRate: row.wht_rate !== null ? Number(row.wht_rate) : null,
+    whtAmount: Number(row.wht_amount),
+    netPayableAmount: Number(row.net_payable_amount),
+    status: row.status,
+    submittedBy: row.submitted_by, submittedAt: row.submitted_at,
+    approvedBy: row.approved_by, approvedAt: row.approved_at,
+    rejectedReason: row.rejected_reason,
+    voidedReason: row.voided_reason, voidedBy: row.voided_by, voidedAt: row.voided_at,
+    note: row.note,
+    createdBy: row.created_by, createdAt: row.created_at,
+  };
+}
+const CLIENT_SUBCONTRACT_BILLING_SELECT = `
+  SELECT sb.id, sb.subcontract_term_id, st.contract_no, sc.name AS subcontractor_name, cp.name AS project_name,
+    sb.billing_no, sb.billing_type, to_char(sb.billing_date,'YYYY-MM-DD') AS billing_date,
+    sb.gross_amount, sb.advance_recovery_amount, sb.retention_amount,
+    sb.has_tax_invoice, sb.vat_rate, sb.vat_amount,
+    sb.wht_income_type_code, wit.name_th AS wht_income_type_name, sb.wht_rate, sb.wht_amount,
+    sb.net_payable_amount, sb.status,
+    sb.submitted_by, sb.submitted_at, sb.approved_by, sb.approved_at, sb.rejected_reason,
+    sb.voided_reason, sb.voided_by, sb.voided_at,
+    sb.note, sb.created_by, sb.created_at
+  FROM client_subcontract_billings sb
+  JOIN client_subcontract_terms st ON st.id = sb.subcontract_term_id
+  JOIN client_subcontractors sc ON sc.id = st.subcontractor_id
+  JOIN client_projects cp ON cp.id = st.project_id
+  LEFT JOIN client_wht_income_types wit ON wit.code = sb.wht_income_type_code`;
+const CLIENT_SUBCONTRACT_RETENTION_ITEMS_SELECT = `
+  SELECT ri.id, ri.source_progress_billing_id, sb.billing_no AS source_billing_no, sb.retention_amount AS source_retention_amount, ri.amount
+  FROM client_subcontract_retention_release_items ri
+  JOIN client_subcontract_billings sb ON sb.id = ri.source_progress_billing_id
+  WHERE ri.retention_release_billing_id=$1 AND ri.company_id=$2 ORDER BY ri.id`;
+
+async function fetchFullSubcontractBilling(dbClient, id, companyId) {
+  const r = await dbClient.query(`${CLIENT_SUBCONTRACT_BILLING_SELECT} WHERE sb.id=$1 AND sb.company_id=$2`, [id, companyId]);
+  if (r.rowCount === 0) return null;
+  const billing = serializeSubcontractBilling(r.rows[0]);
+  billing.retentionReleaseItems = billing.billingType === 'retention_release'
+    ? (await dbClient.query(CLIENT_SUBCONTRACT_RETENTION_ITEMS_SELECT, [id, companyId])).rows.map(serializeSubcontractBillingRetentionItem)
+    : [];
+  return billing;
+}
+
+async function generateClientSubcontractBillingNo(client, companyId) {
+  const year = getBangkokYear() + 543;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const seq = await nextDocumentSeq(client, companyId, 'subcontract_billing');
+    const no = `SB-${year}-` + String(seq).padStart(4, '0');
+    const exists = await client.query('SELECT 1 FROM client_subcontract_billings WHERE company_id=$1 AND billing_no=$2', [companyId, no]);
+    if (exists.rowCount === 0) return no;
+  }
+  throw new Error('ไม่สามารถสร้างเลขที่ใบเบิกเงินได้');
+}
+
+// ยอดคงเหลือ 3 ตัวคำนวณสดด้วย SUM เสมอ (ไม่มีคอลัมน์สะสมบน client_subcontract_terms — ดู comment บนสุดของ
+// migration 0015) — คืนเป็น NUMERIC string ตรงๆ จาก pg ให้ caller ส่งต่อเข้า SQL ::numeric ต่อได้เลย
+async function computeSubcontractTermBalances(dbClient, companyId, termId) {
+  const r = await dbClient.query(
+    `SELECT
+       COALESCE((SELECT SUM(gross_amount) FROM client_subcontract_billings WHERE company_id=$1 AND subcontract_term_id=$2 AND billing_type='advance' AND status='approved'), 0)
+         - COALESCE((SELECT SUM(advance_recovery_amount) FROM client_subcontract_billings WHERE company_id=$1 AND subcontract_term_id=$2 AND billing_type='progress' AND status='approved'), 0)
+         AS advance_outstanding,
+       COALESCE((SELECT SUM(retention_amount) FROM client_subcontract_billings WHERE company_id=$1 AND subcontract_term_id=$2 AND billing_type='progress' AND status='approved'), 0)
+         - COALESCE((SELECT SUM(gross_amount) FROM client_subcontract_billings WHERE company_id=$1 AND subcontract_term_id=$2 AND billing_type='retention_release' AND status='approved'), 0)
+         AS retention_held,
+       COALESCE((SELECT SUM(gross_amount) FROM client_subcontract_billings WHERE company_id=$1 AND subcontract_term_id=$2 AND billing_type='progress' AND status='approved'), 0)
+         AS progress_billed_total`,
+    [companyId, termId]
+  );
+  return r.rows[0];
+}
+
+// ทั้ง POST (create)/PUT (edit) ใช้ร่วมกัน
+async function validateSubcontractBillingInput(dbClient, companyId, {
+  subcontractTermId, billingType, billingDate, grossAmount,
+  hasTaxInvoice, vatRate, whtIncomeTypeCode, whtRate, items, note,
+}) {
+  if (!subcontractTermId) return { error: 'กรุณาเลือกสัญญา/หนังสือสั่งจ้าง' };
+  const termRes = await dbClient.query(
+    `SELECT st.id, st.status, st.contract_value, st.advance_percent, st.retention_percent,
+       st.wht_income_type_code AS default_wht_type, st.wht_rate AS default_wht_rate, sc.tax_id AS subcontractor_tax_id
+     FROM client_subcontract_terms st JOIN client_subcontractors sc ON sc.id = st.subcontractor_id
+     WHERE st.id=$1 AND st.company_id=$2`,
+    [subcontractTermId, companyId]
+  );
+  if (termRes.rowCount === 0) return { error: 'ไม่พบสัญญา/หนังสือสั่งจ้างนี้ในบริษัทของคุณ' };
+  const term = termRes.rows[0];
+  if (term.status !== 'approved') return { error: 'เบิกเงินได้เฉพาะสัญญาที่อนุมัติแล้วเท่านั้น' };
+
+  if (!billingType || !['advance', 'progress', 'retention_release'].includes(billingType)) {
+    return { error: 'กรุณาเลือกประเภทใบเบิกเงินให้ถูกต้อง' };
+  }
+  const safeBillingDate = billingDate || getBangkokDateStr();
+  const safeNote = (note || '').trim();
+
+  if (billingType === 'retention_release') {
+    if (!Array.isArray(items) || items.length === 0) return { error: 'กรุณาเลือกอย่างน้อย 1 งวดที่จะคืนเงินประกันผลงาน' };
+    const seen = new Set();
+    const safeItems = [];
+    for (const it of items) {
+      if (!it.sourceProgressBillingId) return { error: 'มีรายการที่ไม่ได้ระบุงวดต้นทาง' };
+      if (seen.has(it.sourceProgressBillingId)) return { error: 'มีงวดต้นทางซ้ำกันในใบเดียวกัน' };
+      seen.add(it.sourceProgressBillingId);
+      const amt = parsePositiveNumericValue(it.amount);
+      if (amt === null) return { error: `ระบุยอดคืนไม่ถูกต้องสำหรับงวด id=${it.sourceProgressBillingId}` };
+      const src = await dbClient.query(
+        `SELECT id FROM client_subcontract_billings WHERE id=$1 AND company_id=$2 AND subcontract_term_id=$3 AND billing_type='progress' AND status='approved'`,
+        [it.sourceProgressBillingId, companyId, subcontractTermId]
+      );
+      if (src.rowCount === 0) return { error: `ไม่พบงวดต้นทาง id=${it.sourceProgressBillingId} ที่อนุมัติแล้วในสัญญานี้` };
+      safeItems.push({ sourceProgressBillingId: it.sourceProgressBillingId, amount: amt });
+    }
+    const sumRes = await dbClient.query(`SELECT SUM(x.amt)::numeric AS total FROM UNNEST($1::numeric[]) AS x(amt)`, [safeItems.map(i => i.amount)]);
+    return {
+      safeSubcontractTermId: subcontractTermId, safeBillingType: 'retention_release', safeBillingDate,
+      safeGrossAmount: sumRes.rows[0].total, safeItems,
+      safeAdvanceRecoveryAmount: '0', safeRetentionAmount: '0',
+      safeHasTaxInvoice: false, safeVatRate: null, safeVatAmount: '0',
+      safeWhtIncomeTypeCode: null, safeWhtRate: null, safeWhtAmount: '0',
+      safeNetPayableAmount: sumRes.rows[0].total,
+      safeNote,
+    };
+  }
+
+  // advance / progress
+  const safeGrossAmount = parsePositiveNumericValue(grossAmount);
+  if (safeGrossAmount === null) return { error: 'กรุณาระบุจำนวนเงินให้ถูกต้อง (มากกว่า 0)' };
+
+  const safeHasTaxInvoice = hasTaxInvoice === true;
+  let safeVatRate = null;
+  if (safeHasTaxInvoice) {
+    const pct = parseNonNegativeNumericValue(vatRate ?? 0);
+    if (pct === null || Number(pct) > 100) return { error: 'ระบุอัตราภาษีมูลค่าเพิ่มไม่ถูกต้อง (0-100)' };
+    safeVatRate = pct;
+  } else if (vatRate !== undefined && vatRate !== null && vatRate !== '' && Number(vatRate) > 0) {
+    return { error: 'ไม่มีใบกำกับภาษีเต็มรูป ไม่สามารถระบุอัตราภาษีมูลค่าเพิ่มแยกได้' };
+  }
+
+  // wht_rate เป็นตัวเลือกต่อรายการเสมอ (ดู comment บนสุดของ migration 0015 — VAT/WHT บนเงินล่วงหน้ายังไม่มี
+  // ข้อสรุปนโยบายจากฝ่ายบัญชี) — billingType='progress' auto-default จากอัตราของสัญญาถ้าไม่ได้ระบุมาเอง
+  // (progress เกือบทุกกรณีมี WHT จริงตามแผนส่วน 6.4) ส่วน 'advance' ไม่ auto-default เลย ต้องเลือกเอง
+  let safeWhtIncomeTypeCode = null;
+  let safeWhtRate = null;
+  const whtRateProvided = whtRate !== undefined && whtRate !== null && whtRate !== '';
+  if (!whtRateProvided && billingType === 'progress') {
+    safeWhtIncomeTypeCode = term.default_wht_type;
+    // NULL = ยังไม่มี override ระดับสัญญา ใช้ default_rate จาก master แทน — ถ้า master ก็เป็น NULL ด้วย
+    // (เช่น 40(1) ที่คำนวณตามอัตราก้าวหน้า) ต้อง throw ไม่ fallback เป็น 0 (CLAUDE.md ข้อ 17)
+    const effRes = await dbClient.query(
+      `SELECT COALESCE($1::numeric, (SELECT default_rate FROM client_wht_income_types WHERE code=$2)) AS eff_rate`,
+      [term.default_wht_rate, term.default_wht_type]
+    );
+    safeWhtRate = effRes.rows[0].eff_rate;
+    if (safeWhtRate === null) {
+      return { error: `ประเภทเงินได้ ${term.default_wht_type} ไม่มีอัตราหัก ณ ที่จ่ายเริ่มต้น (คำนวณตามอัตราก้าวหน้า) กรุณาระบุอัตราที่ใช้จริงในสัญญาหรือในใบเบิกนี้ก่อน` };
+    }
+  } else if (whtRateProvided) {
+    const pct = parseNonNegativeNumericValue(whtRate);
+    if (pct === null || Number(pct) > 100) return { error: 'ระบุอัตราหัก ณ ที่จ่ายไม่ถูกต้อง (0-100)' };
+    safeWhtRate = pct;
+    safeWhtIncomeTypeCode = whtIncomeTypeCode ? String(whtIncomeTypeCode).trim() : term.default_wht_type;
+    const witCheck = await dbClient.query('SELECT 1 FROM client_wht_income_types WHERE code=$1 AND is_active=true', [safeWhtIncomeTypeCode]);
+    if (witCheck.rowCount === 0) return { error: 'ระบุประเภทเงินได้ตามมาตรา 40 ไม่ถูกต้อง หรือถูกปิดใช้งานแล้ว' };
+  }
+  // ผู้รับเหมาช่วงยอมให้ tax_id ว่างได้ตอนบันทึกครั้งแรก (migration 0009) แต่ถ้ามี WHT>0 ต้องมีเลขผู้เสียภาษี
+  // จริงก่อนเสมอ เพราะ client_wht_certificates.payee_tax_id เป็น NOT NULL — รูปแบบเดียวกับ
+  // validateExternalPaymentVoucherInput ที่เช็ค payee.tax_id ก่อนอนุญาตหัก ณ ที่จ่าย
+  if (safeWhtRate !== null && Number(safeWhtRate) > 0 && !term.subcontractor_tax_id) {
+    return { error: 'ผู้รับเหมาช่วงรายนี้ยังไม่มีเลขผู้เสียภาษีในระบบ ไม่สามารถหัก ณ ที่จ่ายได้ (ใช้ออกหนังสือรับรอง 50 ทวิ) กรุณาเพิ่มเลขผู้เสียภาษีในข้อมูลผู้รับเหมาช่วงก่อน' };
+  }
+
+  // vat_amount/wht_amount/advance_recovery_amount/retention_amount คำนวณด้วย SQL ::numeric เสมอ ไม่ใช้ JS
+  // Number (ข้อ 3) — ฐาน WHT = gross_amount เต็มจำนวนเสมอ (ยืนยันแล้ว ไม่ลดฐานด้วย retention/advance recovery)
+  const calc = await dbClient.query(
+    `SELECT
+       ROUND($1::numeric * COALESCE($2::numeric,0) / 100, 2) AS vat_amount,
+       ROUND($1::numeric * COALESCE($3::numeric,0) / 100, 2) AS wht_amount,
+       ROUND($1::numeric * $4::numeric / 100, 2) AS advance_recovery_amount,
+       ROUND($1::numeric * $5::numeric / 100, 2) AS retention_amount`,
+    [safeGrossAmount, safeVatRate, safeWhtRate,
+     billingType === 'progress' ? term.advance_percent : 0, billingType === 'progress' ? term.retention_percent : 0]
+  );
+  const vatAmount = calc.rows[0].vat_amount;
+  const whtAmount = calc.rows[0].wht_amount;
+  const advanceRecoveryAmount = calc.rows[0].advance_recovery_amount;
+  const retentionAmount = calc.rows[0].retention_amount;
+
+  const netRes = await dbClient.query(
+    `SELECT ($1::numeric + $2::numeric - $3::numeric - $4::numeric - $5::numeric) AS net`,
+    [safeGrossAmount, vatAmount, advanceRecoveryAmount, retentionAmount, whtAmount]
+  );
+
+  return {
+    safeSubcontractTermId: subcontractTermId, safeBillingType: billingType, safeBillingDate,
+    safeGrossAmount, safeItems: [],
+    safeAdvanceRecoveryAmount: advanceRecoveryAmount, safeRetentionAmount: retentionAmount,
+    safeHasTaxInvoice, safeVatRate, safeVatAmount: vatAmount,
+    safeWhtIncomeTypeCode, safeWhtRate, safeWhtAmount: whtAmount,
+    safeNetPayableAmount: netRes.rows[0].net,
+    safeNote, safeTerm: term,
+  };
+}
+
+app.get('/api/customer/subcontract-billings', requireCustomerAuth, async (req, res) => {
+  const companyId = req.customer.company_id;
+  const { status, subcontractTermId, billingType } = req.query;
+  const conditions = ['sb.company_id=$1'];
+  const params = [companyId];
+  if (status) { params.push(status); conditions.push(`sb.status=$${params.length}`); }
+  if (subcontractTermId) { params.push(parseInt(subcontractTermId, 10)); conditions.push(`sb.subcontract_term_id=$${params.length}`); }
+  if (billingType) { params.push(billingType); conditions.push(`sb.billing_type=$${params.length}`); }
+  const r = await pool.query(`${CLIENT_SUBCONTRACT_BILLING_SELECT} WHERE ${conditions.join(' AND ')} ORDER BY sb.id DESC`, params);
+  res.json({ subcontractBillings: r.rows.map(serializeSubcontractBilling) });
+});
+
+app.get('/api/customer/subcontract-billings/:id', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const billing = await fetchFullSubcontractBilling(pool, id, req.customer.company_id);
+  if (!billing) return res.status(404).json({ error: 'ไม่พบใบเบิกเงิน' });
+  res.json({ subcontractBilling: billing });
+});
+
+app.get('/api/customer/subcontract-terms/:id/balance', requireCustomerAuth, async (req, res) => {
+  const termId = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const term = await pool.query('SELECT contract_value FROM client_subcontract_terms WHERE id=$1 AND company_id=$2', [termId, companyId]);
+  if (term.rowCount === 0) return res.status(404).json({ error: 'ไม่พบสัญญา/หนังสือสั่งจ้างนี้' });
+  const b = await computeSubcontractTermBalances(pool, companyId, termId);
+  res.json({
+    contractValue: Number(term.rows[0].contract_value),
+    progressBilledTotal: Number(b.progress_billed_total),
+    advanceOutstanding: Number(b.advance_outstanding),
+    retentionHeld: Number(b.retention_held),
+  });
+});
+
+app.post('/api/customer/subcontract-billings', requireCustomerAuth, async (req, res) => {
+  await withIdempotency(req, res, 'subcontract-billings-create', async (client) => {
+    const companyId = req.customer.company_id;
+    const { subcontractTermId, billingType, billingDate, grossAmount, hasTaxInvoice, vatRate, whtIncomeTypeCode, whtRate, items, note } = req.body || {};
+    const v = await validateSubcontractBillingInput(client, companyId, { subcontractTermId, billingType, billingDate, grossAmount, hasTaxInvoice, vatRate, whtIncomeTypeCode, whtRate, items, note });
+    if (v.error) return { status: 400, body: { error: v.error } };
+
+    const insert = await client.query(
+      `INSERT INTO client_subcontract_billings
+         (company_id, subcontract_term_id, billing_type, billing_date, gross_amount,
+          advance_recovery_amount, retention_amount, has_tax_invoice, vat_rate, vat_amount,
+          wht_income_type_code, wht_rate, wht_amount, net_payable_amount, note, created_by)
+       VALUES ($1,$2,$3,$4,$5::numeric,$6::numeric,$7::numeric,$8,$9::numeric,$10::numeric,$11,$12::numeric,$13::numeric,$14::numeric,$15,$16)
+       RETURNING id`,
+      [companyId, v.safeSubcontractTermId, v.safeBillingType, v.safeBillingDate, v.safeGrossAmount,
+       v.safeAdvanceRecoveryAmount, v.safeRetentionAmount, v.safeHasTaxInvoice, v.safeVatRate, v.safeVatAmount,
+       v.safeWhtIncomeTypeCode, v.safeWhtRate, v.safeWhtAmount, v.safeNetPayableAmount, v.safeNote, req.customer.id]
+    );
+    const billingId = insert.rows[0].id;
+    for (const it of v.safeItems) {
+      await client.query(
+        `INSERT INTO client_subcontract_retention_release_items (company_id, retention_release_billing_id, source_progress_billing_id, amount)
+         VALUES ($1,$2,$3,$4::numeric)`,
+        [companyId, billingId, it.sourceProgressBillingId, it.amount]
+      );
+    }
+    const billing = await fetchFullSubcontractBilling(client, billingId, companyId);
+    return { status: 200, body: { subcontractBilling: billing } };
+  });
+});
+
+// แก้ไขได้เฉพาะ draft เท่านั้น — delete+reinsert retention items ได้อย่างปลอดภัยเหมือน PO/progress-claims
+// (ยังไม่มี status='approved' ผูกอยู่ตอน draft แน่นอน)
+app.put('/api/customer/subcontract-billings/:id', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const { subcontractTermId, billingType, billingDate, grossAmount, hasTaxInvoice, vatRate, whtIncomeTypeCode, whtRate, items, note } = req.body || {};
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const bRes = await client.query('SELECT status FROM client_subcontract_billings WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (bRes.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบใบเบิกเงิน' }); }
+    if (bRes.rows[0].status !== 'draft') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'แก้ไขได้เฉพาะสถานะร่างเท่านั้น' }); }
+
+    const v = await validateSubcontractBillingInput(client, companyId, { subcontractTermId, billingType, billingDate, grossAmount, hasTaxInvoice, vatRate, whtIncomeTypeCode, whtRate, items, note });
+    if (v.error) { await client.query('ROLLBACK'); return res.status(400).json({ error: v.error }); }
+
+    await client.query(
+      `UPDATE client_subcontract_billings SET
+         subcontract_term_id=$1, billing_type=$2, billing_date=$3, gross_amount=$4::numeric,
+         advance_recovery_amount=$5::numeric, retention_amount=$6::numeric, has_tax_invoice=$7,
+         vat_rate=$8::numeric, vat_amount=$9::numeric, wht_income_type_code=$10, wht_rate=$11::numeric,
+         wht_amount=$12::numeric, net_payable_amount=$13::numeric, note=$14
+       WHERE id=$15`,
+      [v.safeSubcontractTermId, v.safeBillingType, v.safeBillingDate, v.safeGrossAmount,
+       v.safeAdvanceRecoveryAmount, v.safeRetentionAmount, v.safeHasTaxInvoice, v.safeVatRate, v.safeVatAmount,
+       v.safeWhtIncomeTypeCode, v.safeWhtRate, v.safeWhtAmount, v.safeNetPayableAmount, v.safeNote, id]
+    );
+    await client.query('DELETE FROM client_subcontract_retention_release_items WHERE retention_release_billing_id=$1', [id]);
+    for (const it of v.safeItems) {
+      await client.query(
+        `INSERT INTO client_subcontract_retention_release_items (company_id, retention_release_billing_id, source_progress_billing_id, amount)
+         VALUES ($1,$2,$3,$4::numeric)`,
+        [companyId, id, it.sourceProgressBillingId, it.amount]
+      );
+    }
+    await client.query('COMMIT');
+    const billing = await fetchFullSubcontractBilling(pool, id, companyId);
+    res.json({ subcontractBilling: billing });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'แก้ไขใบเบิกเงินไม่สำเร็จ' });
+  } finally {
+    client.release();
+  }
+});
+
+app.post('/api/customer/subcontract-billings/:id/submit', requireCustomerAuth, async (req, res) => {
+  await withIdempotency(req, res, `subcontract-billings-submit:${req.params.id}`, async (client) => {
+    const id = parseInt(req.params.id, 10);
+    const companyId = req.customer.company_id;
+    const r = await client.query('SELECT * FROM client_subcontract_billings WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) return { status: 404, body: { error: 'ไม่พบใบเบิกเงิน' } };
+    const billing = r.rows[0];
+    if (billing.status !== 'draft') return { status: 409, body: { error: 'ยื่นได้เฉพาะสถานะร่างเท่านั้น' } };
+
+    if (req.customer.id !== billing.created_by) {
+      const permCheck = await canApprove(client, req.customer, 'subcontractor_billing', billing.gross_amount, {
+        companyId, originators: [billing.created_by],
+      }, { enforceAmountLimit: false });
+      if (!permCheck.allowed) {
+        return { status: 403, body: { error: 'ไม่มีสิทธิ์ยื่นใบเบิกเงินนี้ (ต้องเป็นผู้สร้าง หรือมีสิทธิ์อนุมัติ)', code: permCheck.code } };
+      }
+    }
+
+    // เตือนล่วงหน้าตอน submit (ปฏิเสธจริงถ้าเกิน ไม่ใช่แค่ soft-warning — pattern เดียวกับ PO's over-limit
+    // check) แต่ยังไม่ FOR UPDATE lock เพราะยอดอาจเปลี่ยนได้อีกก่อนถึง approve — บังคับจริงอีกรอบตอน approve
+    // พร้อมล็อก (ข้อ 6/7)
+    if (billing.billing_type === 'progress') {
+      const termRow = await client.query('SELECT contract_value FROM client_subcontract_terms WHERE id=$1', [billing.subcontract_term_id]);
+      const bal = await computeSubcontractTermBalances(client, companyId, billing.subcontract_term_id);
+      const overCheck = await client.query(
+        `SELECT ($1::numeric + $2::numeric) > $3::numeric AS over_contract, $4::numeric > $5::numeric AS over_advance`,
+        [bal.progress_billed_total, billing.gross_amount, termRow.rows[0].contract_value, billing.advance_recovery_amount, bal.advance_outstanding]
+      );
+      if (overCheck.rows[0].over_contract) {
+        return { status: 400, body: { error: 'ยอดเบิกสะสมรวมใบนี้จะเกินมูลค่าสัญญา' } };
+      }
+      if (overCheck.rows[0].over_advance) {
+        return { status: 400, body: { error: 'หักคืนเงินล่วงหน้าเกินยอดเงินล่วงหน้าคงค้างจริง' } };
+      }
+    } else if (billing.billing_type === 'retention_release') {
+      const items = await client.query('SELECT source_progress_billing_id, amount FROM client_subcontract_retention_release_items WHERE retention_release_billing_id=$1', [id]);
+      for (const it of items.rows) {
+        const already = await client.query(
+          `SELECT COALESCE(SUM(amount),0)::numeric AS used FROM client_subcontract_retention_release_items ri
+           JOIN client_subcontract_billings sb ON sb.id = ri.retention_release_billing_id
+           WHERE ri.source_progress_billing_id=$1 AND sb.status='approved'`,
+          [it.source_progress_billing_id]
+        );
+        const srcRet = await client.query('SELECT retention_amount FROM client_subcontract_billings WHERE id=$1', [it.source_progress_billing_id]);
+        const overRet = await client.query(`SELECT ($1::numeric + $2::numeric) > $3::numeric AS over`, [already.rows[0].used, it.amount, srcRet.rows[0].retention_amount]);
+        if (overRet.rows[0].over) {
+          return { status: 400, body: { error: `คืนเงินประกันผลงานเกินยอดที่กันไว้ของงวด id=${it.source_progress_billing_id}` } };
+        }
+      }
+    }
+
+    const billingNo = await generateClientSubcontractBillingNo(client, companyId);
+    await client.query(`UPDATE client_subcontract_billings SET billing_no=$1, status='submitted', submitted_by=$2, submitted_at=now() WHERE id=$3`, [billingNo, req.customer.id, id]);
+    await writeAuditLog(client, {
+      companyId, docType: 'subcontractor_payment', docId: id, action: 'submit',
+      fromStatus: 'draft', toStatus: 'submitted', performedBy: req.customer.id,
+    });
+    const full = await fetchFullSubcontractBilling(client, id, companyId);
+    return { status: 200, body: { subcontractBilling: full } };
+  });
+});
+
+app.post('/api/customer/subcontract-billings/:id/approve', requireCustomerAuth, async (req, res) => {
+  await withIdempotency(req, res, `subcontract-billings-approve:${req.params.id}`, async (client) => {
+    const id = parseInt(req.params.id, 10);
+    const companyId = req.customer.company_id;
+
+    const r = await client.query('SELECT * FROM client_subcontract_billings WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) return { status: 404, body: { error: 'ไม่พบใบเบิกเงิน' } };
+    const billing = r.rows[0];
+    if (billing.status !== 'submitted') return { status: 409, body: { error: 'อนุมัติได้เฉพาะที่ยื่นแล้วเท่านั้น' } };
+
+    const result = await canApprove(client, req.customer, 'subcontractor_billing', billing.gross_amount, {
+      companyId, originators: [billing.created_by, billing.submitted_by],
+    });
+    if (!result.allowed) return { status: 403, body: { error: result.message, code: result.code } };
+
+    const termRow = await client.query(
+      `SELECT st.id, st.project_id, st.contract_value, sc.name AS subcontractor_name, sc.tax_id AS subcontractor_tax_id
+       FROM client_subcontract_terms st JOIN client_subcontractors sc ON sc.id = st.subcontractor_id
+       WHERE st.id=$1`,
+      [billing.subcontract_term_id]
+    );
+    const term = termRow.rows[0];
+    const today = getBangkokDateStr();
+
+    if (billing.billing_type === 'advance') {
+      // ---- 2.1 เงินล่วงหน้า: Dr 1160 / Cr 1170 (ถ้ามี VAT) ไม่เกิด — ซื้อ 1170 เกิดฝั่ง Dr เท่านั้น / Cr 2120
+      // (ถ้ามี WHT) / Cr 1100 ----
+      const lines = [{ accountCode: '1160', debitAmount: billing.gross_amount, creditAmount: 0, description: 'เงินจ่ายล่วงหน้าผู้รับเหมาช่วง' }];
+      if (Number(billing.vat_amount) > 0) {
+        lines.push({ accountCode: ACCOUNT_CODE_VAT_INPUT, debitAmount: billing.vat_amount, creditAmount: 0, description: 'ภาษีซื้อ' });
+      }
+      if (Number(billing.wht_amount) > 0) {
+        lines.push({ accountCode: ACCOUNT_CODE_WHT_PAYABLE, debitAmount: 0, creditAmount: billing.wht_amount, description: 'ภาษีหัก ณ ที่จ่ายค้างนำส่ง' });
+      }
+      lines.push({ accountCode: ACCOUNT_CODE_CASH, debitAmount: 0, creditAmount: billing.net_payable_amount, description: `จ่ายเงินล่วงหน้า ${billing.billing_no}` });
+      await createClientJournalEntry(client, {
+        companyId, entryDate: today, description: `จ่ายเงินล่วงหน้าผู้รับเหมาช่วง: ${billing.billing_no}`,
+        sourceType: 'subcontract_billing', sourceId: id, projectId: term.project_id, createdBy: req.customer.id, lines,
+      });
+    } else if (billing.billing_type === 'progress') {
+      // ---- กันเบิกเกิน 3 จุด ข้อ 1-2 (บังคับจริง) — ล็อกแถวสัญญาก่อนเสมอ (ลำดับคงที่: header ตัวเองถูก
+      // ล็อกเป็น statement แรกสุดของ handler ไปแล้วตามข้อ 6 ด้านบน ตรงนี้ล็อกแถวสัญญาเพิ่ม) แยก statement
+      // จาก aggregate ตามข้อ 7 เสมอ ----
+      await client.query('SELECT id FROM client_subcontract_terms WHERE id=$1 FOR UPDATE', [billing.subcontract_term_id]);
+      const bal = await computeSubcontractTermBalances(client, companyId, billing.subcontract_term_id);
+      const overCheck = await client.query(
+        `SELECT ($1::numeric + $2::numeric) > $3::numeric AS over_contract, $4::numeric > $5::numeric AS over_advance`,
+        [bal.progress_billed_total, billing.gross_amount, term.contract_value, billing.advance_recovery_amount, bal.advance_outstanding]
+      );
+      if (overCheck.rows[0].over_contract) {
+        return { status: 400, body: { error: 'อนุมัติไม่ได้ — ยอดเบิกสะสมรวมใบนี้เกินมูลค่าสัญญา' } };
+      }
+      if (overCheck.rows[0].over_advance) {
+        return { status: 400, body: { error: 'อนุมัติไม่ได้ — หักคืนเงินล่วงหน้าเกินยอดเงินล่วงหน้าคงค้างจริง (อาจถูกใบอื่นหักไปก่อนหลังยื่นใบนี้)' } };
+      }
+
+      // ---- 2.2 งวดงาน: Dr 5200 / Cr 1160 (หักคืนล่วงหน้า) / Cr 2140 (กัน retention) / Cr 1170 (VAT ซื้อ) /
+      // Cr 2120 (WHT) / Cr 2130 (สุทธิที่ต้องจ่าย) ----
+      const lines = [{ accountCode: '5200', debitAmount: billing.gross_amount, creditAmount: 0, description: `ต้นทุนผู้รับเหมาช่วง: ${billing.billing_no}` }];
+      if (Number(billing.advance_recovery_amount) > 0) {
+        lines.push({ accountCode: '1160', debitAmount: 0, creditAmount: billing.advance_recovery_amount, description: 'หักคืนเงินจ่ายล่วงหน้าผู้รับเหมาช่วง' });
+      }
+      if (Number(billing.retention_amount) > 0) {
+        lines.push({ accountCode: '2140', debitAmount: 0, creditAmount: billing.retention_amount, description: 'เงินประกันผลงานค้างจ่าย' });
+      }
+      if (Number(billing.vat_amount) > 0) {
+        lines.push({ accountCode: ACCOUNT_CODE_VAT_INPUT, debitAmount: billing.vat_amount, creditAmount: 0, description: 'ภาษีซื้อ' });
+      }
+      if (Number(billing.wht_amount) > 0) {
+        lines.push({ accountCode: ACCOUNT_CODE_WHT_PAYABLE, debitAmount: 0, creditAmount: billing.wht_amount, description: 'ภาษีหัก ณ ที่จ่ายค้างนำส่ง' });
+      }
+      lines.push({ accountCode: '2130', debitAmount: 0, creditAmount: billing.net_payable_amount, description: `เจ้าหนี้ผู้รับเหมาช่วง: ${billing.billing_no}` });
+      await createClientJournalEntry(client, {
+        companyId, entryDate: today, description: `รับรู้ต้นทุนงวดงานผู้รับเหมาช่วง: ${billing.billing_no}`,
+        sourceType: 'subcontract_billing', sourceId: id, projectId: term.project_id, createdBy: req.customer.id, lines,
+      });
+    } else {
+      // ---- กันเบิกเกิน 3 จุด ข้อ 3 (บังคับจริง) — ล็อกแถว progress billing ต้นทางทุกแถวก่อนคำนวณ SUM ----
+      const items = await client.query('SELECT source_progress_billing_id, amount FROM client_subcontract_retention_release_items WHERE retention_release_billing_id=$1', [id]);
+      const sourceIds = [...new Set(items.rows.map(it => it.source_progress_billing_id))].sort((a, b) => a - b);
+      if (sourceIds.length > 0) {
+        await client.query('SELECT id FROM client_subcontract_billings WHERE id = ANY($1::int[]) FOR UPDATE', [sourceIds]);
+      }
+      for (const it of items.rows) {
+        const already = await client.query(
+          `SELECT COALESCE(SUM(amount),0)::numeric AS used FROM client_subcontract_retention_release_items ri
+           JOIN client_subcontract_billings sb ON sb.id = ri.retention_release_billing_id
+           WHERE ri.source_progress_billing_id=$1 AND sb.status='approved'`,
+          [it.source_progress_billing_id]
+        );
+        const srcRet = await client.query('SELECT retention_amount FROM client_subcontract_billings WHERE id=$1', [it.source_progress_billing_id]);
+        const overRet = await client.query(`SELECT ($1::numeric + $2::numeric) > $3::numeric AS over`, [already.rows[0].used, it.amount, srcRet.rows[0].retention_amount]);
+        if (overRet.rows[0].over) {
+          return { status: 400, body: { error: `อนุมัติไม่ได้ — คืนเงินประกันผลงานเกินยอดที่กันไว้ของงวด id=${it.source_progress_billing_id} (อาจถูกใบอื่นคืนไปก่อนหลังยื่นใบนี้)` } };
+        }
+      }
+      // ---- 2.3 คืนเงินประกันผลงาน: Dr 2140 / Cr 1100 (ไม่มี WHT/VAT — WHT หักครบไปแล้วตอน progress) ----
+      await createClientJournalEntry(client, {
+        companyId, entryDate: today, description: `คืนเงินประกันผลงานผู้รับเหมาช่วง: ${billing.billing_no}`,
+        sourceType: 'subcontract_billing', sourceId: id, projectId: term.project_id, createdBy: req.customer.id,
+        lines: [
+          { accountCode: '2140', debitAmount: billing.gross_amount, creditAmount: 0, description: 'เงินประกันผลงานค้างจ่าย' },
+          { accountCode: ACCOUNT_CODE_CASH, debitAmount: 0, creditAmount: billing.gross_amount, description: `คืนเงินประกันผลงาน ${billing.billing_no}` },
+        ],
+      });
+    }
+
+    // ---- ออก 50 ทวิ เฉพาะ advance/progress ที่ wht_amount>0 (แผนส่วน 6.4 — retention_release ไม่ออกเพราะ
+    // WHT ของงวดนั้นถูกหักครบไปแล้วตอน progress) ----
+    let issuedCertNo = null;
+    if (billing.billing_type !== 'retention_release' && Number(billing.wht_amount) > 0) {
+      const certNo = await generateWhtCertNo(client, companyId);
+      const typeNameRes = await client.query('SELECT name_th FROM client_wht_income_types WHERE code=$1', [billing.wht_income_type_code]);
+      await client.query(
+        `INSERT INTO client_wht_certificates
+           (company_id, cert_no, source_type, source_id, payee_name, payee_tax_id, payment_date, income_type_desc,
+            gross_amount, wht_rate, wht_amount, wht_income_type_code, wht_income_type_name_snapshot, issued_by, issued_at)
+         VALUES ($1,$2,'subcontractor_payment',$3,$4,$5,$6,$7,$8::numeric,$9::numeric,$10::numeric,$11,$12,$13,now())`,
+        [companyId, certNo, id, term.subcontractor_name, term.subcontractor_tax_id, today,
+         `ใบเบิกเงิน ${billing.billing_no}`, billing.gross_amount, billing.wht_rate, billing.wht_amount,
+         billing.wht_income_type_code, typeNameRes.rows[0]?.name_th || '', req.customer.id]
+      );
+      issuedCertNo = certNo;
+    }
+
+    await client.query(`UPDATE client_subcontract_billings SET status='approved', approved_by=$1, approved_at=now() WHERE id=$2`, [req.customer.id, id]);
+    const reason = result.isOverride
+      ? 'อนุมัติโดย super_user (override ข้ามการตรวจสอบ rule/เพดานปกติ)'
+      : `อนุมัติผ่าน rule #${result.ruleId} (เพดาน ${result.maxAmountRaw} บาท)`;
+    await writeAuditLog(client, {
+      companyId, docType: 'subcontractor_payment', docId: id, action: 'approve',
+      fromStatus: 'submitted', toStatus: 'approved', performedBy: req.customer.id,
+      isOverride: result.isOverride, reason: `${reason}${issuedCertNo ? ` (ออก 50 ทวิ: ${issuedCertNo})` : ''}`,
+    });
+
+    const full = await fetchFullSubcontractBilling(client, id, companyId);
+    return { status: 200, body: { subcontractBilling: full, issuedWhtCertificate: issuedCertNo } };
+  });
+});
+
+app.post('/api/customer/subcontract-billings/:id/reject', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const { reason } = req.body || {};
+  if (!reason || !reason.trim()) return res.status(400).json({ error: 'กรุณาระบุเหตุผลการปฏิเสธ' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM client_subcontract_billings WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบใบเบิกเงิน' }); }
+    const billing = r.rows[0];
+    if (billing.status !== 'submitted') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'ปฏิเสธได้เฉพาะที่ยื่นแล้วเท่านั้น' }); }
+    const permCheck = await canApprove(client, req.customer, 'subcontractor_billing', billing.gross_amount, {
+      companyId, originators: [billing.created_by, billing.submitted_by],
+    }, { enforceAmountLimit: false });
+    if (!permCheck.allowed) { await client.query('ROLLBACK'); return res.status(403).json({ error: permCheck.message, code: permCheck.code }); }
+
+    await client.query(`UPDATE client_subcontract_billings SET status='rejected', rejected_reason=$1 WHERE id=$2`, [reason.trim(), id]);
+    await writeAuditLog(client, {
+      companyId, docType: 'subcontractor_payment', docId: id, action: 'reject',
+      fromStatus: 'submitted', toStatus: 'rejected', performedBy: req.customer.id,
+      isOverride: permCheck.isOverride, reason: reason.trim(),
+    });
+    await client.query('COMMIT');
+    const full = await fetchFullSubcontractBilling(pool, id, companyId);
+    res.json({ subcontractBilling: full });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'ปฏิเสธใบเบิกเงินไม่สำเร็จ' });
+  } finally {
+    client.release();
+  }
+});
+
+// ยกเลิกได้ก่อนอนุมัติเท่านั้น (draft/submitted) — เหมือน progress-claims ต่างจาก PO เพราะ approve ที่นี่
+// สร้าง journal/50 ทวิจริงแล้วทันที
+app.post('/api/customer/subcontract-billings/:id/cancel', requireCustomerAuth, async (req, res) => {
+  await withIdempotency(req, res, `subcontract-billings-cancel:${req.params.id}`, async (client) => {
+    const id = parseInt(req.params.id, 10);
+    const companyId = req.customer.company_id;
+    const r = await client.query('SELECT * FROM client_subcontract_billings WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) return { status: 404, body: { error: 'ไม่พบใบเบิกเงิน' } };
+    const billing = r.rows[0];
+    const status = billing.status;
+    if (!['draft', 'submitted'].includes(status)) {
+      return { status: 409, body: { error: 'ยกเลิกได้เฉพาะก่อนอนุมัติเท่านั้น' } };
+    }
+    const isOwner = req.customer.id === billing.created_by || (billing.submitted_by != null && req.customer.id === billing.submitted_by);
+    if (!isOwner) {
+      const permCheck = await canApprove(client, req.customer, 'subcontractor_billing', billing.gross_amount, {
+        companyId, originators: [billing.created_by, billing.submitted_by],
+      }, { enforceAmountLimit: false });
+      if (!permCheck.allowed) {
+        return { status: 403, body: { error: 'ไม่มีสิทธิ์ยกเลิกใบเบิกเงินนี้', code: permCheck.code } };
+      }
+    }
+    await client.query(`UPDATE client_subcontract_billings SET status='cancelled' WHERE id=$1`, [id]);
+    await writeAuditLog(client, {
+      companyId, docType: 'subcontractor_payment', docId: id, action: 'cancel',
+      fromStatus: status, toStatus: 'cancelled', performedBy: req.customer.id,
+    });
+    const full = await fetchFullSubcontractBilling(client, id, companyId);
+    return { status: 200, body: { subcontractBilling: full } };
+  });
+});
+
+app.get('/api/customer/subcontract-billings/:id/wht-certificates', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const billing = await pool.query('SELECT 1 FROM client_subcontract_billings WHERE id=$1 AND company_id=$2', [id, companyId]);
+  if (billing.rowCount === 0) return res.status(404).json({ error: 'ไม่พบใบเบิกเงิน' });
+  const r = await pool.query(
+    `SELECT *, to_char(payment_date,'YYYY-MM-DD') AS payment_date FROM client_wht_certificates WHERE company_id=$1 AND source_type='subcontractor_payment' AND source_id=$2 ORDER BY id`,
+    [companyId, id]
+  );
+  res.json({ whtCertificates: r.rows.map(serializeWhtCertificate) });
 });
 
 app.post('/api/customer/purchase-requests/:id/items/:itemId/consume', requireCustomerAuth, async (req, res) => {

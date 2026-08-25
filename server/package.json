@@ -34,7 +34,8 @@
     "test:pr-ui": "node tests/pr-ui.regression.js",
     "test:po-ui": "node tests/po-ui.regression.js",
     "test:wo-ui": "node tests/wo-ui.regression.js",
-    "test:progress-claims-ui": "node tests/progress-claims-ui.regression.js"
+    "test:progress-claims-ui": "node tests/progress-claims-ui.regression.js",
+    "test:subcontract-billings-ui": "node tests/subcontract-billings-ui.regression.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
