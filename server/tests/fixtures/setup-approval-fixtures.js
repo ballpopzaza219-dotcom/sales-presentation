@@ -13,7 +13,11 @@ const PASSWORD = 'TestPass123!';
 const USERS = [
   { username: 'fx_maker', companyId: COMPANY_A_ID, role: 'maker', flags: {} },
   { username: 'fx_maker2', companyId: COMPANY_A_ID, role: 'maker', flags: {} },
-  { username: 'fx_approver_mid', companyId: COMPANY_A_ID, role: 'approver', flags: { can_approve_pr: true, can_approve_po_wo: true, can_approve_petty_cash: true, can_approve_advance: true, can_approve_other: true } },
+  // มีทั้ง certify และ approve เพื่อเทสจงใจ self-block ของ /approve ที่ต้องครอบคลุมถึง certified_by ด้วย
+  // (คนที่ certify ไปแล้ว approve ใบเดียวกันเองไม่ได้ แม้จะมีสิทธิ์ approve โดยทั่วไปก็ตาม — ต้องให้คนที่ 3
+  // อนุมัติแทนเสมอในเทสจริง เช่น fx_super)
+  { username: 'fx_approver_mid', companyId: COMPANY_A_ID, role: 'approver', flags: { can_approve_pr: true, can_approve_po_wo: true, can_approve_petty_cash: true, can_approve_advance: true, can_approve_other: true, can_approve_progress: true, can_certify_progress: true } },
+  { username: 'fx_certifier', companyId: COMPANY_A_ID, role: 'maker', flags: { can_certify_progress: true, can_approve_progress: true } },
   { username: 'fx_approver_floor', companyId: COMPANY_A_ID, role: 'approver', flags: { can_approve_pr: true, can_approve_petty_cash: true, can_approve_advance: true, can_approve_other: true } },
   { username: 'fx_approver_norule', companyId: COMPANY_A_ID, role: 'approver', flags: { can_approve_pr: true, can_approve_petty_cash: true, can_approve_advance: true, can_approve_other: true } },
   { username: 'fx_super', companyId: COMPANY_A_ID, role: 'super_user', flags: {} },
@@ -31,6 +35,7 @@ const RULES = [
   ['fx_approver_mid', 'petty_cash', 0, 50000],
   ['fx_approver_mid', 'advance', 0, 50000],
   ['fx_approver_mid', 'other', 0, 50000],
+  ['fx_approver_mid', 'progress', 0, 50000],
   ['fx_approver_floor', 'pr', 10000, 200000],
   ['fx_approver_floor', 'petty_cash', 10000, 200000],
   ['fx_approver_floor', 'advance', 10000, 200000],

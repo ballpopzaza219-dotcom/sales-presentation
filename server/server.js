@@ -2513,6 +2513,7 @@ app.put('/api/customer/users/:id/budget-approval-permission', requireCustomerAut
 const MANAGE_PERMISSION_FLAG_COLUMNS = new Set([
   'can_manage_po', 'can_manage_petty_cash_fund', 'can_settle_cash',
   'can_approve_budget', 'can_approve_pr', 'can_approve_po_wo', 'can_approve_petty_cash', 'can_approve_advance', 'can_approve_other',
+  'can_certify_progress', 'can_approve_progress',
 ]);
 app.put('/api/customer/users/:id/permission-flags', requireCustomerAuth, async (req, res) => {
   const targetId = parseInt(req.params.id, 10);
@@ -2637,10 +2638,10 @@ async function seedDefaultLeaveTypes(companyId) {
 
 // Starter chart of accounts for the client ledger (see "Client ledger" section in schema.sql) —
 // same 1xxx-5xxx category structure as admin-panel's chart_of_accounts, generic construction-project
-// account names. 1250/2150/5400 are pre-reserved for the retention/labor-cost journal wiring planned
-// next, not used by anything yet. Called from both company-creation paths below (company-signup and
-// admin-created companies) so "the first time a company starts using the system" is covered either
-// way; schema.sql also has a one-time SQL backfill for companies that already existed before this.
+// account names. Called from both company-creation paths below (company-signup and admin-created
+// companies) so "the first time a company starts using the system" is covered either way; every
+// migration that adds a new account since (0003/0005/0014 etc.) also has a one-time SQL backfill for
+// companies that already existed before it, matching this array so old and new companies stay in sync.
 const DEFAULT_CLIENT_CHART_OF_ACCOUNTS = [
   { code: '1100', name: 'เงินสด', category: 'asset' },
   { code: '1110', name: 'เงินสดย่อย', category: 'asset' },
@@ -2653,6 +2654,7 @@ const DEFAULT_CLIENT_CHART_OF_ACCOUNTS = [
   { code: '2110', name: 'เจ้าหนี้พนักงาน', category: 'liability' },
   { code: '2120', name: 'ภาษีหัก ณ ที่จ่ายค้างนำส่ง', category: 'liability' },
   { code: '2150', name: 'ค่าแรงค้างจ่าย', category: 'liability' },
+  { code: '2160', name: 'เงินรับล่วงหน้าจากลูกค้า', category: 'liability' }, // เพิ่มใน migration 0014 (หัวข้อ 3, advance payment)
   { code: '4100', name: 'รายได้ค่าก่อสร้าง', category: 'revenue' },
   { code: '5100', name: 'ต้นทุนวัสดุ', category: 'expense' },
   { code: '5200', name: 'ต้นทุนผู้รับเหมาช่วง', category: 'expense' },
@@ -4763,6 +4765,692 @@ app.delete('/api/customer/revenue-documents/:id', requireCustomerAuth, async (re
   res.json({ ok: true });
 });
 
+// ---------------- Customer: client ledger — ใบขอเบิกความคืบหน้าโครงการ (Progress Claim, หัวข้อ 3) ----------------
+// migration 0014 — เขียนเป็น "หน้าบ้าน" workflow submit->certify->approve วางไว้หน้า client_revenue เดิม
+// (ซึ่งมีอยู่แล้ว ถูกต้อง ใช้ต่อ ไม่แตะ) — พอ approve แล้วค่อยสร้างแถว client_revenue + post journal เอง
+// ตรงนี้เลย (ไม่ผ่าน postClientRevenueJournalEntry/postClientRetentionHoldJournalEntry เดิมที่ swallow
+// error ภายใน — การ post journal ตอนอนุมัติใบขอเบิก "เป็นจุดประสงค์หลัก" ของ endpoint นี้ ไม่ใช่ secondary
+// action แบบตอนสร้างรายรับตรงๆ เหตุผลเดียวกับที่ /revenue/:id/release-retention ไม่ swallow error เช่นกัน)
+function hasCertifyProgressPermission(customer) {
+  return customer.role === 'super_user' || customer.can_certify_progress === true;
+}
+function serializeProgressClaimItem(row) {
+  return {
+    id: row.id,
+    budgetItemId: row.budget_item_id,
+    workCode: row.work_code,
+    itemDescription: row.item_description,
+    budgetItemAmount: Number(row.budget_item_amount),
+    requestedPercent: Number(row.requested_percent),
+    requestedAmount: Number(row.requested_amount),
+    certifiedPercent: row.certified_percent !== null ? Number(row.certified_percent) : null,
+    certifiedAmount: row.certified_amount !== null ? Number(row.certified_amount) : null,
+  };
+}
+function serializeProgressClaim(row) {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    projectName: row.project_name || null,
+    claimType: row.claim_type,
+    claimMode: row.claim_mode,
+    installmentId: row.installment_id,
+    installmentNo: row.installment_no,
+    installmentDescription: row.installment_description,
+    claimNo: row.claim_no,
+    requestedAmount: Number(row.requested_amount),
+    certifiedAmount: row.certified_amount !== null ? Number(row.certified_amount) : null,
+    retentionPercent: row.retention_percent !== null ? Number(row.retention_percent) : null,
+    retentionPercentOverrideReason: row.retention_percent_override_reason,
+    retentionAmount: Number(row.retention_amount),
+    applyAdvanceAmount: Number(row.apply_advance_amount),
+    status: row.status,
+    submittedBy: row.submitted_by, submittedAt: row.submitted_at,
+    certifiedBy: row.certified_by, certifiedAt: row.certified_at, certifyNote: row.certify_note,
+    approvedBy: row.approved_by, approvedAt: row.approved_at,
+    rejectedReason: row.rejected_reason,
+    revenueId: row.revenue_id,
+    note: row.note,
+    createdBy: row.created_by, createdAt: row.created_at,
+  };
+}
+const CLIENT_PROGRESS_CLAIM_SELECT = `
+  SELECT pc.id, pc.project_id, cp.name AS project_name, pc.claim_type, pc.claim_mode, pc.installment_id,
+    cpi.installment_no, cpi.description AS installment_description,
+    pc.claim_no, pc.requested_amount, pc.certified_amount,
+    pc.retention_percent, pc.retention_percent_override_reason, pc.retention_amount, pc.apply_advance_amount,
+    pc.status, pc.submitted_by, pc.submitted_at, pc.certified_by, pc.certified_at, pc.certify_note,
+    pc.approved_by, pc.approved_at, pc.rejected_reason, pc.revenue_id, pc.note, pc.created_by, pc.created_at
+  FROM client_progress_claims pc
+  LEFT JOIN client_projects cp ON cp.id = pc.project_id
+  LEFT JOIN client_project_installments cpi ON cpi.id = pc.installment_id`;
+const CLIENT_PROGRESS_CLAIM_ITEMS_SELECT = `
+  SELECT pci.id, pci.budget_item_id, bi.work_code, bi.description AS item_description, bi.amount AS budget_item_amount,
+    pci.requested_percent, pci.requested_amount, pci.certified_percent, pci.certified_amount
+  FROM client_progress_claim_items pci
+  JOIN client_budget_items bi ON bi.id = pci.budget_item_id
+  WHERE pci.progress_claim_id=$1 AND pci.company_id=$2 ORDER BY bi.idx`;
+
+async function fetchFullProgressClaim(dbClient, id, companyId) {
+  const r = await dbClient.query(`${CLIENT_PROGRESS_CLAIM_SELECT} WHERE pc.id=$1 AND pc.company_id=$2`, [id, companyId]);
+  if (r.rowCount === 0) return null;
+  const claim = serializeProgressClaim(r.rows[0]);
+  claim.items = claim.claimMode === 'boq'
+    ? (await dbClient.query(CLIENT_PROGRESS_CLAIM_ITEMS_SELECT, [id, companyId])).rows.map(serializeProgressClaimItem)
+    : [];
+  return claim;
+}
+
+async function generateClientClaimNumber(client, companyId) {
+  const year = getBangkokYear() + 543;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const seq = await nextDocumentSeq(client, companyId, 'progress_claim');
+    const no = `PC-${year}-` + String(seq).padStart(4, '0');
+    const exists = await client.query('SELECT 1 FROM client_progress_claims WHERE company_id=$1 AND claim_no=$2', [companyId, no]);
+    if (exists.rowCount === 0) return no;
+  }
+  throw new Error('ไม่สามารถสร้างเลขที่ใบขอเบิกความคืบหน้าได้');
+}
+
+// ทั้ง POST (create)/PUT (edit) ใช้ร่วมกัน — excludeClaimId ใช้ตอน PUT กันเช็คซ้ำกับตัวเอง (งวดงานเดียวกัน)
+async function validateProgressClaimInput(dbClient, companyId, {
+  projectId, claimType, claimMode, installmentId, requestedAmount, items,
+  retentionPercent, retentionPercentOverrideReason, note,
+}, { excludeClaimId } = {}) {
+  if (!projectId) return { error: 'กรุณาเลือกโครงการ' };
+  const proj = await dbClient.query('SELECT 1 FROM client_projects WHERE id=$1 AND company_id=$2', [projectId, companyId]);
+  if (proj.rowCount === 0) return { error: 'ไม่พบโครงการนี้ในบริษัทของคุณ' };
+
+  if (!claimType || !['progress', 'advance'].includes(claimType)) return { error: 'กรุณาเลือกประเภทใบขอเบิกให้ถูกต้อง' };
+
+  if (claimType === 'advance') {
+    const safeRequestedAmount = parsePositiveNumericValue(requestedAmount);
+    if (safeRequestedAmount === null) return { error: 'กรุณาระบุจำนวนเงินที่ขอเบิกล่วงหน้าให้ถูกต้อง (มากกว่า 0)' };
+    return {
+      safeProjectId: projectId, safeClaimType: 'advance', safeClaimMode: null, safeInstallmentId: null,
+      safeRequestedAmount, safeItems: [], safeRetentionPercent: null, safeRetentionPercentOverrideReason: '',
+      safeNote: (note || '').trim(),
+    };
+  }
+
+  // claimType === 'progress'
+  if (!claimMode || !['installment', 'boq'].includes(claimMode)) return { error: 'กรุณาเลือกรูปแบบการขอเบิก (งวดงาน หรือ BOQ)' };
+
+  let safeRequestedAmount = null;
+  let safeItems = [];
+  let safeInstallmentId = null;
+
+  if (claimMode === 'installment') {
+    if (!installmentId) return { error: 'กรุณาเลือกงวดงาน' };
+    const inst = await dbClient.query('SELECT id FROM client_project_installments WHERE id=$1 AND company_id=$2 AND project_id=$3', [installmentId, companyId, projectId]);
+    if (inst.rowCount === 0) return { error: 'ไม่พบงวดงานนี้ในโครงการที่เลือก' };
+    // กันงวดงานเดียวกันถูกขอเบิกซ้อนกันหลายใบพร้อมกัน (นับเฉพาะใบที่ "ยังไม่จบ" — ไม่ใช่ rejected/cancelled —
+    // ตาม pattern NOT IN กับสถานะจบแบบล้มเหลว, CLAUDE.md ข้อ 23)
+    const dupParams = [companyId, installmentId];
+    let dupQuery = `SELECT COUNT(*)::int AS n FROM client_progress_claims WHERE company_id=$1 AND installment_id=$2 AND status NOT IN ('rejected','cancelled')`;
+    if (excludeClaimId) { dupParams.push(excludeClaimId); dupQuery += ` AND id <> $${dupParams.length}`; }
+    const dup = await dbClient.query(dupQuery, dupParams);
+    if (dup.rows[0].n > 0) return { error: 'งวดงานนี้มีใบขอเบิกที่ยังไม่จบ (ไม่ถูกปฏิเสธ/ยกเลิก) อยู่แล้ว' };
+
+    safeInstallmentId = installmentId;
+    safeRequestedAmount = parsePositiveNumericValue(requestedAmount);
+    if (safeRequestedAmount === null) return { error: 'กรุณาระบุจำนวนเงินที่ขอเบิกให้ถูกต้อง (มากกว่า 0)' };
+  } else {
+    // boq — requestedAmount ต่อบรรทัด/รวม คำนวณฝั่ง server เสมอจาก budget_item.amount x requested_percent
+    // (ไม่เชื่อค่าที่ client ส่งมาตรงๆ ตาม CLAUDE.md ข้อ 4) ผ่าน SQL ::numeric ไม่ใช้ JS Number คำนวณ (ข้อ 3)
+    if (!Array.isArray(items) || items.length === 0) return { error: 'กรุณาเลือกอย่างน้อย 1 รายการ BOQ' };
+    const seenBudgetItemIds = new Set();
+    for (const it of items) {
+      if (!it.budgetItemId) return { error: 'มีรายการ BOQ ที่ไม่ได้ระบุ' };
+      if (seenBudgetItemIds.has(it.budgetItemId)) return { error: 'มีรายการ BOQ ซ้ำกันในใบเดียวกัน' };
+      seenBudgetItemIds.add(it.budgetItemId);
+      const pct = parsePositiveNumericValue(it.requestedPercent);
+      if (pct === null || Number(pct) > 100) return { error: `ระบุ % ความคืบหน้าไม่ถูกต้องสำหรับรายการ BOQ id=${it.budgetItemId} (0-100)` };
+      // ต้องเป็นบรรทัดใน BOQ revision ปัจจุบันของโครงการนี้เท่านั้น (current_revision_id)
+      const bi = await dbClient.query(
+        `SELECT ROUND(bi.amount * $1::numeric / 100, 2) AS amount FROM client_budget_items bi
+         JOIN client_budgets b ON b.company_id=bi.company_id AND b.current_revision_id=bi.revision_id
+         WHERE bi.id=$2 AND bi.company_id=$3 AND b.project_id=$4`,
+        [pct, it.budgetItemId, companyId, projectId]
+      );
+      if (bi.rowCount === 0) return { error: `ไม่พบรายการ BOQ id=${it.budgetItemId} ใน BOQ ฉบับปัจจุบันของโครงการนี้` };
+      safeItems.push({ budgetItemId: it.budgetItemId, requestedPercent: pct, requestedAmount: bi.rows[0].amount });
+    }
+    const sumRes = await dbClient.query(
+      `SELECT SUM(x.amt)::numeric AS total FROM UNNEST($1::numeric[]) AS x(amt)`,
+      [safeItems.map(it => it.requestedAmount)]
+    );
+    safeRequestedAmount = sumRes.rows[0].total;
+    if (Number(safeRequestedAmount) <= 0) return { error: 'ยอดรวมที่ขอเบิกต้องมากกว่า 0' };
+  }
+
+  // retention_percent: autofill จาก client_projects.default_retention_percent ถ้าไม่ระบุมา ถ้าระบุมาแล้ว
+  // ต่างจาก default ต้องบังคับกรอกเหตุผล — เทียบค่าด้วย SQL ::numeric เสมอ (ไม่ใช้ JS string/Number เทียบ
+  // เพราะ "5" vs "5.00" ที่ pg คืนมาจะเทียบผิดถ้าเทียบแบบ string ตรงๆ — CLAUDE.md ข้อ 3)
+  let retentionPercentRaw = null;
+  if (retentionPercent !== undefined && retentionPercent !== null && retentionPercent !== '') {
+    const pct = parseNonNegativeNumericValue(retentionPercent);
+    if (pct === null || Number(pct) > 100) return { error: 'ระบุเปอร์เซ็นต์เงินประกันผลงานไม่ถูกต้อง (0-100)' };
+    retentionPercentRaw = pct;
+  }
+  const cmp = await dbClient.query(
+    `SELECT default_retention_percent, (default_retention_percent IS DISTINCT FROM $1::numeric) AS differs_from_default
+     FROM client_projects WHERE id=$2 AND company_id=$3`,
+    [retentionPercentRaw, projectId, companyId]
+  );
+  let safeRetentionPercent, safeRetentionPercentOverrideReason = '';
+  if (retentionPercentRaw === null) {
+    safeRetentionPercent = cmp.rows[0].default_retention_percent;
+  } else {
+    safeRetentionPercent = retentionPercentRaw;
+    if (cmp.rows[0].differs_from_default) {
+      safeRetentionPercentOverrideReason = String(retentionPercentOverrideReason || '').trim();
+      if (!safeRetentionPercentOverrideReason) return { error: 'อัตราเงินประกันผลงานที่ใช้ต่างจากค่าเริ่มต้นของโครงการ กรุณาระบุเหตุผล' };
+    }
+  }
+
+  return {
+    safeProjectId: projectId, safeClaimType: 'progress', safeClaimMode: claimMode, safeInstallmentId,
+    safeRequestedAmount, safeItems, safeRetentionPercent, safeRetentionPercentOverrideReason,
+    safeNote: (note || '').trim(),
+  };
+}
+
+app.get('/api/customer/progress-claims', requireCustomerAuth, async (req, res) => {
+  const companyId = req.customer.company_id;
+  const { status, projectId, claimType } = req.query;
+  const conditions = ['pc.company_id=$1'];
+  const params = [companyId];
+  if (status) { params.push(status); conditions.push(`pc.status=$${params.length}`); }
+  if (projectId) { params.push(parseInt(projectId, 10)); conditions.push(`pc.project_id=$${params.length}`); }
+  if (claimType) { params.push(claimType); conditions.push(`pc.claim_type=$${params.length}`); }
+  const r = await pool.query(`${CLIENT_PROGRESS_CLAIM_SELECT} WHERE ${conditions.join(' AND ')} ORDER BY pc.id DESC`, params);
+  res.json({ progressClaims: r.rows.map(serializeProgressClaim) });
+});
+
+app.get('/api/customer/progress-claims/:id', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const claim = await fetchFullProgressClaim(pool, id, req.customer.company_id);
+  if (!claim) return res.status(404).json({ error: 'ไม่พบใบขอเบิกความคืบหน้า' });
+  res.json({ progressClaim: claim });
+});
+
+// ยอดเงินรับล่วงหน้าคงเหลือของโครงการ (สำหรับกรอกฟอร์ม progress claim ตอนจะเลือกหักล้าง) — GET แสดงผล
+// อย่างเดียว ไม่ใช้ตัดสินใจอะไรที่นี่ (การเช็คจริงเกิดตอน /approve พร้อม FOR UPDATE) จึง Number() ได้ปกติ
+app.get('/api/customer/projects/:id/outstanding-advance', requireCustomerAuth, async (req, res) => {
+  const projectId = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const proj = await pool.query('SELECT 1 FROM client_projects WHERE id=$1 AND company_id=$2', [projectId, companyId]);
+  if (proj.rowCount === 0) return res.status(404).json({ error: 'ไม่พบโครงการนี้' });
+  const r = await pool.query(
+    `SELECT COALESCE(SUM(amount - applied_amount), 0) AS outstanding FROM client_revenue
+     WHERE company_id=$1 AND project_id=$2 AND type='deposit' AND amount > applied_amount`,
+    [companyId, projectId]
+  );
+  res.json({ outstandingAdvance: Number(r.rows[0].outstanding) });
+});
+
+app.post('/api/customer/progress-claims', requireCustomerAuth, async (req, res) => {
+  await withIdempotency(req, res, 'progress-claims-create', async (client) => {
+    const companyId = req.customer.company_id;
+    const { projectId, claimType, claimMode, installmentId, requestedAmount, items, retentionPercent, retentionPercentOverrideReason, note } = req.body || {};
+    const v = await validateProgressClaimInput(client, companyId, { projectId, claimType, claimMode, installmentId, requestedAmount, items, retentionPercent, retentionPercentOverrideReason, note });
+    if (v.error) return { status: 400, body: { error: v.error } };
+
+    const insert = await client.query(
+      `INSERT INTO client_progress_claims
+         (company_id, project_id, claim_type, claim_mode, installment_id, requested_amount,
+          retention_percent, retention_percent_override_reason, note, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6::numeric,$7::numeric,$8,$9,$10) RETURNING id`,
+      [companyId, v.safeProjectId, v.safeClaimType, v.safeClaimMode, v.safeInstallmentId, v.safeRequestedAmount,
+       v.safeRetentionPercent, v.safeRetentionPercentOverrideReason, v.safeNote, req.customer.id]
+    );
+    const claimId = insert.rows[0].id;
+    for (const it of v.safeItems) {
+      await client.query(
+        `INSERT INTO client_progress_claim_items (progress_claim_id, company_id, budget_item_id, requested_percent, requested_amount)
+         VALUES ($1,$2,$3,$4::numeric,$5::numeric)`,
+        [claimId, companyId, it.budgetItemId, it.requestedPercent, it.requestedAmount]
+      );
+    }
+    const claim = await fetchFullProgressClaim(client, claimId, companyId);
+    return { status: 200, body: { progressClaim: claim } };
+  });
+});
+
+// แก้ไขได้เฉพาะ draft เท่านั้น — delete+reinsert items ได้อย่างปลอดภัยเหมือน PO (ยังไม่มี certified_percent
+// ผูกอยู่ตอน draft แน่นอน)
+app.put('/api/customer/progress-claims/:id', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const { projectId, claimType, claimMode, installmentId, requestedAmount, items, retentionPercent, retentionPercentOverrideReason, note } = req.body || {};
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const cRes = await client.query('SELECT status FROM client_progress_claims WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (cRes.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบใบขอเบิกความคืบหน้า' }); }
+    if (cRes.rows[0].status !== 'draft') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'แก้ไขได้เฉพาะสถานะร่างเท่านั้น' }); }
+
+    const v = await validateProgressClaimInput(client, companyId, { projectId, claimType, claimMode, installmentId, requestedAmount, items, retentionPercent, retentionPercentOverrideReason, note }, { excludeClaimId: id });
+    if (v.error) { await client.query('ROLLBACK'); return res.status(400).json({ error: v.error }); }
+
+    await client.query(
+      `UPDATE client_progress_claims SET
+         project_id=$1, claim_type=$2, claim_mode=$3, installment_id=$4, requested_amount=$5::numeric,
+         retention_percent=$6::numeric, retention_percent_override_reason=$7, note=$8
+       WHERE id=$9`,
+      [v.safeProjectId, v.safeClaimType, v.safeClaimMode, v.safeInstallmentId, v.safeRequestedAmount,
+       v.safeRetentionPercent, v.safeRetentionPercentOverrideReason, v.safeNote, id]
+    );
+    await client.query('DELETE FROM client_progress_claim_items WHERE progress_claim_id=$1', [id]);
+    for (const it of v.safeItems) {
+      await client.query(
+        `INSERT INTO client_progress_claim_items (progress_claim_id, company_id, budget_item_id, requested_percent, requested_amount)
+         VALUES ($1,$2,$3,$4::numeric,$5::numeric)`,
+        [id, companyId, it.budgetItemId, it.requestedPercent, it.requestedAmount]
+      );
+    }
+    await client.query('COMMIT');
+    const claim = await fetchFullProgressClaim(pool, id, companyId);
+    res.json({ progressClaim: claim });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'แก้ไขใบขอเบิกความคืบหน้าไม่สำเร็จ' });
+  } finally {
+    client.release();
+  }
+});
+
+app.post('/api/customer/progress-claims/:id/submit', requireCustomerAuth, async (req, res) => {
+  await withIdempotency(req, res, `progress-claims-submit:${req.params.id}`, async (client) => {
+    const id = parseInt(req.params.id, 10);
+    const companyId = req.customer.company_id;
+
+    const r = await client.query('SELECT * FROM client_progress_claims WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) return { status: 404, body: { error: 'ไม่พบใบขอเบิกความคืบหน้า' } };
+    const claim = r.rows[0];
+    if (claim.status !== 'draft') return { status: 409, body: { error: 'ยื่นได้เฉพาะสถานะร่างเท่านั้น' } };
+
+    if (req.customer.id !== claim.created_by) {
+      const permCheck = await canApprove(client, req.customer, 'progress', claim.requested_amount, {
+        companyId, originators: [claim.created_by],
+      }, { enforceAmountLimit: false });
+      if (!permCheck.allowed) {
+        return { status: 403, body: { error: 'ไม่มีสิทธิ์ยื่นใบขอเบิกนี้ (ต้องเป็นผู้สร้าง หรือมีสิทธิ์อนุมัติ)', code: permCheck.code } };
+      }
+    }
+
+    // เตือนล่วงหน้าถ้า boq เกิน 100% สะสม (ไม่บังคับจริง — บังคับจริงตอน approve เท่านั้น เพราะ claimed_percent
+    // อาจถูกใบอื่นตัดยอดไปหลังจากนี้ได้อีก เหมือน pattern เดียวกับ PO's over-limit guard)
+    if (claim.claim_mode === 'boq') {
+      const overCheck = await client.query(
+        `SELECT bi.work_code, bi.claimed_percent, pci.requested_percent
+         FROM client_progress_claim_items pci
+         JOIN client_budget_items bi ON bi.id = pci.budget_item_id
+         WHERE pci.progress_claim_id=$1 AND (bi.claimed_percent + pci.requested_percent) > 100`,
+        [id]
+      );
+      if (overCheck.rowCount > 0) {
+        return { status: 400, body: { error: `ขอเบิกเกิน 100% สะสมของบรรทัด BOQ: ${overCheck.rows.map(l => `${l.work_code} (สะสม ${l.claimed_percent}% + ขอ ${l.requested_percent}%)`).join(', ')}` } };
+      }
+    }
+
+    const claimNo = await generateClientClaimNumber(client, companyId);
+    await client.query(
+      `UPDATE client_progress_claims SET claim_no=$1, status='submitted', submitted_by=$2, submitted_at=now() WHERE id=$3`,
+      [claimNo, req.customer.id, id]
+    );
+    await writeAuditLog(client, {
+      companyId, docType: 'progress_claim', docId: id, action: 'submit',
+      fromStatus: 'draft', toStatus: 'submitted', performedBy: req.customer.id,
+    });
+    const full = await fetchFullProgressClaim(client, id, companyId);
+    return { status: 200, body: { progressClaim: full } };
+  });
+});
+
+// เฉพาะ claim_type='progress' — advance ไม่มีขั้นตอนนี้ (ข้ามไป submit->approve ตรงๆ ตามที่ตกลง)
+app.post('/api/customer/progress-claims/:id/certify', requireCustomerAuth, async (req, res) => {
+  await withIdempotency(req, res, `progress-claims-certify:${req.params.id}`, async (client) => {
+    const id = parseInt(req.params.id, 10);
+    const companyId = req.customer.company_id;
+    const { certifiedAmount, certifyNote, items } = req.body || {};
+
+    const r = await client.query('SELECT * FROM client_progress_claims WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) return { status: 404, body: { error: 'ไม่พบใบขอเบิกความคืบหน้า' } };
+    const claim = r.rows[0];
+    if (claim.claim_type !== 'progress') return { status: 400, body: { error: 'ใบขอเบิกเงินล่วงหน้าไม่มีขั้นตอนตรวจสอบผลงาน' } };
+    if (claim.status !== 'submitted') return { status: 409, body: { error: 'ตรวจสอบผลงานได้เฉพาะใบที่ยื่นแล้วเท่านั้น' } };
+    if (!hasCertifyProgressPermission(req.customer)) return { status: 403, body: { error: 'ไม่มีสิทธิ์ตรวจสอบผลงาน', code: 'no_permission' } };
+    if (req.customer.id === claim.created_by) return { status: 403, body: { error: 'ผู้สร้างใบขอเบิกตรวจสอบผลงานใบของตัวเองไม่ได้', code: 'self_certify_blocked' } };
+
+    let safeCertifiedAmount;
+    const itemUpdates = [];
+    if (claim.claim_mode === 'boq') {
+      if (!Array.isArray(items) || items.length === 0) return { status: 400, body: { error: 'กรุณาระบุ % ที่ตรวจสอบแล้วของทุกรายการ BOQ' } };
+      const existingItems = await client.query('SELECT id, budget_item_id FROM client_progress_claim_items WHERE progress_claim_id=$1', [id]);
+      const byId = new Map(existingItems.rows.map(row => [row.id, row]));
+      for (const it of items) {
+        const row = byId.get(it.itemId);
+        if (!row) return { status: 400, body: { error: `ไม่พบรายการ id=${it.itemId} ในใบนี้` } };
+        const pct = parseNonNegativeNumericValue(it.certifiedPercent);
+        if (pct === null || Number(pct) > 100) return { status: 400, body: { error: `ระบุ % ที่ตรวจสอบไม่ถูกต้องสำหรับรายการ id=${it.itemId}` } };
+        const amt = await client.query('SELECT ROUND(amount * $1::numeric / 100, 2) AS amount FROM client_budget_items WHERE id=$2 AND company_id=$3', [pct, row.budget_item_id, companyId]);
+        itemUpdates.push({ itemId: it.itemId, certifiedPercent: pct, certifiedAmount: amt.rows[0].amount });
+      }
+      const sumRes = await client.query(`SELECT SUM(x.amt)::numeric AS total FROM UNNEST($1::numeric[]) AS x(amt)`, [itemUpdates.map(u => u.certifiedAmount)]);
+      safeCertifiedAmount = sumRes.rows[0].total;
+    } else {
+      safeCertifiedAmount = parseNonNegativeNumericValue(certifiedAmount);
+      if (safeCertifiedAmount === null) return { status: 400, body: { error: 'กรุณาระบุยอดที่ตรวจสอบแล้วให้ถูกต้อง' } };
+    }
+
+    // เทียบ certified vs requested ด้วย SQL ::numeric เสมอ (ไม่ใช้ JS Number ตัดสินใจ — ข้อ 3)
+    const bounds = await client.query(
+      `SELECT ($1::numeric > requested_amount) AS exceeds, ($1::numeric <> requested_amount) AS differs
+       FROM client_progress_claims WHERE id=$2`,
+      [safeCertifiedAmount, id]
+    );
+    if (bounds.rows[0].exceeds) return { status: 400, body: { error: `ยอดที่ตรวจสอบ (${safeCertifiedAmount}) ต้องไม่เกินยอดที่ขอเบิก (${claim.requested_amount})` } };
+    const safeCertifyNote = String(certifyNote || '').trim();
+    if (bounds.rows[0].differs && !safeCertifyNote) {
+      return { status: 400, body: { error: 'ยอดที่ตรวจสอบไม่เท่ากับยอดที่ขอเบิก กรุณาระบุเหตุผล' } };
+    }
+
+    for (const u of itemUpdates) {
+      await client.query('UPDATE client_progress_claim_items SET certified_percent=$1::numeric, certified_amount=$2::numeric WHERE id=$3', [u.certifiedPercent, u.certifiedAmount, u.itemId]);
+    }
+    await client.query(
+      `UPDATE client_progress_claims SET certified_amount=$1::numeric, certified_by=$2, certified_at=now(), certify_note=$3, status='certified' WHERE id=$4`,
+      [safeCertifiedAmount, req.customer.id, safeCertifyNote, id]
+    );
+    await writeAuditLog(client, {
+      companyId, docType: 'progress_claim', docId: id, action: 'certify',
+      fromStatus: 'submitted', toStatus: 'certified', performedBy: req.customer.id,
+      reason: safeCertifyNote || `รับรองยอดเท่ากับที่ขอ (${safeCertifiedAmount})`,
+    });
+    const full = await fetchFullProgressClaim(client, id, companyId);
+    return { status: 200, body: { progressClaim: full } };
+  });
+});
+
+app.post('/api/customer/progress-claims/:id/approve', requireCustomerAuth, async (req, res) => {
+  await withIdempotency(req, res, `progress-claims-approve:${req.params.id}`, async (client) => {
+    const id = parseInt(req.params.id, 10);
+    const companyId = req.customer.company_id;
+    const { applyAdvanceAmount } = req.body || {};
+
+    const r = await client.query('SELECT * FROM client_progress_claims WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) return { status: 404, body: { error: 'ไม่พบใบขอเบิกความคืบหน้า' } };
+    const claim = r.rows[0];
+
+    if (claim.claim_type === 'advance') {
+      if (claim.status !== 'submitted') return { status: 409, body: { error: 'อนุมัติได้เฉพาะที่ยื่นแล้วเท่านั้น' } };
+    } else if (claim.status !== 'certified') {
+      return { status: 409, body: { error: 'อนุมัติได้เฉพาะที่ตรวจสอบผลงานแล้วเท่านั้น' } };
+    }
+
+    // self-block ครอบคลุมถึงคนที่ certify ไปแล้วด้วย (ไม่ใช่แค่ created_by/submitted_by แบบเอกสารอื่น) —
+    // ตกลงไว้ชัดเจนว่าคนคนเดียว certify แล้ว approve เองไม่ได้ ไม่งั้นการแยกขั้นตอนไม่มีความหมาย
+    const result = await canApprove(client, req.customer, 'progress',
+      claim.claim_type === 'advance' ? claim.requested_amount : claim.certified_amount,
+      { companyId, originators: [claim.created_by, claim.submitted_by, claim.certified_by].filter(x => x != null) }
+    );
+    if (!result.allowed) return { status: 403, body: { error: result.message, code: result.code } };
+
+    const today = getBangkokDateStr();
+    let revenueId;
+
+    if (claim.claim_type === 'advance') {
+      // ---- 3.1.1.2 รับเงินล่วงหน้า: Dr 1100 เงินสด / Cr 2160 เงินรับล่วงหน้าจากลูกค้า ----
+      // ไม่รับรู้เป็นรายได้ทันที (ตัดสินใจไว้ชัดเจนแล้ว — ต่างจาก type='progress' ที่ Dr1200/Cr4100)
+      const revIns = await client.query(
+        `INSERT INTO client_revenue (company_id, project_id, type, description, revenue_date, amount)
+         VALUES ($1,$2,'deposit',$3,$4,$5::numeric) RETURNING id`,
+        [companyId, claim.project_id, `เงินล่วงหน้า: ${claim.claim_no}`, today, claim.requested_amount]
+      );
+      revenueId = revIns.rows[0].id;
+      await createClientJournalEntry(client, {
+        companyId, entryDate: today, description: `รับเงินล่วงหน้า: ${claim.claim_no}`,
+        sourceType: 'revenue', sourceId: revenueId, projectId: claim.project_id, createdBy: req.customer.id,
+        lines: [
+          { accountCode: '1100', debitAmount: claim.requested_amount, creditAmount: 0, description: 'เงินสด' },
+          { accountCode: '2160', debitAmount: 0, creditAmount: claim.requested_amount, description: 'เงินรับล่วงหน้าจากลูกค้า' },
+        ],
+      });
+      await client.query(
+        `UPDATE client_progress_claims SET certified_amount=requested_amount, status='approved', approved_by=$1, approved_at=now(), revenue_id=$2 WHERE id=$3`,
+        [req.customer.id, revenueId, id]
+      );
+    } else {
+      // ---- 3.1.1.1 Progress ----
+      // retention_amount/net_after_retention คำนวณด้วย SQL ::numeric เสมอ ไม่ใช้ JS Number (ข้อ 3) เพราะ
+      // ค่านี้ถูกใช้ตัดสินใจต่อ (เทียบกับ apply_advance_amount) ไม่ใช่แค่ format แสดงผล
+      const calc = await client.query(
+        `SELECT ROUND(certified_amount * COALESCE(retention_percent,0) / 100, 2) AS retention_amount,
+                certified_amount - ROUND(certified_amount * COALESCE(retention_percent,0) / 100, 2) AS net_after_retention
+         FROM client_progress_claims WHERE id=$1`,
+        [id]
+      );
+      const retentionAmount = calc.rows[0].retention_amount;
+      const netAfterRetention = calc.rows[0].net_after_retention;
+
+      // กันเบิกเกิน 100% สะสมต่อบรรทัด BOQ — ล็อกก่อนเสมอ (ข้อ 6) แยก statement จาก aggregate (ข้อ 7)
+      if (claim.claim_mode === 'boq') {
+        const claimItems = await client.query('SELECT budget_item_id FROM client_progress_claim_items WHERE progress_claim_id=$1', [id]);
+        const budgetItemIds = [...new Set(claimItems.rows.map(it => it.budget_item_id))].sort((a, b) => a - b);
+        if (budgetItemIds.length > 0) {
+          await client.query('SELECT id FROM client_budget_items WHERE id = ANY($1::int[]) FOR UPDATE', [budgetItemIds]);
+          const checkRes = await client.query(
+            `SELECT bi.work_code, bi.claimed_percent, pci.certified_percent,
+               (bi.claimed_percent + pci.certified_percent) > 100 AS over_limit
+             FROM client_budget_items bi
+             JOIN client_progress_claim_items pci ON pci.budget_item_id = bi.id
+             WHERE pci.progress_claim_id=$1`,
+            [id]
+          );
+          const overLines = checkRes.rows.filter(row => row.over_limit);
+          if (overLines.length > 0) {
+            return { status: 400, body: { error: `อนุมัติไม่ได้ — เกิน 100% สะสมของบรรทัด BOQ: ${overLines.map(l => `${l.work_code} (สะสมเดิม ${l.claimed_percent}% + รับรอง ${l.certified_percent}%)`).join(', ')}` } };
+          }
+        }
+      }
+
+      const safeApplyAdvance = (applyAdvanceAmount !== undefined && applyAdvanceAmount !== null && applyAdvanceAmount !== '')
+        ? parseNonNegativeNumericValue(applyAdvanceAmount) : '0';
+      if (safeApplyAdvance === null) return { status: 400, body: { error: 'ระบุยอดหักล้างเงินล่วงหน้าไม่ถูกต้อง' } };
+
+      const netCmp = await client.query(`SELECT ($1::numeric > $2::numeric) AS exceeds`, [safeApplyAdvance, netAfterRetention]);
+      if (netCmp.rows[0].exceeds) {
+        return { status: 400, body: { error: `ยอดหักล้างเงินล่วงหน้า (${safeApplyAdvance}) เกินยอดที่จะเรียกเก็บงวดนี้หลังหักเงินประกันผลงาน (${netAfterRetention})` } };
+      }
+
+      const advanceRowsToApply = [];
+      if (Number(safeApplyAdvance) > 0) {
+        // ล็อกแถว advance (client_revenue) ที่เกี่ยวข้องทั้งหมดก่อนเป็น statement แยก แล้วค่อย query
+        // ยอดคงเหลือรวมแยกอีก statement ต่างหาก (ข้อ 6/7 เดียวกับที่ทำกับ budget_items ด้านบน)
+        const advRows = await client.query(
+          `SELECT id, amount, applied_amount FROM client_revenue
+           WHERE company_id=$1 AND project_id=$2 AND type='deposit' AND amount > applied_amount
+           ORDER BY id FOR UPDATE`,
+          [companyId, claim.project_id]
+        );
+        const outstandingRes = await client.query(
+          `SELECT COALESCE(SUM(amount - applied_amount), 0) AS outstanding FROM client_revenue
+           WHERE company_id=$1 AND project_id=$2 AND type='deposit' AND amount > applied_amount`,
+          [companyId, claim.project_id]
+        );
+        const outCmp = await client.query(`SELECT ($1::numeric > $2::numeric) AS exceeds`, [safeApplyAdvance, outstandingRes.rows[0].outstanding]);
+        if (outCmp.rows[0].exceeds) {
+          return { status: 400, body: { error: `ยอดหักล้างเงินล่วงหน้า (${safeApplyAdvance}) เกินยอดเงินล่วงหน้าคงเหลือจริง (${outstandingRes.rows[0].outstanding})` } };
+        }
+        // แบ่งยอดข้าม advance หลายก้อนแบบ FIFO (เก่าสุดก่อน) — ยอดรวมผ่านการตรวจสอบด้วย SQL ไว้แล้วข้างบน
+        // ลูปนี้แค่ "แบ่งสัดส่วน" ไม่ใช่จุดตัดสินใจผ่าน/ไม่ผ่านอีกต่อไป
+        let remaining = round2(Number(safeApplyAdvance));
+        for (const row of advRows.rows) {
+          if (remaining <= 0) break;
+          const rowOutstanding = round2(Number(row.amount) - Number(row.applied_amount));
+          const take = Math.min(rowOutstanding, remaining);
+          if (take > 0) { advanceRowsToApply.push({ id: row.id, amount: take }); remaining = round2(remaining - take); }
+        }
+      }
+
+      const revIns = await client.query(
+        `INSERT INTO client_revenue (company_id, project_id, type, description, revenue_date, amount, ref_doc, retention_percent, retention_amount, retention_status)
+         VALUES ($1,$2,'progress',$3,$4,$5::numeric,$6,$7::numeric,$8::numeric,$9) RETURNING id`,
+        [companyId, claim.project_id, `งวดงาน: ${claim.claim_no}`, today, claim.certified_amount, claim.claim_no,
+         claim.retention_percent, retentionAmount, Number(retentionAmount) > 0 ? 'held' : null]
+      );
+      revenueId = revIns.rows[0].id;
+
+      await createClientJournalEntry(client, {
+        companyId, entryDate: today, description: `รับรู้รายได้งวดงาน: ${claim.claim_no}`,
+        sourceType: 'revenue', sourceId: revenueId, projectId: claim.project_id, createdBy: req.customer.id,
+        lines: [
+          { accountCode: '1200', debitAmount: claim.certified_amount, creditAmount: 0, description: 'ลูกหนี้การค้า' },
+          { accountCode: '4100', debitAmount: 0, creditAmount: claim.certified_amount, description: `งวดงาน: ${claim.claim_no}` },
+        ],
+      });
+      if (Number(retentionAmount) > 0) {
+        await createClientJournalEntry(client, {
+          companyId, entryDate: today, description: `เงินประกันผลงาน: ${claim.claim_no}`,
+          sourceType: 'retention', sourceId: revenueId, projectId: claim.project_id, createdBy: req.customer.id,
+          lines: [
+            { accountCode: '1250', debitAmount: retentionAmount, creditAmount: 0, description: 'ลูกหนี้เงินประกันผลงาน' },
+            { accountCode: '1200', debitAmount: 0, creditAmount: retentionAmount, description: 'ลูกหนี้การค้า' },
+          ],
+        });
+      }
+      for (const a of advanceRowsToApply) {
+        await createClientJournalEntry(client, {
+          companyId, entryDate: today, description: `หักล้างเงินล่วงหน้า: ${claim.claim_no}`,
+          sourceType: 'revenue', sourceId: revenueId, projectId: claim.project_id, createdBy: req.customer.id,
+          lines: [
+            { accountCode: '2160', debitAmount: a.amount, creditAmount: 0, description: 'เงินรับล่วงหน้าจากลูกค้า' },
+            { accountCode: '1200', debitAmount: 0, creditAmount: a.amount, description: 'ลูกหนี้การค้า' },
+          ],
+        });
+        await client.query('UPDATE client_revenue SET applied_amount = applied_amount + $1::numeric WHERE id=$2', [a.amount, a.id]);
+        await client.query(
+          `INSERT INTO client_revenue_advance_applications (company_id, advance_revenue_id, progress_claim_id, amount, applied_date, created_by)
+           VALUES ($1,$2,$3,$4::numeric,$5,$6)`,
+          [companyId, a.id, id, a.amount, today, req.customer.id]
+        );
+      }
+
+      if (claim.claim_mode === 'boq') {
+        const claimItems2 = await client.query('SELECT budget_item_id, certified_percent FROM client_progress_claim_items WHERE progress_claim_id=$1', [id]);
+        for (const it of claimItems2.rows) {
+          // += แบบสัมพัทธ์เสมอ ห้ามอ่านมาคำนวณแล้วเขียนค่าสัมบูรณ์กลับ (กัน lost-update, ข้อ 5)
+          await client.query('UPDATE client_budget_items SET claimed_percent = claimed_percent + $1::numeric WHERE id=$2', [it.certified_percent, it.budget_item_id]);
+        }
+      }
+
+      await client.query(
+        `UPDATE client_progress_claims SET retention_amount=$1::numeric, apply_advance_amount=$2::numeric, status='approved', approved_by=$3, approved_at=now(), revenue_id=$4 WHERE id=$5`,
+        [retentionAmount, safeApplyAdvance, req.customer.id, revenueId, id]
+      );
+    }
+
+    const reason = result.isOverride
+      ? 'อนุมัติโดย super_user (override ข้ามการตรวจสอบ rule/เพดานปกติ)'
+      : `อนุมัติผ่าน rule #${result.ruleId} (เพดาน ${result.maxAmountRaw} บาท)`;
+    await writeAuditLog(client, {
+      companyId, docType: 'progress_claim', docId: id, action: 'approve',
+      fromStatus: claim.status, toStatus: 'approved', performedBy: req.customer.id,
+      isOverride: result.isOverride, reason,
+    });
+
+    const full = await fetchFullProgressClaim(client, id, companyId);
+    return { status: 200, body: { progressClaim: full } };
+  });
+});
+
+app.post('/api/customer/progress-claims/:id/reject', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const { reason } = req.body || {};
+  if (!reason || !reason.trim()) return res.status(400).json({ error: 'กรุณาระบุเหตุผลการปฏิเสธ' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM client_progress_claims WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบใบขอเบิกความคืบหน้า' }); }
+    const claim = r.rows[0];
+    const rejectableStatuses = claim.claim_type === 'advance' ? ['submitted'] : ['submitted', 'certified'];
+    if (!rejectableStatuses.includes(claim.status)) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'ปฏิเสธได้เฉพาะที่ยื่นแล้ว (หรือตรวจสอบผลงานแล้วสำหรับใบ progress) เท่านั้น' });
+    }
+    const permCheck = await canApprove(client, req.customer, 'progress',
+      claim.claim_type === 'advance' ? claim.requested_amount : (claim.certified_amount || claim.requested_amount),
+      { companyId, originators: [claim.created_by, claim.submitted_by, claim.certified_by].filter(x => x != null) },
+      { enforceAmountLimit: false }
+    );
+    if (!permCheck.allowed) { await client.query('ROLLBACK'); return res.status(403).json({ error: permCheck.message, code: permCheck.code }); }
+
+    await client.query(`UPDATE client_progress_claims SET status='rejected', rejected_reason=$1 WHERE id=$2`, [reason.trim(), id]);
+    await writeAuditLog(client, {
+      companyId, docType: 'progress_claim', docId: id, action: 'reject',
+      fromStatus: claim.status, toStatus: 'rejected', performedBy: req.customer.id,
+      isOverride: permCheck.isOverride, reason: reason.trim(),
+    });
+    await client.query('COMMIT');
+    const full = await fetchFullProgressClaim(pool, id, companyId);
+    res.json({ progressClaim: full });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'ปฏิเสธใบขอเบิกความคืบหน้าไม่สำเร็จ' });
+  } finally {
+    client.release();
+  }
+});
+
+// ยกเลิกได้ก่อนอนุมัติเท่านั้น (draft/submitted/certified) — ยังไม่มี client_revenue ผูกอยู่จนกว่าจะ approve
+// ต่างจาก PO ที่ approved แล้วยัง cancel ได้ เพราะที่นี่ "อนุมัติ" = สร้างรายได้/journal จริงแล้วทันที
+app.post('/api/customer/progress-claims/:id/cancel', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT * FROM client_progress_claims WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบใบขอเบิกความคืบหน้า' }); }
+    const claim = r.rows[0];
+    const status = claim.status;
+    if (!['draft', 'submitted', 'certified'].includes(status)) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'ยกเลิกได้เฉพาะก่อนอนุมัติเท่านั้น' });
+    }
+    const isOwner = req.customer.id === claim.created_by || (claim.submitted_by != null && req.customer.id === claim.submitted_by);
+    if (!isOwner) {
+      const permCheck = await canApprove(client, req.customer, 'progress', claim.certified_amount || claim.requested_amount, {
+        companyId, originators: [claim.created_by, claim.submitted_by, claim.certified_by].filter(x => x != null),
+      }, { enforceAmountLimit: false });
+      if (!permCheck.allowed) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ error: 'ไม่มีสิทธิ์ยกเลิกใบขอเบิกนี้', code: permCheck.code });
+      }
+    }
+    await client.query(`UPDATE client_progress_claims SET status='cancelled' WHERE id=$1`, [id]);
+    await writeAuditLog(client, {
+      companyId, docType: 'progress_claim', docId: id, action: 'cancel',
+      fromStatus: status, toStatus: 'cancelled', performedBy: req.customer.id,
+    });
+    await client.query('COMMIT');
+    const full = await fetchFullProgressClaim(pool, id, companyId);
+    res.json({ progressClaim: full });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'ยกเลิกใบขอเบิกความคืบหน้าไม่สำเร็จ' });
+  } finally {
+    client.release();
+  }
+});
+
 // ---------------- Customer: client ledger — ค่าแรงพนักงาน (labor costs) ----------------
 const CLIENT_LABOR_COST_SELECT_COLUMNS = `
   id, employee_id, project_id, to_char(work_date,'YYYY-MM-DD') AS work_date, days_worked, amount,
@@ -6312,6 +7000,11 @@ function serializeBudgetItem(row) {
     materialUnitPrice: Number(row.material_unit_price), laborUnitPrice: Number(row.labor_unit_price),
     materialAmount: Number(row.material_amount), laborAmount: Number(row.labor_amount), amount: Number(row.amount),
     strictControl: row.strict_control, isGroup: row.is_group, groupId: row.group_id, note: row.note,
+    // claimedPercent (หัวข้อ 3, migration 0014) — % สะสมที่ถูกอนุมัติใน progress claim ไปแล้ว ใช้โชว์
+    // "เหลือเบิกได้อีกกี่ %" ในฟอร์มสร้างใบขอเบิกแบบ BOQ — row.claimed_percent เป็น undefined สำหรับแถวที่
+    // query ไม่ได้ SELECT คอลัมน์นี้มา (เช่น revision เก่าที่ query ผ่าน endpoint อื่น) จึง Number(undefined)
+    // ได้ NaN แทน 0 ถ้าไม่กันไว้ก่อน
+    claimedPercent: row.claimed_percent !== undefined ? Number(row.claimed_percent) : 0,
   };
 }
 // A group row's own material_amount/labor_amount/amount are always stored as 0 (buildBoqRow forces
@@ -7951,6 +8644,7 @@ const APPROVAL_DOC_TYPE_FLAG_COLUMN = {
   petty_cash: 'can_approve_petty_cash',
   advance: 'can_approve_advance',
   other: 'can_approve_other',
+  progress: 'can_approve_progress',
 };
 const APPROVAL_DOC_TYPE_LABEL_TH = {
   pr: 'ใบขอซื้อ (PR)',
@@ -7958,6 +8652,7 @@ const APPROVAL_DOC_TYPE_LABEL_TH = {
   petty_cash: 'เงินสดย่อย',
   advance: 'เงินทดรองจ่าย',
   other: 'จ่ายเจ้าหนี้ภายนอก',
+  progress: 'ใบขอเบิกความคืบหน้าโครงการ',
 };
 // docType ของ canApprove จาก voucher_type — ใช้ร่วมกันทุก endpoint ของ payment-vouchers (submit/approve/
 // reject/cancel) กันพิมพ์ ternary ซ้ำคนละจุดแล้วพลาดไม่ตรงกัน
@@ -8196,7 +8891,7 @@ async function writeAuditLog(client, { companyId, docType, docId, action, fromSt
 // ให้ตั้ง rule เลยจนถึงตอนนี้ — จุดนี้เองที่ทำให้โมดูล 1.2/1.4 อนุมัติจริงไม่ได้แม้ flag จะตั้งได้แล้ว)
 // doc_type ที่รองรับตรงกับ CHECK ของตาราง (ขยายไปแล้วโดย migration 0004/0006 ให้รองรับ advance/other —
 // ตรวจยืนยันจาก DB จริงแล้วว่าไม่ต้องมี migration ใหม่)
-const APPROVAL_RULE_DOC_TYPES = new Set(['pr', 'po_wo', 'petty_cash', 'advance', 'other']);
+const APPROVAL_RULE_DOC_TYPES = new Set(['pr', 'po_wo', 'petty_cash', 'advance', 'other', 'progress']);
 
 // ตั้ง rule ใหม่ทับของเดิมเสมอ (ไม่มี "แก้เพดานในที่เดิม") — ปิด rule เก่าเป็น is_active=false ก่อนเสมอ
 // (ไม่ลบ เก็บประวัติไว้ตรวจย้อนหลังได้ตามที่ตกลง) แล้วค่อย INSERT แถวใหม่ — ต้องเรียงลำดับ UPDATE-ก่อน-

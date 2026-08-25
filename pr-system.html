@@ -742,6 +742,16 @@ let S = {
   woForm:null,                // set lazily on first render of pageFinWoAdd() — {subcontractorId, projectId, contractValue, advancePercent, retentionPercent, whtIncomeTypeCode, whtRate, startDate, endDate, note}
   woRejectForm:null,          // {id, reason:''}
   woTerminateForm:null,       // {id, reason:''}
+  progressClaims:[],
+  progressClaimsLoaded:false,
+  progressClaimListFilter:{status:'', projectId:'', claimType:''},
+  selectedProgressClaimId:null,
+  selectedProgressClaimDetail:null,
+  progressClaimForm:null,     // set lazily on first render of pageFinProgressClaimAdd()
+  progressClaimRejectForm:null,   // {id, reason:''}
+  progressClaimCertifyForm:null,  // {id, certifiedAmount, certifyNote, items:[{itemId,budgetItemId,certifiedPercent}]}
+  progressClaimApproveForm:null,  // {id, applyAdvanceAmount} — เฉพาะ claimType='progress'
+  outstandingAdvanceByProject:{}, // projectId -> amount (cache)
   quotationsLoaded:false,
   quotationAddForm:null,      // set lazily on first render of pageFinQuotationAdd()
   clientDocumentsLoaded:false,
@@ -1430,6 +1440,58 @@ async function loadSubcontractTermDetail(id){
   try{
     const data = await apiCall('GET', `/api/customer/subcontract-terms/${id}`);
     S.selectedSubcontractTermDetail = data.subcontractTerm;
+  } catch(e){ toast(e.message, 'err'); }
+  render();
+}
+// ---------- ใบขอเบิกความคืบหน้าโครงการ (Progress Claim, หัวข้อ 3) — ต่อ API จริงทั้งหมด ----------
+async function loadProgressClaims(){
+  try{
+    const params = new URLSearchParams();
+    if(S.progressClaimListFilter.status) params.set('status', S.progressClaimListFilter.status);
+    if(S.progressClaimListFilter.projectId) params.set('projectId', S.progressClaimListFilter.projectId);
+    if(S.progressClaimListFilter.claimType) params.set('claimType', S.progressClaimListFilter.claimType);
+    const qs = params.toString();
+    const data = await apiCall('GET', '/api/customer/progress-claims'+(qs?`?${qs}`:''));
+    S.progressClaims = data.progressClaims;
+  } catch(e){ toast(e.message, 'err'); }
+  S.progressClaimsLoaded = true; render();
+}
+async function loadProgressClaimDetail(id){
+  S.selectedProgressClaimDetail = null;
+  render();
+  try{
+    const data = await apiCall('GET', `/api/customer/progress-claims/${id}`);
+    S.selectedProgressClaimDetail = data.progressClaim;
+  } catch(e){ toast(e.message, 'err'); }
+  render();
+}
+// งวดงาน (client_project_installments) ไม่มี endpoint แยกเบา — ใช้ GET project detail ตัวเดียวกับที่หน้า
+// รายละเอียดโครงการใช้อยู่แล้ว (คืน {project, installments} มาด้วยกัน)
+async function loadInstallmentsForClaimProject(projectId){
+  if(!S.progressClaimForm) return;
+  S.progressClaimForm.installments = undefined;
+  render();
+  try{
+    const data = await apiCall('GET', `/api/customer/projects/${projectId}`);
+    if(S.progressClaimForm) S.progressClaimForm.installments = data.installments;
+  } catch(e){ toast(e.message, 'err'); if(S.progressClaimForm) S.progressClaimForm.installments = []; }
+  render();
+}
+// BOQ ปัจจุบันของโครงการ — endpoint เดียวกับที่ create_pr ใช้ (currentItems มี claimedPercent ติดมาด้วยแล้ว)
+async function loadBoqForClaimProject(projectId){
+  if(!S.progressClaimForm) return;
+  S.progressClaimForm.boqBudget = undefined;
+  render();
+  try{
+    const data = await apiCall('GET', `/api/customer/budgets?projectId=${projectId}`);
+    if(S.progressClaimForm) S.progressClaimForm.boqBudget = data.budget;
+  } catch(e){ toast(e.message, 'err'); if(S.progressClaimForm) S.progressClaimForm.boqBudget = null; }
+  render();
+}
+async function loadOutstandingAdvance(projectId){
+  try{
+    const data = await apiCall('GET', `/api/customer/projects/${projectId}/outstanding-advance`);
+    S.outstandingAdvanceByProject[projectId] = data.outstandingAdvance;
   } catch(e){ toast(e.message, 'err'); }
   render();
 }
@@ -2711,6 +2773,7 @@ function financeNavFor(u){
     {key:'fin_overview', label:tr('nav.fin_overview'), icon:'overview'},
     {key:'section', label:tr('nav.section_revenue_cost')},
     {key:'fin_revenue', label:tr('nav.fin_revenue'), icon:'trendUp'},
+    {key:'fin_progress_claims', label:tr('nav.fin_progress_claims'), icon:'fileStack'},
     {key:'fin_receive_payment', label:tr('nav.fin_receive_payment'), icon:'wallet'},
     {key:'fin_costs', label:tr('nav.fin_costs'), icon:'trendDown'},
     {key:'fin_office', label:tr('nav.fin_office'), icon:'building'},
@@ -2843,7 +2906,7 @@ function renderDashboard(){
   if(u.role!=='super_user' && u.canManagePo && S.module==='pr' && !nav.find(n=>n.key==='subcontractors')){
     nav.push({key:'subcontractors', label:tr('nav.subcontractors'), icon:'users'});
   }
-  const hiddenPages = ['emp_app_form','emp_app_print','fin_tender_add','fin_tender_detail','fin_budget_detail','fin_project_add','fin_project_detail','fin_project_schedule','fin_po_add','fin_quotation_add','fin_document_add','fin_voucher_detail','fin_wht_certificate_print','fin_advance_clearance_detail','pr_detail','fin_po_detail','fin_wo_add','fin_wo_detail']; // reachable only via buttons, not listed in any sidebar nav
+  const hiddenPages = ['emp_app_form','emp_app_print','fin_tender_add','fin_tender_detail','fin_budget_detail','fin_project_add','fin_project_detail','fin_project_schedule','fin_po_add','fin_quotation_add','fin_document_add','fin_voucher_detail','fin_wht_certificate_print','fin_advance_clearance_detail','pr_detail','fin_po_detail','fin_wo_add','fin_wo_detail','fin_progress_claim_add','fin_progress_claim_detail']; // reachable only via buttons, not listed in any sidebar nav
   if(!hiddenPages.includes(S.page) && !nav.find(n=>n.key===S.page && n.key!=='section')) S.page = S.module==='finance' ? 'fin_overview' : S.module==='employees' ? 'emp_overview' : S.module==='bidding' ? 'fin_tender_overview' : 'overview';
 
   return `
@@ -2997,6 +3060,9 @@ function renderPage(){
     case 'fin_wo': return pageFinWo();
     case 'fin_wo_add': return pageFinWoAdd();
     case 'fin_wo_detail': return pageFinWoDetail();
+    case 'fin_progress_claims': return pageFinProgressClaims();
+    case 'fin_progress_claim_add': return pageFinProgressClaimAdd();
+    case 'fin_progress_claim_detail': return pageFinProgressClaimDetail();
     case 'fin_quotations': return pageFinQuotations();
     case 'fin_quotation_add': return pageFinQuotationAdd();
     case 'fin_documents': return pageFinDocuments();
@@ -6850,6 +6916,289 @@ function pageFinWoDetail(){
   </div>`;
 }
 
+// ---------------- ใบขอเบิกความคืบหน้าโครงการ (Progress Claim, หัวข้อ 3) — real backend, client_progress_claims ----------------
+function progressClaimTypeLabels(){
+  return { progress: tr('fin_progress.type_progress'), advance: tr('fin_progress.type_advance') };
+}
+function progressClaimStatusLabels(){
+  return {
+    draft: tr('pr.status_draft'), submitted: tr('pr.status_submitted'), certified: tr('fin_progress.status_certified'),
+    approved: tr('pr.status_approved'), rejected: tr('pr.status_rejected'), cancelled: tr('pr.status_cancelled'),
+  };
+}
+function progressClaimStatusBadgeClass(status){
+  return status==='approved' ? 'badge-approved' : status==='rejected' ? 'badge-suspended' : status==='cancelled' ? 'badge-suspended'
+    : status==='certified' ? 'badge-pending' : status==='submitted' ? 'badge-pending' : 'badge-draft';
+}
+function pageFinProgressClaims(){
+  const list = S.progressClaims;
+  const f = S.progressClaimListFilter;
+  const total = sumBy(list, c=>c.certifiedAmount!=null?c.certifiedAmount:c.requestedAmount);
+  return `
+  <div class="page-head">
+    <div><h2>${tr('nav.fin_progress_claims')}</h2><div class="sub">${tr('fin_progress.subtitle')}</div></div>
+    <button class="btn btn-primary" data-act="nav" data-page="fin_progress_claim_add">${ICN.plus} ${tr('fin_progress.add_claim')}</button>
+  </div>
+  <div class="card" style="padding:16px 18px; margin-bottom:14px;">
+    <div class="split">
+      <div class="field"><label>${tr('pr.filter_status')}</label>
+        <select data-act="filter-progress-status">
+          <option value="">${tr('pr.filter_status_all')}</option>
+          ${Object.entries(progressClaimStatusLabels()).map(([k,v])=>`<option value="${k}" ${f.status===k?'selected':''}>${v}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field"><label>${tr('pr.filter_project')}</label>
+        <select data-act="filter-progress-project">
+          <option value="">${tr('pr.filter_project_all')}</option>
+          ${DB.projects.map(p=>`<option value="${p.id}" ${String(f.projectId)===String(p.id)?'selected':''}>${esc(p.name)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field"><label>${tr('common.col_type')}</label>
+        <select data-act="filter-progress-type">
+          <option value="">${tr('pr.filter_status_all')}</option>
+          ${Object.entries(progressClaimTypeLabels()).map(([k,v])=>`<option value="${k}" ${f.claimType===k?'selected':''}>${v}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+  </div>
+  <div class="grid-cards" style="grid-template-columns:repeat(auto-fit,minmax(200px,240px));">
+    ${statCard('doc', tr('ledger.stat_count'), list.length, '')}
+    ${statCard('barChart', tr('ledger.stat_total'), fmtMoney(total)+' ฿', '')}
+  </div>
+  <div class="card" style="padding:20px 22px;">
+    ${list.length===0 ? `<div class="empty"><div class="em-icon">${ICN.box}</div>${tr('ledger.no_entries_yet')}</div>` : `
+    <div class="table-wrap"><table>
+      <thead><tr><th>${tr('fin_progress.col_claim_no')}</th><th>${tr('ledger.col_project')}</th><th>${tr('common.col_type')}</th><th>${tr('fin_progress.col_requested')}</th><th>${tr('fin_progress.col_certified')}</th><th>${tr('common.col_status')}</th><th></th></tr></thead>
+      <tbody>
+        ${list.map(c=>`
+          <tr>
+            <td class="mono">${c.claimNo || `(${tr('pr.status_draft')})`}</td>
+            <td>${c.projectName?esc(c.projectName):'-'}</td>
+            <td>${progressClaimTypeLabels()[c.claimType]||c.claimType}</td>
+            <td class="mono">${fmtMoney(c.requestedAmount)}</td>
+            <td class="mono">${c.certifiedAmount!=null?fmtMoney(c.certifiedAmount):'-'}</td>
+            <td><span class="badge ${progressClaimStatusBadgeClass(c.status)}">${progressClaimStatusLabels()[c.status]||c.status}</span></td>
+            <td><button class="btn btn-ghost btn-sm" data-act="nav" data-page="fin_progress_claim_detail" data-id="${c.id}" data-id-field="selectedProgressClaimId">${tr('common.view_detail')}</button></td>
+          </tr>`).join('')}
+      </tbody>
+    </table></div>`}
+  </div>`;
+}
+function pageFinProgressClaimAdd(){
+  if(!S.progressClaimForm) S.progressClaimForm = {
+    claimType:'progress', claimMode:'installment', projectId:'', installmentId:'', requestedAmount:'',
+    boqPercents:{}, // budgetItemId -> requestedPercent string
+    retentionPercent:'', retentionPercentOverrideReason:'', note:'',
+    installments:undefined, boqBudget:undefined,
+    submitting:false, idempotencyKey: crypto.randomUUID(),
+  };
+  const f = S.progressClaimForm;
+  const project = DB.projects.find(p=>String(p.id)===String(f.projectId));
+  const projectDefaultRetention = project ? project.defaultRetentionPercent : null;
+
+  let modeSection = '';
+  if(f.claimType==='progress' && f.projectId){
+    if(f.claimMode==='installment'){
+      if(f.installments===undefined){
+        modeSection = `<div class="hint">${tr('common.loading')}</div>`;
+      } else if(f.installments.length===0){
+        modeSection = `<div class="hint">${tr('fin_progress.no_installments_hint')}</div>`;
+      } else {
+        modeSection = `
+          <div class="field"><label>${tr('fin_progress.installment_label')}</label>
+            <select data-act="select-progress-installment">
+              <option value="">${tr('fin_progress.pick_installment_placeholder')}</option>
+              ${f.installments.map(i=>`<option value="${i.id}" ${String(f.installmentId)===String(i.id)?'selected':''}>${tr('fin_retention.col_installment')} ${i.installmentNo}: ${esc(i.description)} (${fmtMoney(i.amount)})</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label>${tr('fin_progress.requested_amount_label')} *</label><input id="pc-requested-amount" type="number" value="${prVal(f.requestedAmount)}" oninput="S.progressClaimForm.requestedAmount=this.value;"></div>`;
+      }
+    } else {
+      // boq
+      if(f.boqBudget===undefined){
+        modeSection = `<div class="hint">${tr('common.loading')}</div>`;
+      } else if(!f.boqBudget || !f.boqBudget.currentItems || f.boqBudget.currentItems.length===0){
+        modeSection = `<div class="hint">${tr('fin_progress.no_boq_hint')}</div>`;
+      } else {
+        const rows = f.boqBudget.currentItems.filter(it=>!it.isGroup);
+        modeSection = `
+          <div class="table-wrap"><table>
+            <thead><tr><th>${tr('create_pr.col_material')}</th><th>${tr('fin_progress.col_claimed_so_far')}</th><th>${tr('fin_progress.col_requested_percent')}</th><th>${tr('pr.col_estimated_amount')}</th></tr></thead>
+            <tbody>${rows.map(it=>{
+              const pct = f.boqPercents[it.id]||'';
+              const amt = pct ? Math.round(it.amount * Number(pct) / 100 * 100) / 100 : 0; // แค่พรีวิวฝั่ง client เท่านั้น ยอดจริงคำนวณซ้ำฝั่ง server ตอนบันทึก
+              return `<tr>
+                <td>${esc(it.workCode)} ${esc(it.description)}</td>
+                <td class="mono">${it.claimedPercent}%</td>
+                <td><input type="number" min="0" max="${100-it.claimedPercent}" style="width:90px;" value="${pct}" oninput="S.progressClaimForm.boqPercents['${it.id}']=this.value; render();"></td>
+                <td class="mono">${fmtMoney(amt)}</td>
+              </tr>`;
+            }).join('')}</tbody>
+          </table></div>`;
+      }
+    }
+  }
+
+  const showRetentionReason = project && projectDefaultRetention!=null && f.retentionPercent!=='' && Number(f.retentionPercent)!==Number(projectDefaultRetention);
+
+  return `
+  <div class="page-head">
+    <div>
+      <button class="btn btn-ghost btn-sm" data-act="nav" data-page="fin_progress_claims" style="margin-bottom:8px;">${ICN.chevronLeft} ${tr('common.back')}</button>
+      <h2>${tr('fin_progress.add_claim')}</h2><div class="sub">${tr('fin_progress.add_subtitle')}</div>
+    </div>
+  </div>
+  <div class="card" style="padding:20px 22px; max-width:900px;">
+    <div class="field"><label>${tr('common.col_type')} *</label>
+      <select data-act="select-progress-claim-type">
+        ${Object.entries(progressClaimTypeLabels()).map(([k,v])=>`<option value="${k}" ${f.claimType===k?'selected':''}>${v}</option>`).join('')}
+      </select>
+    </div>
+
+    ${f.claimType==='advance' ? `
+      <div class="field"><label>${tr('ledger.col_project')} *</label><select data-act="select-progress-project">${projectSelectOptions(f.projectId, true)}</select></div>
+      <div class="field"><label>${tr('fin_progress.requested_amount_label')} *</label><input id="pc-requested-amount-adv" type="number" value="${prVal(f.requestedAmount)}" oninput="S.progressClaimForm.requestedAmount=this.value;"></div>
+    ` : `
+      <div class="split">
+        <div class="field"><label>${tr('ledger.col_project')} *</label><select data-act="select-progress-project">${projectSelectOptions(f.projectId, true)}</select></div>
+        <div class="field"><label>${tr('fin_progress.claim_mode_label')} *</label>
+          <select data-act="select-progress-claim-mode">
+            <option value="installment" ${f.claimMode==='installment'?'selected':''}>${tr('fin_progress.claim_mode_installment')}</option>
+            <option value="boq" ${f.claimMode==='boq'?'selected':''}>${tr('fin_progress.claim_mode_boq')}</option>
+          </select>
+        </div>
+      </div>
+      ${f.projectId ? modeSection : `<div class="hint">${tr('fin_progress.pick_project_first_hint')}</div>`}
+      <div class="split" style="margin-top:14px;">
+        <div class="field"><label>${tr('fin_wo.retention_percent_label')}${projectDefaultRetention!=null?` (${tr('fin_progress.default_hint')} ${projectDefaultRetention}%)`:''}</label>
+          <input id="pc-retention-percent" type="number" value="${prVal(f.retentionPercent)}" oninput="S.progressClaimForm.retentionPercent=this.value; render();">
+        </div>
+        <div></div>
+      </div>
+      ${showRetentionReason ? `<div class="field"><label>${tr('fin_progress.retention_override_reason_label')} *</label><input id="pc-retention-reason" value="${esc(f.retentionPercentOverrideReason)}" oninput="S.progressClaimForm.retentionPercentOverrideReason=this.value;"></div>` : ''}
+    `}
+
+    <div class="field" style="margin-top:14px;"><label>${tr('create_pr.remark_label')}</label><textarea id="pc-note" oninput="S.progressClaimForm.note=this.value;">${esc(f.note)}</textarea></div>
+    <div class="small-btn-row" style="justify-content:flex-end; margin-top:6px;">
+      <button class="btn btn-ghost" data-act="nav" data-page="fin_progress_claims">${tr('common.cancel')}</button>
+      <button class="btn btn-primary" data-act="save-progress-claim-full" ${f.submitting?'disabled':''}>${f.submitting?tr('leave_public.submitting'):tr('common.save')}</button>
+    </div>
+  </div>`;
+}
+function pageFinProgressClaimDetail(){
+  const c = S.selectedProgressClaimDetail;
+  if(!c) return `<div class="page-head"><h2>${tr('common.loading')}</h2></div>`;
+  const u = S.currentUser;
+  const isOwner = u.id===c.createdBy || (c.submittedBy!=null && u.id===c.submittedBy);
+  const canApprove = u.role==='super_user' || u.canApproveProgress===true;
+  const canCertify = u.role==='super_user' || u.canCertifyProgress===true;
+  const rf = S.progressClaimRejectForm;
+  const cf = S.progressClaimCertifyForm;
+  const af = S.progressClaimApproveForm;
+  const canCertifyThis = c.claimType==='progress' && c.status==='submitted' && canCertify && u.id!==c.createdBy;
+  const canApproveThis = canApprove && ((c.claimType==='advance' && c.status==='submitted') || (c.claimType==='progress' && c.status==='certified'));
+
+  return `
+  <div class="page-head">
+    <div>
+      <button class="btn btn-ghost btn-sm" data-act="nav" data-page="fin_progress_claims" style="margin-bottom:8px;">${ICN.chevronLeft} ${tr('common.back')}</button>
+      <h2>${c.claimNo || `(${tr('pr.status_draft')})`} <span class="badge ${progressClaimStatusBadgeClass(c.status)}">${progressClaimStatusLabels()[c.status]||c.status}</span></h2>
+      <div class="sub">${progressClaimTypeLabels()[c.claimType]||c.claimType}${c.projectName?' · '+esc(c.projectName):''}</div>
+    </div>
+  </div>
+
+  <div class="card" style="padding:20px 22px; margin-bottom:16px;">
+    <div class="split">
+      <div><div class="lbl">${tr('fin_progress.requested_amount_label')}</div><div class="mono" style="font-weight:700; color:var(--navy);">${fmtMoney(c.requestedAmount)}</div></div>
+      <div><div class="lbl">${tr('fin_progress.col_certified')}</div><div class="mono">${c.certifiedAmount!=null?fmtMoney(c.certifiedAmount):'-'}</div></div>
+    </div>
+    ${c.claimType==='progress' ? `
+    <div class="split" style="margin-top:10px;">
+      <div><div class="lbl">${tr('fin_wo.retention_percent_label')}</div><div>${c.retentionPercent!=null?c.retentionPercent+'%':'-'}${c.retentionPercentOverrideReason?` (${esc(c.retentionPercentOverrideReason)})`:''}</div></div>
+      <div><div class="lbl">${tr('fin_progress.retention_amount_label')}</div><div class="mono">${fmtMoney(c.retentionAmount)}</div></div>
+    </div>
+    ${c.installmentDescription ? `<div style="margin-top:10px;"><div class="lbl">${tr('fin_progress.installment_label')}</div><div>${tr('fin_retention.col_installment')} ${c.installmentNo}: ${esc(c.installmentDescription)}</div></div>` : ''}
+    ` : ''}
+    ${Number(c.applyAdvanceAmount)>0 ? `<div style="margin-top:10px;"><div class="lbl">${tr('fin_progress.applied_advance_label')}</div><div class="mono">${fmtMoney(c.applyAdvanceAmount)}</div></div>` : ''}
+    ${c.note ? `<div style="margin-top:10px;"><div class="lbl">${tr('create_pr.remark_label')}</div><div>${esc(c.note)}</div></div>` : ''}
+    ${c.certifyNote ? `<div style="margin-top:10px;"><div class="lbl">${tr('fin_progress.certify_note_label')}</div><div>${esc(c.certifyNote)}</div></div>` : ''}
+    ${c.status==='rejected' && c.rejectedReason ? `<div style="margin-top:10px; color:var(--red);"><div class="lbl">${tr('pr.rejected_reason_label')}</div><div>${esc(c.rejectedReason)}</div></div>` : ''}
+  </div>
+
+  ${c.claimMode==='boq' && c.items && c.items.length>0 ? `
+  <div class="card" style="padding:20px 22px; margin-bottom:16px;">
+    <div class="section-title">${tr('create_pr.section_items')}</div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>${tr('create_pr.col_material')}</th><th>${tr('fin_progress.col_requested_percent')}</th><th>${tr('pr.col_estimated_amount')}</th><th>${tr('fin_progress.col_certified_percent')}</th><th>${tr('fin_progress.col_certified')}</th></tr></thead>
+      <tbody>${c.items.map(it=>`
+        <tr>
+          <td>${esc(it.workCode)} ${esc(it.itemDescription)}</td>
+          <td class="mono">${it.requestedPercent}%</td>
+          <td class="mono">${fmtMoney(it.requestedAmount)}</td>
+          <td class="mono">${it.certifiedPercent!=null?it.certifiedPercent+'%':'-'}</td>
+          <td class="mono">${it.certifiedAmount!=null?fmtMoney(it.certifiedAmount):'-'}</td>
+        </tr>`).join('')}</tbody>
+    </table></div>
+  </div>` : ''}
+
+  <div class="card" style="padding:20px 22px;">
+    <div class="small-btn-row" style="justify-content:flex-end;">
+      ${c.status==='draft' && (isOwner||canApprove) ? `<button class="btn btn-primary btn-sm" data-act="submit-progress-claim" data-id="${c.id}" ${isVoucherActionPending('pc-submit',c.id)?'disabled':''}>${tr('pr.action_submit')}</button>` : ''}
+      ${canCertifyThis ? `<button class="btn btn-navy btn-sm" data-act="open-progress-claim-certify" data-id="${c.id}">${tr('fin_progress.action_certify')}</button>` : ''}
+      ${canApproveThis ? `<button class="btn btn-navy btn-sm" data-act="open-progress-claim-approve" data-id="${c.id}">${tr('pr.action_approve')}</button>` : ''}
+      ${(c.status==='submitted'||c.status==='certified') && canApprove ? `<button class="btn btn-danger btn-sm" data-act="open-progress-claim-reject" data-id="${c.id}">${tr('pr.action_reject')}</button>` : ''}
+      ${['draft','submitted','certified'].includes(c.status) && (isOwner||canApprove) ? `<button class="btn btn-ghost btn-sm" data-act="cancel-progress-claim" data-id="${c.id}" ${isVoucherActionPending('pc-cancel',c.id)?'disabled':''}>${tr('pr.action_cancel')}</button>` : ''}
+    </div>
+
+    ${cf && cf.id===c.id ? `
+    <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border);">
+      <div class="section-title" style="margin-top:0;">${tr('fin_progress.action_certify')}</div>
+      ${c.claimMode==='boq' ? `
+        <div class="table-wrap"><table>
+          <thead><tr><th>${tr('create_pr.col_material')}</th><th>${tr('fin_progress.col_requested_percent')}</th><th>${tr('fin_progress.col_certified_percent')}</th></tr></thead>
+          <tbody>${(c.items||[]).map(it=>{
+            const cp = cf.items[it.id]!==undefined ? cf.items[it.id] : it.requestedPercent;
+            return `<tr>
+              <td>${esc(it.workCode)} ${esc(it.itemDescription)}</td>
+              <td class="mono">${it.requestedPercent}%</td>
+              <td><input type="number" min="0" max="100" style="width:90px;" value="${cp}" oninput="S.progressClaimCertifyForm.items['${it.id}']=this.value;"></td>
+            </tr>`;
+          }).join('')}</tbody>
+        </table></div>
+      ` : `
+        <div class="field"><label>${tr('fin_progress.certified_amount_label')}</label><input id="pcc-amount" type="number" value="${prVal(cf.certifiedAmount)}" oninput="S.progressClaimCertifyForm.certifiedAmount=this.value;"></div>
+      `}
+      <div class="field"><label>${tr('fin_progress.certify_note_label')}</label><input id="pcc-note" value="${esc(cf.certifyNote)}" oninput="S.progressClaimCertifyForm.certifyNote=this.value;"></div>
+      <div class="small-btn-row" style="justify-content:flex-end;">
+        <button class="btn btn-ghost btn-sm" data-act="cancel-progress-claim-certify-form">${tr('common.cancel')}</button>
+        <button class="btn btn-navy btn-sm" data-act="submit-progress-claim-certify" data-id="${c.id}">${tr('fin_progress.action_certify')}</button>
+      </div>
+    </div>` : ''}
+
+    ${af && af.id===c.id ? `
+    <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border);">
+      <div class="section-title" style="margin-top:0;">${tr('pr.action_approve')}</div>
+      ${c.claimType==='progress' ? `
+        <div class="hint">${tr('fin_progress.outstanding_advance_hint', {amount: fmtMoney(S.outstandingAdvanceByProject[c.projectId]||0)})}</div>
+        <div class="field"><label>${tr('fin_progress.apply_advance_label')}</label><input id="pca-advance" type="number" value="${prVal(af.applyAdvanceAmount)}" oninput="S.progressClaimApproveForm.applyAdvanceAmount=this.value;"></div>
+      ` : ''}
+      <div class="small-btn-row" style="justify-content:flex-end;">
+        <button class="btn btn-ghost btn-sm" data-act="cancel-progress-claim-approve-form">${tr('common.cancel')}</button>
+        <button class="btn btn-navy btn-sm" data-act="submit-progress-claim-approve" data-id="${c.id}">${tr('pr.action_approve')}</button>
+      </div>
+    </div>` : ''}
+
+    ${rf && rf.id===c.id ? `
+    <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border);">
+      <div class="field"><label>${tr('pr.rejected_reason_label')}</label><input id="pc-reject-reason" value="${esc(rf.reason)}" oninput="S.progressClaimRejectForm.reason=this.value;"></div>
+      <div class="small-btn-row" style="justify-content:flex-end;">
+        <button class="btn btn-ghost btn-sm" data-act="cancel-progress-claim-reject-form">${tr('common.cancel')}</button>
+        <button class="btn btn-danger btn-sm" data-act="submit-progress-claim-reject" data-id="${c.id}">${tr('pr.action_reject')}</button>
+      </div>
+    </div>` : ''}
+  </div>`;
+}
+
 // ---------------- ใบเสนอราคา (Quotations, customer → their own client) — real backend, client_quotations ----------------
 function quotationStatusLabels(){
   return {
@@ -7525,7 +7874,7 @@ function pageApprovalPermissions(){
           <th rowspan="2">${tr('common.col_position')}</th>
           <th rowspan="2">${tr('common.col_role')}</th>
           <th colspan="2">${tr('approval_permissions.group_other')}</th>
-          <th colspan="5">${tr('approval_permissions.group_doc_approval')}</th>
+          <th colspan="7">${tr('approval_permissions.group_doc_approval')}</th>
           <th colspan="3">${tr('approval_permissions.group_execution')}</th>
         </tr>
         <tr>
@@ -7536,13 +7885,15 @@ function pageApprovalPermissions(){
           <th>${tr('approval_permissions.col_approve_petty_cash')}</th>
           <th>${tr('approval_permissions.col_approve_advance')}</th>
           <th>${tr('approval_permissions.col_approve_other')}</th>
+          <th>${tr('approval_permissions.col_certify_progress')}</th>
+          <th>${tr('approval_permissions.col_approve_progress')}</th>
           <th>${tr('approval_permissions.col_manage_po')}</th>
           <th>${tr('approval_permissions.col_manage_petty_cash_fund')}</th>
           <th>${tr('approval_permissions.col_settle_cash')}</th>
         </tr>
       </thead>
       <tbody>
-        ${rows.length===0 ? `<tr><td colspan="13"><div class="empty" style="padding:20px 0;">${tr('users.no_users_yet')}</div></td></tr>` : rows.map(cu=>{
+        ${rows.length===0 ? `<tr><td colspan="15"><div class="empty" style="padding:20px 0;">${tr('users.no_users_yet')}</div></td></tr>` : rows.map(cu=>{
           // ห้าม self-grant/self-revoke (ตรงกับ backend) — ซ่อนปุ่มบนแถวของตัวเอง แม้จะเป็น super_user
           const canManageThisRow = canManage && S.currentUser.id !== cu.id;
           return `
@@ -7557,6 +7908,8 @@ function pageApprovalPermissions(){
             ${permFlagCell(cu, 'can_approve_petty_cash', canManageThisRow)}
             ${permFlagCell(cu, 'can_approve_advance', canManageThisRow)}
             ${permFlagCell(cu, 'can_approve_other', canManageThisRow)}
+            ${permFlagCell(cu, 'can_certify_progress', canManageThisRow)}
+            ${permFlagCell(cu, 'can_approve_progress', canManageThisRow)}
             ${permFlagCell(cu, 'can_manage_po', canManageThisRow)}
             ${permFlagCell(cu, 'can_manage_petty_cash_fund', canManageThisRow)}
             ${permFlagCell(cu, 'can_settle_cash', canManageThisRow)}
@@ -11318,6 +11671,8 @@ async function handleAction(act, el){
         canSettleCash: !!data.customer.can_settle_cash,
         canApprovePr: !!data.customer.can_approve_pr,
         canApprovePoWo: !!data.customer.can_approve_po_wo,
+        canCertifyProgress: !!data.customer.can_certify_progress,
+        canApproveProgress: !!data.customer.can_approve_progress,
       };
       S.view='dashboard'; S.page='overview';
       render();
@@ -11385,7 +11740,7 @@ async function handleAction(act, el){
     // โครงการ (client_projects) backs the project pickers on cost/revenue/labor forms, budget-vs-
     // actual, and the project list/detail pages themselves — load it once, on first visit to any
     // of them, rather than duplicating the load call in every single one of those page branches.
-    const PROJECT_DEPENDENT_PAGES = ['fin_projects','fin_project_add','fin_project_detail','fin_costs','fin_revenue','fin_retention','fin_receive_payment','fin_labor','fin_labor_pay','create_pr','my_prs','all_prs','fin_po','fin_po_add','fin_po_detail','fin_wo','fin_wo_add','fin_wo_detail','fin_quotations','fin_quotation_add','fin_documents','fin_document_add','fin_petty_cash_funds','fin_vouchers_petty_cash','fin_vouchers_advance','fin_vouchers_other','fin_voucher_detail'];
+    const PROJECT_DEPENDENT_PAGES = ['fin_projects','fin_project_add','fin_project_detail','fin_costs','fin_revenue','fin_retention','fin_receive_payment','fin_labor','fin_labor_pay','create_pr','my_prs','all_prs','fin_po','fin_po_add','fin_po_detail','fin_wo','fin_wo_add','fin_wo_detail','fin_progress_claims','fin_progress_claim_add','fin_progress_claim_detail','fin_quotations','fin_quotation_add','fin_documents','fin_document_add','fin_petty_cash_funds','fin_vouchers_petty_cash','fin_vouchers_advance','fin_vouchers_other','fin_voucher_detail'];
     if(PROJECT_DEPENDENT_PAGES.includes(S.page) && S.dataMode!=='demo' && !S.projectsLoaded) await loadRealProjects();
     // PR (หัวข้อ 4) — ต่อ API จริงเสมอ ไม่มี demo dataset แล้ว (ดู pageOverview's comment)
     if((S.page==='overview'||S.page==='my_prs'||S.page==='all_prs') && S.dataMode!=='demo' && !S.purchaseRequestsLoaded) await loadPurchaseRequests();
@@ -11413,6 +11768,8 @@ async function handleAction(act, el){
       if(!S.whtIncomeTypesLoaded) await loadWhtIncomeTypes();
     }
     if(S.page==='fin_wo_detail' && S.dataMode!=='demo') await loadSubcontractTermDetail(S.selectedSubcontractTermId);
+    if(S.page==='fin_progress_claims' && S.dataMode!=='demo' && !S.progressClaimsLoaded) await loadProgressClaims();
+    if(S.page==='fin_progress_claim_detail' && S.dataMode!=='demo') await loadProgressClaimDetail(S.selectedProgressClaimId);
     if(S.page==='fin_quotations' && S.dataMode!=='demo' && !S.quotationsLoaded) await loadRealQuotations();
     if(S.page==='fin_documents' && S.dataMode!=='demo' && !S.clientDocumentsLoaded) await loadRealClientDocuments();
     // pageFinProjectAdd()'s PM/foreman dropdowns are sourced from DB.employees, same as pageFinLabor()'s.
@@ -13796,6 +14153,177 @@ async function handleAction(act, el){
       await loadSubcontractTermDetail(id);
       toast(tr('fin_wo.terminate_success'));
     } catch(e){ toast(e.message,'err'); }
+    render(); return;
+  }
+
+  // ---- Finance: ใบขอเบิกความคืบหน้าโครงการ (Progress Claim, หัวข้อ 3) ----
+  if(act==='filter-progress-status'){ S.progressClaimListFilter.status = el.value; await loadProgressClaims(); return; }
+  if(act==='filter-progress-project'){ S.progressClaimListFilter.projectId = el.value; await loadProgressClaims(); return; }
+  if(act==='filter-progress-type'){ S.progressClaimListFilter.claimType = el.value; await loadProgressClaims(); return; }
+  if(act==='select-progress-claim-type'){ S.progressClaimForm.claimType = el.value; render(); return; }
+  if(act==='select-progress-claim-mode'){
+    S.progressClaimForm.claimMode = el.value;
+    S.progressClaimForm.installmentId = ''; S.progressClaimForm.requestedAmount = ''; S.progressClaimForm.boqPercents = {};
+    render();
+    if(S.progressClaimForm.projectId){
+      if(el.value==='installment') loadInstallmentsForClaimProject(S.progressClaimForm.projectId);
+      else loadBoqForClaimProject(S.progressClaimForm.projectId);
+    }
+    return;
+  }
+  if(act==='select-progress-project'){
+    S.progressClaimForm.projectId = el.value;
+    S.progressClaimForm.installmentId = ''; S.progressClaimForm.installments = undefined; S.progressClaimForm.boqBudget = undefined;
+    const proj = DB.projects.find(p=>String(p.id)===String(el.value));
+    S.progressClaimForm.retentionPercent = proj && proj.defaultRetentionPercent!=null ? String(proj.defaultRetentionPercent) : '';
+    S.progressClaimForm.retentionPercentOverrideReason = '';
+    render();
+    if(el.value && S.progressClaimForm.claimType==='progress'){
+      if(S.progressClaimForm.claimMode==='installment') loadInstallmentsForClaimProject(el.value);
+      else loadBoqForClaimProject(el.value);
+    }
+    return;
+  }
+  if(act==='select-progress-installment'){
+    S.progressClaimForm.installmentId = el.value;
+    const inst = (S.progressClaimForm.installments||[]).find(i=>String(i.id)===String(el.value));
+    if(inst) S.progressClaimForm.requestedAmount = String(inst.amount);
+    render();
+    return;
+  }
+  if(act==='save-progress-claim-full'){
+    const f = S.progressClaimForm;
+    if(!f.projectId){ toast(tr('fin_wo.project_required_err'),'err'); return; }
+    let body = { projectId: parseInt(f.projectId,10), claimType: f.claimType, note: f.note };
+    if(f.claimType==='advance'){
+      if(!f.requestedAmount || parseFloat(f.requestedAmount)<=0){ toast(tr('fin_progress.requested_amount_required_err'),'err'); return; }
+      body.requestedAmount = f.requestedAmount;
+    } else {
+      body.claimMode = f.claimMode;
+      body.retentionPercent = f.retentionPercent===''?null:f.retentionPercent;
+      body.retentionPercentOverrideReason = f.retentionPercentOverrideReason;
+      if(f.claimMode==='installment'){
+        if(!f.installmentId){ toast(tr('fin_progress.installment_required_err'),'err'); return; }
+        if(!f.requestedAmount || parseFloat(f.requestedAmount)<=0){ toast(tr('fin_progress.requested_amount_required_err'),'err'); return; }
+        body.installmentId = parseInt(f.installmentId,10);
+        body.requestedAmount = f.requestedAmount;
+      } else {
+        const items = Object.entries(f.boqPercents).filter(([,v])=>v && parseFloat(v)>0).map(([budgetItemId,pct])=>({budgetItemId:parseInt(budgetItemId,10), requestedPercent:pct}));
+        if(items.length===0){ toast(tr('fin_progress.boq_items_required_err'),'err'); return; }
+        body.items = items;
+      }
+    }
+    if(f.submitting) return;
+    f.submitting = true; render();
+    try{
+      const data = await apiCall('POST', '/api/customer/progress-claims', body, undefined, {'Idempotency-Key': f.idempotencyKey});
+      toast(tr('fin_progress.added_toast'));
+      S.progressClaimForm = null;
+      S.progressClaimsLoaded = false;
+      S.selectedProgressClaimId = data.progressClaim.id;
+      S.page = 'fin_progress_claim_detail';
+      await loadProgressClaimDetail(data.progressClaim.id);
+      return;
+    } catch(e){ toast(e.message,'err'); if(S.progressClaimForm) S.progressClaimForm.submitting = false; }
+    render();
+    return;
+  }
+  if(act==='submit-progress-claim'){
+    const id = parseInt(el.dataset.id,10);
+    if(isVoucherActionPending('pc-submit', id)) return;
+    const key = voucherActionKey('pc-submit', id);
+    S.voucherActionPending['pc-submit-'+id] = true;
+    render();
+    try{
+      await apiCall('POST', `/api/customer/progress-claims/${id}/submit`, {}, undefined, {'Idempotency-Key': key});
+      clearVoucherActionKey('pc-submit', id);
+      S.progressClaimsLoaded = false;
+      await loadProgressClaimDetail(id);
+      toast(tr('pr.submit_success'));
+    } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['pc-submit-'+id] = false;
+    render(); return;
+  }
+  if(act==='open-progress-claim-certify'){
+    const c = S.selectedProgressClaimDetail;
+    S.progressClaimCertifyForm = { id:parseInt(el.dataset.id,10), certifiedAmount:String(c.requestedAmount), certifyNote:'', items:{} };
+    render(); return;
+  }
+  if(act==='cancel-progress-claim-certify-form'){ S.progressClaimCertifyForm = null; render(); return; }
+  if(act==='submit-progress-claim-certify'){
+    const id = parseInt(el.dataset.id,10);
+    const cf = S.progressClaimCertifyForm;
+    const c = S.selectedProgressClaimDetail;
+    const body = { certifyNote: cf.certifyNote };
+    if(c.claimMode==='boq'){
+      body.items = (c.items||[]).map(it=>({itemId: it.id, certifiedPercent: cf.items[it.id]!==undefined?cf.items[it.id]:it.requestedPercent}));
+    } else {
+      body.certifiedAmount = cf.certifiedAmount;
+    }
+    try{
+      await apiCall('POST', `/api/customer/progress-claims/${id}/certify`, body);
+      S.progressClaimCertifyForm = null;
+      S.progressClaimsLoaded = false;
+      await loadProgressClaimDetail(id);
+      toast(tr('fin_progress.certify_success'));
+    } catch(e){ toast(e.message,'err'); }
+    render(); return;
+  }
+  if(act==='open-progress-claim-approve'){
+    const id = parseInt(el.dataset.id,10);
+    S.progressClaimApproveForm = { id, applyAdvanceAmount:'' };
+    const c = S.selectedProgressClaimDetail;
+    render();
+    if(c.claimType==='progress' && c.projectId) await loadOutstandingAdvance(c.projectId);
+    return;
+  }
+  if(act==='cancel-progress-claim-approve-form'){ S.progressClaimApproveForm = null; render(); return; }
+  if(act==='submit-progress-claim-approve'){
+    const id = parseInt(el.dataset.id,10);
+    const af = S.progressClaimApproveForm;
+    if(isVoucherActionPending('pc-approve', id)) return;
+    const key = voucherActionKey('pc-approve', id);
+    S.voucherActionPending['pc-approve-'+id] = true;
+    render();
+    try{
+      await apiCall('POST', `/api/customer/progress-claims/${id}/approve`, { applyAdvanceAmount: af.applyAdvanceAmount||0 }, undefined, {'Idempotency-Key': key});
+      clearVoucherActionKey('pc-approve', id);
+      S.progressClaimApproveForm = null;
+      S.progressClaimsLoaded = false;
+      await loadProgressClaimDetail(id);
+      toast(tr('pr.approve_success'));
+    } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['pc-approve-'+id] = false;
+    render(); return;
+  }
+  if(act==='open-progress-claim-reject'){ S.progressClaimRejectForm = {id:parseInt(el.dataset.id,10), reason:''}; render(); return; }
+  if(act==='cancel-progress-claim-reject-form'){ S.progressClaimRejectForm = null; render(); return; }
+  if(act==='submit-progress-claim-reject'){
+    const id = parseInt(el.dataset.id,10);
+    const reason = (S.progressClaimRejectForm && S.progressClaimRejectForm.reason || '').trim();
+    if(!reason){ toast(tr('pr.rejected_reason_required_err'),'err'); return; }
+    try{
+      await apiCall('POST', `/api/customer/progress-claims/${id}/reject`, {reason});
+      S.progressClaimRejectForm = null;
+      S.progressClaimsLoaded = false;
+      await loadProgressClaimDetail(id);
+      toast(tr('pr.reject_success'));
+    } catch(e){ toast(e.message,'err'); }
+    render(); return;
+  }
+  if(act==='cancel-progress-claim'){
+    const id = parseInt(el.dataset.id,10);
+    if(!confirm(tr('pr.cancel_confirm'))) return;
+    if(isVoucherActionPending('pc-cancel', id)) return;
+    S.voucherActionPending['pc-cancel-'+id] = true;
+    render();
+    try{
+      await apiCall('POST', `/api/customer/progress-claims/${id}/cancel`, {});
+      S.progressClaimsLoaded = false;
+      await loadProgressClaimDetail(id);
+      toast(tr('pr.cancel_success'));
+    } catch(e){ toast(e.message,'err'); }
+    S.voucherActionPending['pc-cancel-'+id] = false;
     render(); return;
   }
 
