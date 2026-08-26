@@ -103,6 +103,26 @@ async function assertNavItem(page, key, shouldShow, label) {
     await assertNavItem(page, 'subcontractors', true, 'fx_super/PR');
     await assertNavItem(page, 'fin_subcontract_billings', true, 'fx_super/PR');
     await assertNavItem(page, 'fin_progress_claims', true, 'fx_super/PR');
+    // หัวข้อ 1 (เงินสดย่อย/เงินทดรองจ่าย/เคลียร์/เจ้าหนี้ภายนอก) ต้องเห็นในโมดูล PR ด้วยเช่นกัน (ตามโจทย์
+    // ตั้งต้นที่ระบุว่าโมดูล PR ต้องมีครบทั้ง 5 หัวข้อ — พลาดไปรอบแรก แก้เพิ่มแล้ว)
+    await assertNavItem(page, 'fin_petty_cash_funds', true, 'fx_super/PR (หัวข้อ 1)');
+    await assertNavItem(page, 'fin_vouchers_petty_cash', true, 'fx_super/PR (หัวข้อ 1)');
+    await assertNavItem(page, 'fin_vouchers_advance', true, 'fx_super/PR (หัวข้อ 1)');
+    await assertNavItem(page, 'fin_advance_clearances', true, 'fx_super/PR (หัวข้อ 1)');
+    await assertNavItem(page, 'fin_external_payees', true, 'fx_super/PR (หัวข้อ 1)');
+    await assertNavItem(page, 'fin_vouchers_other', true, 'fx_super/PR (หัวข้อ 1)');
+    await assertNavItem(page, 'fin_wht_certificates', true, 'fx_super/PR (หัวข้อ 1)');
+    // หน้าบัญชี/ปิดงวดล้วนๆ ต้องไม่หลุดเข้ามาในโมดูล PR เด็ดขาด
+    await assertNavItem(page, 'fin_overview', false, 'fx_super/PR (บัญชีล้วนๆ ต้องไม่อยู่ใน PR)');
+    await assertNavItem(page, 'fin_journal', false, 'fx_super/PR');
+    await assertNavItem(page, 'fin_trial_balance', false, 'fx_super/PR');
+    await assertNavItem(page, 'fin_income_statement', false, 'fx_super/PR');
+    await assertNavItem(page, 'fin_balance_sheet', false, 'fx_super/PR');
+    await assertNavItem(page, 'fin_yearend', false, 'fx_super/PR');
+    await assertNavItem(page, 'fin_revenue', false, 'fx_super/PR');
+    await assertNavItem(page, 'fin_costs', false, 'fx_super/PR');
+    await assertNavItem(page, 'fin_stock', false, 'fx_super/PR');
+    await assertNavItem(page, 'fin_cashbank', false, 'fx_super/PR');
 
     await page.click('[data-act="switch-module"][data-module="finance"]');
     await page.waitForTimeout(400);
@@ -111,6 +131,7 @@ async function assertNavItem(page, key, shouldShow, label) {
     await assertNavItem(page, 'fin_wo', true, 'fx_super/Finance');
     await assertNavItem(page, 'fin_subcontract_billings', true, 'fx_super/Finance');
     await assertNavItem(page, 'fin_progress_claims', true, 'fx_super/Finance');
+    await assertNavItem(page, 'fin_vouchers_petty_cash', true, 'fx_super/Finance (หัวข้อ 1 ยังอยู่เหมือนเดิม)');
     // ของเดิม (บัญชี/ปิดงวดล้วนๆ) ต้องยังอยู่ครบเหมือนเดิม ไม่ได้หายไปตอน refactor
     await assertNavItem(page, 'fin_overview', true, 'fx_super/Finance');
     await assertNavItem(page, 'fin_journal', true, 'fx_super/Finance');
@@ -124,6 +145,8 @@ async function assertNavItem(page, key, shouldShow, label) {
     await assertNavItem(page, 'subcontractors', true, 'fx_procurement/PR');
     await assertNavItem(page, 'fin_subcontract_billings', true, 'fx_procurement/PR');
     await assertNavItem(page, 'fin_progress_claims', true, 'fx_procurement/PR');
+    await assertNavItem(page, 'fin_vouchers_petty_cash', true, 'fx_procurement/PR (หัวข้อ 1 เปิดทุกคน)');
+    await assertNavItem(page, 'fin_advance_clearances', true, 'fx_procurement/PR (หัวข้อ 1 เปิดทุกคน)');
 
     await page.click('[data-act="switch-module"][data-module="finance"]');
     await page.waitForTimeout(400);

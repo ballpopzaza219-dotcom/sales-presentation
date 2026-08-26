@@ -2839,16 +2839,15 @@ function financeNavFor(u){
       {key:'fin_retention', label:tr('nav.fin_retention'), icon:'wallet'},
     );
   }
-  items.push(
-    {key:'section', label:tr('nav.section_petty_cash')},
-    {key:'fin_petty_cash_funds', label:tr('nav.fin_petty_cash_funds'), icon:'wallet'},
-    {key:'fin_vouchers_petty_cash', label:tr('nav.fin_vouchers_petty_cash'), icon:'wallet'},
-    {key:'fin_vouchers_advance', label:tr('nav.fin_vouchers_advance'), icon:'wallet'},
-    {key:'fin_advance_clearances', label:tr('nav.fin_advance_clearances'), icon:'doc'},
-    {key:'fin_external_payees', label:tr('nav.fin_external_payees'), icon:'userPlus'},
-    {key:'fin_vouchers_other', label:tr('nav.fin_vouchers_other'), icon:'wallet'},
-    {key:'fin_wht_certificates', label:tr('nav.fin_wht_certificates'), icon:'doc'},
-  );
+  const cashItemsFinance = [];
+  if(docGroupVisible('fin_petty_cash_funds', u)) cashItemsFinance.push({key:'fin_petty_cash_funds', label:tr('nav.fin_petty_cash_funds'), icon:'wallet'});
+  if(docGroupVisible('fin_vouchers_petty_cash', u)) cashItemsFinance.push({key:'fin_vouchers_petty_cash', label:tr('nav.fin_vouchers_petty_cash'), icon:'wallet'});
+  if(docGroupVisible('fin_vouchers_advance', u)) cashItemsFinance.push({key:'fin_vouchers_advance', label:tr('nav.fin_vouchers_advance'), icon:'wallet'});
+  if(docGroupVisible('fin_advance_clearances', u)) cashItemsFinance.push({key:'fin_advance_clearances', label:tr('nav.fin_advance_clearances'), icon:'doc'});
+  if(docGroupVisible('fin_external_payees', u)) cashItemsFinance.push({key:'fin_external_payees', label:tr('nav.fin_external_payees'), icon:'userPlus'});
+  if(docGroupVisible('fin_vouchers_other', u)) cashItemsFinance.push({key:'fin_vouchers_other', label:tr('nav.fin_vouchers_other'), icon:'wallet'});
+  if(docGroupVisible('fin_wht_certificates', u)) cashItemsFinance.push({key:'fin_wht_certificates', label:tr('nav.fin_wht_certificates'), icon:'doc'});
+  if(cashItemsFinance.length) items.push({key:'section', label:tr('nav.section_petty_cash')}, ...cashItemsFinance);
   const treasuryItems = [];
   if(u.role==='super_user') treasuryItems.push({key:'fin_stock', label:tr('nav.fin_stock'), icon:'boxes'}, {key:'fin_cashbank', label:tr('nav.fin_cashbank'), icon:'bank'});
   if(docGroupVisible('fin_po', u)) treasuryItems.push({key:'fin_po', label:tr('nav.fin_po'), icon:'fileStack'});
@@ -2904,11 +2903,25 @@ function employeesNavFor(){
 // แค่ nav *visibility* (จะเห็นปุ่มในเมนูไหม) เท่านั้น ไม่ใช่ชั้นความปลอดภัยจริง (ชั้นจริงอยู่ที่ flag
 // gate ของแต่ละ action เช่น can_approve_po_wo ที่ server.js เดิม)
 const DOC_GROUP_ACCESS = {
+  // หัวข้อ 1 — เงินสดย่อย/เงินทดรองจ่าย/เคลียร์/เจ้าหนี้ภายนอก — เปิดทุกคนอยู่แล้วทั้ง 2 โมดูล (ของเดิม
+  // เปิดให้ทุก role ใน Finance อยู่แล้ว ยกมาไว้ใน registry นี้เพื่อให้ navFor() เห็นได้ด้วยจากจุดเดียวกัน
+  // — fin_voucher_detail/fin_wht_certificate_print/fin_advance_clearance_detail ใช้ร่วมกันหลายกลุ่ม
+  // (petty_cash/advance/other ใช้ fin_voucher_detail ใบเดียวกัน) เก็บไว้ใน hiddenPages ทั่วไปแทนการผูก
+  // กับกลุ่มใดกลุ่มหนึ่งเจาะจง)
+  fin_petty_cash_funds: { hiddenKeys: [], visible: () => true },
+  fin_vouchers_petty_cash: { hiddenKeys: [], visible: () => true },
+  fin_vouchers_advance: { hiddenKeys: [], visible: () => true },
+  fin_advance_clearances: { hiddenKeys: [], visible: () => true },
+  fin_external_payees: { hiddenKeys: [], visible: () => true },
+  fin_vouchers_other: { hiddenKeys: [], visible: () => true },
+  fin_wht_certificates: { hiddenKeys: [], visible: () => true },
+  // หัวข้อ 2/5 — จัดซื้อ/จัดจ้าง
   subcontractors: { hiddenKeys: [], visible: u => u.role==='super_user' || u.canManagePo },
   fin_po: { hiddenKeys: ['fin_po_add','fin_po_detail'], visible: () => true },
   // WO ผูกกับ can_manage_po เพราะ backend เองก็บังคับ flag นี้ตอนสร้างสัญญาอยู่แล้ว (hasSubcontractorManagePermission)
   fin_wo: { hiddenKeys: ['fin_wo_add','fin_wo_detail'], visible: u => u.role==='super_user' || u.canManagePo },
   fin_subcontract_billings: { hiddenKeys: ['fin_subcontract_billing_add','fin_subcontract_billing_detail'], visible: () => true },
+  // หัวข้อ 3
   fin_progress_claims: { hiddenKeys: ['fin_progress_claim_add','fin_progress_claim_detail'], visible: () => true },
 };
 function docGroupVisible(key, u){ const g = DOC_GROUP_ACCESS[key]; return g ? g.visible(u) : true; }
@@ -2935,6 +2948,17 @@ function navFor(u){
       {key:'all_prs', label:tr('nav.all_prs'), icon:'list'},
     );
   }
+  // หัวข้อ 1 — เงินสดย่อย/เงินทดรองจ่าย/เคลียร์/เจ้าหนี้ภายนอก — เปิดทุกคน (เหมือน PR) เพราะเป็นเรื่องที่
+  // พนักงานทั่วไปต้องใช้บ่อยที่สุด จึงวางไว้เป็น section แรกสุดรองจาก PR เอง
+  const cashItems = [];
+  if(docGroupVisible('fin_petty_cash_funds', u)) cashItems.push({key:'fin_petty_cash_funds', label:tr('nav.fin_petty_cash_funds'), icon:'wallet'});
+  if(docGroupVisible('fin_vouchers_petty_cash', u)) cashItems.push({key:'fin_vouchers_petty_cash', label:tr('nav.fin_vouchers_petty_cash'), icon:'wallet'});
+  if(docGroupVisible('fin_vouchers_advance', u)) cashItems.push({key:'fin_vouchers_advance', label:tr('nav.fin_vouchers_advance'), icon:'wallet'});
+  if(docGroupVisible('fin_advance_clearances', u)) cashItems.push({key:'fin_advance_clearances', label:tr('nav.fin_advance_clearances'), icon:'doc'});
+  if(docGroupVisible('fin_external_payees', u)) cashItems.push({key:'fin_external_payees', label:tr('nav.fin_external_payees'), icon:'userPlus'});
+  if(docGroupVisible('fin_vouchers_other', u)) cashItems.push({key:'fin_vouchers_other', label:tr('nav.fin_vouchers_other'), icon:'wallet'});
+  if(docGroupVisible('fin_wht_certificates', u)) cashItems.push({key:'fin_wht_certificates', label:tr('nav.fin_wht_certificates'), icon:'doc'});
+  if(cashItems.length) items.push({key:'section', label:tr('nav.section_petty_cash')}, ...cashItems);
   const procurementItems = [];
   if(docGroupVisible('fin_po', u)) procurementItems.push({key:'fin_po', label:tr('nav.fin_po'), icon:'fileStack'});
   if(docGroupVisible('fin_wo', u)) procurementItems.push({key:'fin_wo', label:tr('nav.fin_wo'), icon:'fileStack'});
