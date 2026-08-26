@@ -233,6 +233,10 @@ async function makeApprovedPrWithItem(companyId, projectId, material, qty, unitP
     await poNoLinkInHistory.click();
     await page.waitForTimeout(600);
     assert(page.url().includes('pr-system.html'), 'คลิกลิงก์จากประวัติ PR แล้วนำทางไปหน้า PO detail สำเร็จ (ไม่ error)');
+    // ลิงก์นี้เคย hardcode data-module="finance" ทำให้คลิกจากโมดูล PR แล้วโดนสลับไป Finance โดยไม่ตั้งใจ —
+    // แก้แล้วให้อยู่โมดูลเดิม (fin_po_detail ใช้ร่วมกับโมดูล PR ได้แล้วหลังเปิด PO/WO ให้ทั้งสองโมดูล)
+    assert(await page.locator('[data-act="switch-module"][data-module="pr"].active').count() === 1,
+      'คลิกลิงก์ PO จากประวัติ PR (อยู่ในโมดูล PR) แล้วยังอยู่โมดูล PR ต่อ ไม่ถูกสลับไป Finance โดยไม่ได้ตั้งใจ');
 
     // ================= 7) cancel PO ที่ approved แล้ว — auto-release คืนยอด =================
     await page.click('[data-act="cancel-po"]');

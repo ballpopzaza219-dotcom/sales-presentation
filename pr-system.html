@@ -2812,33 +2812,34 @@ function biddingNavFor(){
     {key:'fin_tenders', label:tr('nav.fin_tenders'), icon:'flag'},
   ];
 }
+// เอกสารบัญชี/ปิดงวดล้วนๆ (revenue/cost/office, receivables/payables/retention, stock/cashbank/
+// quotations/documents, journal, งบการเงินทั้งชุด) เปิดเฉพาะ super_user เท่านั้น เหมือนเดิม — ส่วนกลุ่ม
+// เอกสารปฏิบัติการที่ใช้ร่วมกับ PR module (fin_po/fin_wo/fin_subcontract_billings/fin_progress_claims)
+// ใช้ docGroupVisible() จุดเดียวกับ navFor() เสมอ (ดูคอมเมนต์ DOC_GROUP_ACCESS ด้านบน) — ไม่ใช่ role check
+// แยกต่างหากอีกต่อไป กันปัญหาสองจุดขัดกันแบบที่เคยเป็นกับ FINANCE_NON_SUPER_PAGES เดิม
 function financeNavFor(u){
-  if(u && u.role!=='super_user'){
-    // Non-super_user roles only ever get the petty-cash/advance section — see FINANCE_NON_SUPER_PAGES.
-    return [
-      {key:'section', label:tr('nav.section_petty_cash')},
-      {key:'fin_petty_cash_funds', label:tr('nav.fin_petty_cash_funds'), icon:'wallet'},
-      {key:'fin_vouchers_petty_cash', label:tr('nav.fin_vouchers_petty_cash'), icon:'wallet'},
-      {key:'fin_vouchers_advance', label:tr('nav.fin_vouchers_advance'), icon:'wallet'},
-      {key:'fin_advance_clearances', label:tr('nav.fin_advance_clearances'), icon:'doc'},
-      {key:'fin_external_payees', label:tr('nav.fin_external_payees'), icon:'userPlus'},
-      {key:'fin_vouchers_other', label:tr('nav.fin_vouchers_other'), icon:'wallet'},
-      {key:'fin_wht_certificates', label:tr('nav.fin_wht_certificates'), icon:'doc'},
-    ];
+  const items = [];
+  if(u.role==='super_user'){
+    items.push(
+      {key:'fin_overview', label:tr('nav.fin_overview'), icon:'overview'},
+      {key:'section', label:tr('nav.section_revenue_cost')},
+      {key:'fin_revenue', label:tr('nav.fin_revenue'), icon:'trendUp'},
+    );
   }
-  return [
-    {key:'fin_overview', label:tr('nav.fin_overview'), icon:'overview'},
-    {key:'section', label:tr('nav.section_revenue_cost')},
-    {key:'fin_revenue', label:tr('nav.fin_revenue'), icon:'trendUp'},
-    {key:'fin_progress_claims', label:tr('nav.fin_progress_claims'), icon:'fileStack'},
-    {key:'fin_subcontract_billings', label:tr('nav.fin_subcontract_billings'), icon:'fileStack'},
-    {key:'fin_receive_payment', label:tr('nav.fin_receive_payment'), icon:'wallet'},
-    {key:'fin_costs', label:tr('nav.fin_costs'), icon:'trendDown'},
-    {key:'fin_office', label:tr('nav.fin_office'), icon:'building'},
-    {key:'section', label:tr('nav.section_receivables_payables')},
-    {key:'fin_receivables', label:tr('nav.fin_receivables'), icon:'userPlus'},
-    {key:'fin_payables', label:tr('nav.fin_payables'), icon:'userMinus'},
-    {key:'fin_retention', label:tr('nav.fin_retention'), icon:'wallet'},
+  if(docGroupVisible('fin_progress_claims', u)) items.push({key:'fin_progress_claims', label:tr('nav.fin_progress_claims'), icon:'fileStack'});
+  if(docGroupVisible('fin_subcontract_billings', u)) items.push({key:'fin_subcontract_billings', label:tr('nav.fin_subcontract_billings'), icon:'fileStack'});
+  if(u.role==='super_user'){
+    items.push(
+      {key:'fin_receive_payment', label:tr('nav.fin_receive_payment'), icon:'wallet'},
+      {key:'fin_costs', label:tr('nav.fin_costs'), icon:'trendDown'},
+      {key:'fin_office', label:tr('nav.fin_office'), icon:'building'},
+      {key:'section', label:tr('nav.section_receivables_payables')},
+      {key:'fin_receivables', label:tr('nav.fin_receivables'), icon:'userPlus'},
+      {key:'fin_payables', label:tr('nav.fin_payables'), icon:'userMinus'},
+      {key:'fin_retention', label:tr('nav.fin_retention'), icon:'wallet'},
+    );
+  }
+  items.push(
     {key:'section', label:tr('nav.section_petty_cash')},
     {key:'fin_petty_cash_funds', label:tr('nav.fin_petty_cash_funds'), icon:'wallet'},
     {key:'fin_vouchers_petty_cash', label:tr('nav.fin_vouchers_petty_cash'), icon:'wallet'},
@@ -2847,23 +2848,27 @@ function financeNavFor(u){
     {key:'fin_external_payees', label:tr('nav.fin_external_payees'), icon:'userPlus'},
     {key:'fin_vouchers_other', label:tr('nav.fin_vouchers_other'), icon:'wallet'},
     {key:'fin_wht_certificates', label:tr('nav.fin_wht_certificates'), icon:'doc'},
-    {key:'section', label:tr('nav.section_treasury')},
-    {key:'fin_stock', label:tr('nav.fin_stock'), icon:'boxes'},
-    {key:'fin_cashbank', label:tr('nav.fin_cashbank'), icon:'bank'},
-    {key:'fin_po', label:tr('nav.fin_po'), icon:'fileStack'},
-    {key:'fin_wo', label:tr('nav.fin_wo'), icon:'fileStack'},
-    {key:'fin_quotations', label:tr('nav.fin_quotations'), icon:'fileStack'},
-    {key:'fin_documents', label:tr('nav.fin_documents'), icon:'fileStack'},
-    {key:'section', label:tr('nav.section_analysis')},
-    {key:'fin_journal', label:tr('nav.fin_journal'), icon:'doc'},
-    {key:'section', label:tr('nav.section_financial_statements')},
-    {key:'fin_trial_balance', label:tr('nav.fin_trial_balance'), icon:'barChart'},
-    {key:'fin_income_statement', label:tr('nav.fin_income_statement'), icon:'trendUp'},
-    {key:'fin_balance_sheet', label:tr('nav.fin_balance_sheet'), icon:'briefcase'},
-    {key:'fin_reports', label:tr('nav.fin_reports'), icon:'barChart'},
-    {key:'fin_advance_outstanding', label:tr('nav.fin_advance_outstanding'), icon:'barChart'},
-    {key:'fin_yearend', label:tr('nav.fin_yearend'), icon:'lock'},
-  ];
+  );
+  const treasuryItems = [];
+  if(u.role==='super_user') treasuryItems.push({key:'fin_stock', label:tr('nav.fin_stock'), icon:'boxes'}, {key:'fin_cashbank', label:tr('nav.fin_cashbank'), icon:'bank'});
+  if(docGroupVisible('fin_po', u)) treasuryItems.push({key:'fin_po', label:tr('nav.fin_po'), icon:'fileStack'});
+  if(docGroupVisible('fin_wo', u)) treasuryItems.push({key:'fin_wo', label:tr('nav.fin_wo'), icon:'fileStack'});
+  if(u.role==='super_user') treasuryItems.push({key:'fin_quotations', label:tr('nav.fin_quotations'), icon:'fileStack'}, {key:'fin_documents', label:tr('nav.fin_documents'), icon:'fileStack'});
+  if(treasuryItems.length) items.push({key:'section', label:tr('nav.section_treasury')}, ...treasuryItems);
+  if(u.role==='super_user'){
+    items.push(
+      {key:'section', label:tr('nav.section_analysis')},
+      {key:'fin_journal', label:tr('nav.fin_journal'), icon:'doc'},
+      {key:'section', label:tr('nav.section_financial_statements')},
+      {key:'fin_trial_balance', label:tr('nav.fin_trial_balance'), icon:'barChart'},
+      {key:'fin_income_statement', label:tr('nav.fin_income_statement'), icon:'trendUp'},
+      {key:'fin_balance_sheet', label:tr('nav.fin_balance_sheet'), icon:'briefcase'},
+      {key:'fin_reports', label:tr('nav.fin_reports'), icon:'barChart'},
+      {key:'fin_advance_outstanding', label:tr('nav.fin_advance_outstanding'), icon:'barChart'},
+      {key:'fin_yearend', label:tr('nav.fin_yearend'), icon:'lock'},
+    );
+  }
+  return items;
 }
 
 function employeesNavFor(){
@@ -2891,7 +2896,35 @@ function employeesNavFor(){
 // สถานะ submitted แล้วเห็นรายการที่รออนุมัติของคนอื่นได้ — เดิมมี approve_queue/check_queue แยกตาม role
 // (checker/approver/single_dual) แต่เป็น concept จาก workflow เดโมเก่าที่ backend จริงไม่มี (ไม่มี step
 // "checker" เลย มีแค่ draft→submitted→approved/rejected ขั้นเดียว) จึงยุบรวมเป็น all_prs ที่กรองสถานะได้แทน
-function navFor(role){
+// ---- กลุ่มเอกสารที่ปรากฏได้มากกว่า 1 โมดูล (PR = มุมมองงานปฏิบัติการ, Finance = มุมมองบัญชี) ----
+// จุดเดียวที่ตัดสิน "ใครเห็นเมนูนี้บ้าง" — navFor()/financeNavFor() และ guard กันหลงหน้าใน
+// renderDashboard ดึงจากจุดนี้จุดเดียวเสมอ กันปัญหาสองจุดขัดกัน (เดิม FINANCE_NON_SUPER_PAGES เป็น
+// allow-list แยกต่างหากจาก financeNavFor() เอง — เสี่ยงลืมแก้คู่กันเวลาเพิ่มหน้าใหม่ ตัดทิ้งไปแล้ว)
+// การ view (GET) ของทุกเอกสารกลุ่มนี้เปิดให้ทุก role ในบริษัทอยู่แล้วที่ backend (เช็คแล้ว) — ตรงนี้คุม
+// แค่ nav *visibility* (จะเห็นปุ่มในเมนูไหม) เท่านั้น ไม่ใช่ชั้นความปลอดภัยจริง (ชั้นจริงอยู่ที่ flag
+// gate ของแต่ละ action เช่น can_approve_po_wo ที่ server.js เดิม)
+const DOC_GROUP_ACCESS = {
+  subcontractors: { hiddenKeys: [], visible: u => u.role==='super_user' || u.canManagePo },
+  fin_po: { hiddenKeys: ['fin_po_add','fin_po_detail'], visible: () => true },
+  // WO ผูกกับ can_manage_po เพราะ backend เองก็บังคับ flag นี้ตอนสร้างสัญญาอยู่แล้ว (hasSubcontractorManagePermission)
+  fin_wo: { hiddenKeys: ['fin_wo_add','fin_wo_detail'], visible: u => u.role==='super_user' || u.canManagePo },
+  fin_subcontract_billings: { hiddenKeys: ['fin_subcontract_billing_add','fin_subcontract_billing_detail'], visible: () => true },
+  fin_progress_claims: { hiddenKeys: ['fin_progress_claim_add','fin_progress_claim_detail'], visible: () => true },
+};
+function docGroupVisible(key, u){ const g = DOC_GROUP_ACCESS[key]; return g ? g.visible(u) : true; }
+
+// PR (สร้าง/รายการ) เปิดให้ทุก role เห็นเหมือนกันหมด — สิทธิ์สร้างใบขอซื้อไม่ผูกกับ role เดิม (ROLES
+// ด้านบน) เลยแม้แต่น้อย ฝั่ง backend รับ POST จากลูกค้าที่ login แล้วทุกคน ส่วนสิทธิ์อนุมัติผูกกับ flag
+// can_approve_pr + client_pr_approval_rules (ไม่ใช่ role) — ทุกคนจึงเห็น "รายการ PR ทั้งหมด" ได้เท่ากัน
+// (ไม่แยก mine/all ตาม role อีกต่อไป) เพื่อให้คนมี can_approve_pr แต่ role ไม่ใช่ super_user ยังกรอง
+// สถานะ submitted แล้วเห็นรายการที่รออนุมัติของคนอื่นได้ — เดิมมี approve_queue/check_queue แยกตาม role
+// (checker/approver/single_dual) แต่เป็น concept จาก workflow เดโมเก่าที่ backend จริงไม่มี (ไม่มี step
+// "checker" เลย มีแค่ draft→submitted→approved/rejected ขั้นเดียว) จึงยุบรวมเป็น all_prs ที่กรองสถานะได้แทน
+//
+// เมนูจัดกลุ่มตามการใช้งานจริง ไม่ใช่ตามเลขหัวข้อ 1-5 ที่วางแผนไว้แต่แรก (ผู้ใช้ยืนยันแล้ว) — คนหน้างาน/
+// จัดซื้อไม่รู้จักเลขหัวข้อพวกนั้นเลย
+function navFor(u){
+  const role = u.role;
   const items = [{key:'overview', label:tr('nav.overview'), icon:'overview'}];
   // ซ่อนเมนู PR ในโหมด demo — หน้า PR ต่อ API จริงล้วน (ไม่มี demo dataset แล้ว) ถ้าเปิดให้กดในโหมด demo
   // จะยิง fetch ไปที่ endpoint จริงที่ session ยังไม่ login จริง แล้วเจอ 401 งงๆ แทนที่จะเป็นทัวร์เดโมที่ใช้ได้จริง
@@ -2902,13 +2935,27 @@ function navFor(role){
       {key:'all_prs', label:tr('nav.all_prs'), icon:'list'},
     );
   }
+  const procurementItems = [];
+  if(docGroupVisible('fin_po', u)) procurementItems.push({key:'fin_po', label:tr('nav.fin_po'), icon:'fileStack'});
+  if(docGroupVisible('fin_wo', u)) procurementItems.push({key:'fin_wo', label:tr('nav.fin_wo'), icon:'fileStack'});
+  if(docGroupVisible('subcontractors', u)) procurementItems.push({key:'subcontractors', label:tr('nav.subcontractors'), icon:'users'});
+  if(procurementItems.length) items.push({key:'section', label:tr('nav.section_procurement')}, ...procurementItems);
+  if(docGroupVisible('fin_subcontract_billings', u)){
+    items.push({key:'section', label:tr('nav.section_subcontract_billing')},
+      {key:'fin_subcontract_billings', label:tr('nav.fin_subcontract_billings'), icon:'fileStack'});
+  }
+  // แยก section ต่างหากจาก subcontract billing แม้ทั้งคู่จะ "เบิก/เรียกเก็บเงินตามงวดงาน" คล้ายกัน —
+  // ทิศทางบัญชีตรงข้ามกันโดยสิ้นเชิง (จ่ายผู้รับเหมาช่วง vs เรียกเก็บจากเจ้าของโครงการ) ห้ามปนกันแม้ใน UI
+  if(docGroupVisible('fin_progress_claims', u)){
+    items.push({key:'section', label:tr('nav.section_progress')},
+      {key:'fin_progress_claims', label:tr('nav.fin_progress_claims'), icon:'fileStack'});
+  }
   if(role==='super_user'){
     items.push(
       {key:'section', label:tr('nav.section_settings')},
       {key:'company_settings', label:tr('nav.company_settings'), icon:'settings'},
       {key:'users', label:tr('nav.users'), icon:'users'},
       {key:'conditions', label:tr('nav.conditions'), icon:'flag'},
-      {key:'subcontractors', label:tr('nav.subcontractors'), icon:'users'},
       {key:'approval_permissions', label:tr('nav.approval_permissions'), icon:'lock'},
       {key:'admin_queue', label:tr('nav.admin_queue'), icon:'check'},
     );
@@ -2925,14 +2972,6 @@ function navFor(role){
   }
   return items;
 }
-
-// Finance pages any role can reach (not just super_user) — everything else in financeNavFor()
-// stays super_user-only. Anyone can submit their own petty-cash/advance claim; approval and
-// fund-limit management within these pages is still gated per-action by the existing flags
-// (canApprovePettyCash/canApproveAdvance/canManagePettyCashFund etc.), same as before this list
-// existed. Reports (e.g. fin_advance_outstanding) stay super_user-only, same as the other report
-// pages in financeNavFor() — reading is not the same right as filing your own claim.
-const FINANCE_NON_SUPER_PAGES = ['fin_petty_cash_funds','fin_vouchers_petty_cash','fin_vouchers_advance','fin_advance_clearances','fin_advance_clearance_detail','fin_external_payees','fin_vouchers_other','fin_wht_certificates','fin_wht_certificate_print','fin_voucher_detail'];
 
 function renderDashboard(){
   const u = S.currentUser;
@@ -2952,20 +2991,17 @@ function renderDashboard(){
   if(S.module==='finance' && !canFinance) S.module='pr';
   if(S.module==='employees' && !canEmployees) S.module='pr';
   if(S.module==='bidding' && !canBidding) S.module='pr';
-  // A non-super_user landing (or left over from a previous session) on a finance page outside the
-  // allow-list must not see it — redirect to the one page they're guaranteed to have.
-  if(S.module==='finance' && u.role!=='super_user' && !FINANCE_NON_SUPER_PAGES.includes(S.page)){
-    S.page = 'fin_vouchers_petty_cash';
+  const nav = S.module==='finance' ? financeNavFor(u) : S.module==='employees' ? employeesNavFor() : S.module==='bidding' ? biddingNavFor() : navFor(u);
+  // หน้า add/detail ที่เข้าได้เฉพาะผ่านปุ่ม ไม่มีอยู่ใน sidebar เลย (ของ DOC_GROUP_ACCESS มาจากจุดเดียวกับ
+  // ที่คุม nav visibility ข้างบน — ไม่ใช่ allow-list แยกอีกชุดที่ต้องคอยแก้คู่กัน)
+  const hiddenPages = ['emp_app_form','emp_app_print','fin_tender_add','fin_tender_detail','fin_budget_detail','fin_project_add','fin_project_detail','fin_project_schedule','fin_quotation_add','fin_document_add','fin_voucher_detail','fin_wht_certificate_print','fin_advance_clearance_detail','pr_detail',
+    ...Object.values(DOC_GROUP_ACCESS).flatMap(g=>g.hiddenKeys)]; // reachable only via buttons, not listed in any sidebar nav
+  // Fallback ไปหน้า default ของแต่ละโมดูล — สำหรับ finance ต้องแยกตาม role เหมือนที่ switch-module ทำ
+  // (non-super_user ไม่มี fin_overview อยู่ใน financeNavFor() ของตัวเองแล้ว ตกไปที่ fin_vouchers_petty_cash แทน)
+  if(!hiddenPages.includes(S.page) && !nav.find(n=>n.key===S.page && n.key!=='section')){
+    S.page = S.module==='finance' ? (u.role==='super_user' ? 'fin_overview' : 'fin_vouchers_petty_cash')
+      : S.module==='employees' ? 'emp_overview' : S.module==='bidding' ? 'fin_tender_overview' : 'overview';
   }
-  const nav = S.module==='finance' ? financeNavFor(u) : S.module==='employees' ? employeesNavFor() : S.module==='bidding' ? biddingNavFor() : navFor(u.role);
-  // ผู้ใช้ role อื่นที่ไม่ใช่ super_user แต่มี can_manage_po (เช่น ฝ่ายจัดซื้อ role='maker') ต้องเห็นเมนู
-  // จัดการผู้รับเหมาช่วงด้วย — navFor(role) branch ตาม role string ล้วนๆ ไม่รู้จัก flag นี้ (super_user
-  // ได้ผ่าน navFor ไปแล้วข้างบน ไม่ต้องเพิ่มซ้ำ)
-  if(u.role!=='super_user' && u.canManagePo && S.module==='pr' && !nav.find(n=>n.key==='subcontractors')){
-    nav.push({key:'subcontractors', label:tr('nav.subcontractors'), icon:'users'});
-  }
-  const hiddenPages = ['emp_app_form','emp_app_print','fin_tender_add','fin_tender_detail','fin_budget_detail','fin_project_add','fin_project_detail','fin_project_schedule','fin_po_add','fin_quotation_add','fin_document_add','fin_voucher_detail','fin_wht_certificate_print','fin_advance_clearance_detail','pr_detail','fin_po_detail','fin_wo_add','fin_wo_detail','fin_progress_claim_add','fin_progress_claim_detail','fin_subcontract_billing_add','fin_subcontract_billing_detail']; // reachable only via buttons, not listed in any sidebar nav
-  if(!hiddenPages.includes(S.page) && !nav.find(n=>n.key===S.page && n.key!=='section')) S.page = S.module==='finance' ? 'fin_overview' : S.module==='employees' ? 'emp_overview' : S.module==='bidding' ? 'fin_tender_overview' : 'overview';
 
   return `
   <div class="shell">
@@ -11664,7 +11700,7 @@ function prItemAdjustmentHistory(itemId){
     <tbody>${list.map(a=>`<tr>
       <td>${prAdjustmentTypeLabel(a.adjustmentType)}</td>
       <td class="mono">${fmtMoney(a.qty)}</td>
-      <td>${a.poId ? `<button class="btn btn-ghost btn-sm" data-act="nav" data-page="fin_po_detail" data-id="${a.poId}" data-id-field="selectedPurchaseOrderId" data-module="finance">${esc(a.poNo||('#'+a.poId))}</button>` : '-'}</td>
+      <td>${a.poId ? `<button class="btn btn-ghost btn-sm" data-act="nav" data-page="fin_po_detail" data-id="${a.poId}" data-id-field="selectedPurchaseOrderId">${esc(a.poNo||('#'+a.poId))}</button>` : '-'}</td>
       <td>${esc(a.note||'-')}</td>
       <td>${esc(customerNameById(a.createdBy))}</td>
       <td>${a.createdAt ? new Date(a.createdAt).toLocaleString(I18N.getLocale()==='en'?'en-GB':'th-TH',{dateStyle:'medium',timeStyle:'short'}) : '-'}</td>
@@ -11779,6 +11815,155 @@ function attachHandlers(){
   updateScheduleChartOverlay();
   updateOtherVoucherSummary(); // no-op if the 'other' voucher form (VAT/WHT section) isn't on screen right now
   updateClearanceItemSummary(); // no-op (internally, via `if(!f) return`) if no advance-clearance form is open
+}
+
+// รวม loader ทั้งหมดต่อหน้าไว้จุดเดียว อ่าน S.page ตรงๆ — เรียกจากทุกทางที่จะเปลี่ยนหน้าได้ (ตอนนี้คือ
+// act==='nav' และ act==='switch-module') ห้ามเขียน loader-dispatch แยกซ้ำอีกที่ไหนอีกเด็ดขาด แม้จะดู
+// เหมือนแค่ 1-2 บรรทัด — นี่คือจุดที่เคยเกิดบั๊กจริง (switch-module ลืม loader ที่ nav มี ต้อง
+// duplicate เฉพาะจุดตามหลังทีหลัง) ก่อนจะรวมเป็นฟังก์ชันเดียวแบบนี้
+async function loadDataForPage(){
+  // โครงการ (client_projects) backs the project pickers on cost/revenue/labor forms, budget-vs-
+  // actual, and the project list/detail pages themselves — load it once, on first visit to any
+  // of them, rather than duplicating the load call in every single one of those page branches.
+  const PROJECT_DEPENDENT_PAGES = ['fin_projects','fin_project_add','fin_project_detail','fin_costs','fin_revenue','fin_retention','fin_receive_payment','fin_labor','fin_labor_pay','create_pr','my_prs','all_prs','fin_po','fin_po_add','fin_po_detail','fin_wo','fin_wo_add','fin_wo_detail','fin_progress_claims','fin_progress_claim_add','fin_progress_claim_detail','fin_quotations','fin_quotation_add','fin_documents','fin_document_add','fin_petty_cash_funds','fin_vouchers_petty_cash','fin_vouchers_advance','fin_vouchers_other','fin_voucher_detail'];
+  if(PROJECT_DEPENDENT_PAGES.includes(S.page) && S.dataMode!=='demo' && !S.projectsLoaded) await loadRealProjects();
+  // PR (หัวข้อ 4) — ต่อ API จริงเสมอ ไม่มี demo dataset แล้ว (ดู pageOverview's comment)
+  if((S.page==='overview'||S.page==='my_prs'||S.page==='all_prs') && S.dataMode!=='demo' && !S.purchaseRequestsLoaded) await loadPurchaseRequests();
+  if(S.page==='pr_detail' && S.dataMode!=='demo') await loadPurchaseRequestDetail(S.selectedPurchaseRequestId);
+  if(S.page==='fin_tender_overview' && S.dataMode!=='demo' && !S.tenderOverviewLoaded) await loadTenderOverview();
+  if(S.page==='fin_project_schedule' && S.dataMode!=='demo') await loadProjectTasks(S.selectedProjectId);
+  if(S.page==='fin_tenders' && S.dataMode!=='demo' && !S.tendersLoaded) await loadRealTenders();
+  if(S.page==='fin_tender_detail' && S.dataMode!=='demo'){
+    if(!S.tendersLoaded) await loadRealTenders();
+    // Always refetch — the tender's status (and therefore its budget's existence/state) can have
+    // just changed via set-tender-status, so a stale cached value here would show wrong info.
+    await loadTenderBudget(S.selectedTenderId);
+    await loadTenderInstallments(S.selectedTenderId);
+  }
+  if(S.page==='fin_budget_detail' && S.dataMode!=='demo') await loadBudgetDetail(S.selectedBudgetId);
+  if(S.page==='fin_project_detail' && S.dataMode!=='demo'){
+    await loadProjectBudget(S.selectedProjectId); // same "always refetch" reasoning as fin_tender_detail above
+    await loadRealProjectDetail(S.selectedProjectId); // fetches the new detail fields + installments
+  }
+  if(S.page==='fin_po' && S.dataMode!=='demo' && !S.purchaseOrdersLoaded) await loadPurchaseOrders();
+  if(S.page==='fin_po_detail' && S.dataMode!=='demo') await loadPurchaseOrderDetail(S.selectedPurchaseOrderId);
+  if(S.page==='fin_wo' && S.dataMode!=='demo' && !S.subcontractTermsLoaded) await loadSubcontractTerms();
+  if(S.page==='fin_wo_add' && S.dataMode!=='demo'){
+    if(!S.subcontractorsLoaded) await loadSubcontractors();
+    if(!S.whtIncomeTypesLoaded) await loadWhtIncomeTypes();
+  }
+  if(S.page==='fin_wo_detail' && S.dataMode!=='demo') await loadSubcontractTermDetail(S.selectedSubcontractTermId);
+  if(S.page==='fin_progress_claims' && S.dataMode!=='demo' && !S.progressClaimsLoaded) await loadProgressClaims();
+  if(S.page==='fin_progress_claim_detail' && S.dataMode!=='demo') await loadProgressClaimDetail(S.selectedProgressClaimId);
+  if(S.page==='fin_subcontract_billings' && S.dataMode!=='demo' && !S.subcontractBillingsLoaded) await loadSubcontractBillings();
+  if(S.page==='fin_subcontract_billing_add' && S.dataMode!=='demo'){
+    if(S.approvedSubcontractTermsForBilling===undefined) await loadApprovedSubcontractTermsForBilling();
+    if(!S.whtIncomeTypesLoaded) await loadWhtIncomeTypes();
+  }
+  if(S.page==='fin_subcontract_billing_detail' && S.dataMode!=='demo') await loadSubcontractBillingDetail(S.selectedSubcontractBillingId);
+  if(S.page==='fin_quotations' && S.dataMode!=='demo' && !S.quotationsLoaded) await loadRealQuotations();
+  if(S.page==='fin_documents' && S.dataMode!=='demo' && !S.clientDocumentsLoaded) await loadRealClientDocuments();
+  // pageFinProjectAdd()'s PM/foreman dropdowns are sourced from DB.employees, same as pageFinLabor()'s.
+  if(S.page==='fin_project_add' && S.dataMode!=='demo' && !S.employeesLoaded) await loadRealEmployees();
+  if(S.page==='fin_project_add' && S.dataMode!=='demo' && !S.tendersLoaded) await loadRealTenders();
+  if(S.page==='users' && S.dataMode!=='demo' && !S.customerUsersLoaded) await loadCustomerUsers();
+  if(S.page==='conditions' && S.dataMode!=='demo' && !S.approvalConditionsLoaded) await loadApprovalConditions();
+  if(S.page==='job_positions' && S.dataMode!=='demo' && !S.jobPositionsLoaded) await loadRealJobPositions();
+  if(S.page==='leave_types' && S.dataMode!=='demo' && !S.leaveTypesLoaded) await loadRealLeaveTypes();
+  if(S.page==='public_holidays' && S.dataMode!=='demo' && !S.publicHolidaysLoaded) await loadRealPublicHolidays(S.publicHolidaysYear);
+  if(S.page==='emp_leave_request' && S.dataMode!=='demo'){
+    if(!S.employeesLoaded) await loadRealEmployees();
+    if(!S.leaveTypesLoaded) await loadRealLeaveTypes();
+    if(!S.leaveRequestsLoaded) await loadRealLeaveRequests();
+  }
+  if(S.page==='emp_leave_calendar' && S.dataMode!=='demo' && !S.leaveRequestsLoaded) await loadRealLeaveRequests();
+  if(S.page==='fin_labor' && S.dataMode!=='demo'){
+    if(!S.employeesLoaded) await loadRealEmployees();
+    if(!S.leaveRequestsLoaded) await loadRealLeaveRequests();
+    if(!S.laborCostsLoaded) await loadRealLaborCosts();
+  }
+  if(S.page==='fin_labor_pay' && S.dataMode!=='demo'){
+    if(!S.employeesLoaded) await loadRealEmployees();
+    if(!S.laborCostsLoaded) await loadRealLaborCosts();
+  }
+  if(S.page==='fin_journal' && S.dataMode!=='demo' && !S.journalEntriesLoaded) await loadRealJournalEntries();
+  if(S.page==='fin_trial_balance' && S.dataMode!=='demo' && !S.trialBalanceData) await loadTrialBalance();
+  if(S.page==='fin_income_statement' && S.dataMode!=='demo' && !S.incomeStatementData){
+    if(!S.incomeStatementFrom || !S.incomeStatementTo){
+      const now = new Date();
+      S.incomeStatementFrom = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`;
+      S.incomeStatementTo = now.toISOString().slice(0,10);
+    }
+    await loadIncomeStatement();
+  }
+  if(S.page==='fin_balance_sheet' && S.dataMode!=='demo' && !S.balanceSheetData) await loadBalanceSheet();
+  if(S.page==='fin_employees' && S.dataMode!=='demo'){
+    if(!S.employeesLoaded) await loadRealEmployees();
+    if(!S.customerUsersLoaded) await loadCustomerUsers();
+  }
+  if(S.page==='emp_applicants' && S.dataMode!=='demo'){
+    if(!S.jobApplicationsLoaded) await loadRealJobApplications();
+    if(!S.customerUsersLoaded) await loadCustomerUsers();
+  }
+  if(S.page==='approval_permissions' && S.dataMode!=='demo' && !S.customerUsersLoaded) await loadCustomerUsers();
+  if(S.page==='approval_permissions' && S.dataMode!=='demo' && !S.approvalRulesLoaded) await loadApprovalRules();
+  if(S.page==='subcontractors' && S.dataMode!=='demo' && !S.subcontractorsLoaded) await loadSubcontractors();
+  if(S.page==='fin_petty_cash_funds' && S.dataMode!=='demo' && !S.pettyCashFundsLoaded) await loadPettyCashFunds();
+  if(S.page==='fin_vouchers_petty_cash' && S.dataMode!=='demo'){
+    if(!S.pettyCashFundsLoaded) await loadPettyCashFunds(); // ฟอร์มสร้างใบเบิกต้องเลือกกองทุน
+    if(!S.employeesLoaded) await loadRealEmployees(); // ฟอร์มสร้างใบเบิกต้องเลือกพนักงานผู้รับเงิน
+    if(!S.chartOfAccountsLoaded) await loadChartOfAccounts();
+    if(!S.paymentVouchersLoadedByType.petty_cash) await loadPaymentVouchers('petty_cash');
+  }
+  if(S.page==='fin_vouchers_advance' && S.dataMode!=='demo'){
+    // เงินทดรองจ่ายไม่มีกองทุน จึงไม่ต้อง loadPettyCashFunds/loadChartOfAccounts (ไม่มีรหัสบัญชี
+    // ค่าใช้จ่ายให้เลือกในฟอร์มนี้ — ดู voucherTypeConfig().advance: needsFund/needsExpenseAccount=false)
+    if(!S.employeesLoaded) await loadRealEmployees(); // ฟอร์มสร้างใบเบิกต้องเลือกพนักงานผู้ขอเบิก
+    if(!S.paymentVouchersLoadedByType.advance) await loadPaymentVouchers('advance');
+  }
+  if(S.page==='fin_external_payees' && S.dataMode!=='demo'){
+    if(!S.chartOfAccountsLoaded) await loadChartOfAccounts(); // ฟอร์มมี dropdown รหัสบัญชีค่าใช้จ่ายเริ่มต้น
+    if(!S.externalPayeesLoaded) await loadExternalPayees();
+  }
+  if(S.page==='fin_vouchers_other' && S.dataMode!=='demo'){
+    if(!S.externalPayeesLoaded) await loadExternalPayees(); // ฟอร์มสร้างใบเบิกต้องเลือกผู้รับเงิน
+    if(!S.chartOfAccountsLoaded) await loadChartOfAccounts();
+    if(!S.whtIncomeTypesLoaded) await loadWhtIncomeTypes(); // dropdown ประเภทเงินได้มาตรา 40
+    if(!S.paymentVouchersLoadedByType.other) await loadPaymentVouchers('other');
+  }
+  if(S.page==='fin_wht_certificates' && S.dataMode!=='demo'){
+    await loadWhtCertificates(S.whtCertificatesFilter.month, S.whtCertificatesFilter.payeeName); // รีเฟรชทุกครั้งที่เข้าหน้า
+  }
+  if(S.page==='fin_advance_clearances' && S.dataMode!=='demo'){
+    if(!S.employeesLoaded) await loadRealEmployees(); // dropdown filter ตามพนักงาน
+    if(!S.externalPayeesLoaded) await loadExternalPayees(); // ฟอร์มสร้างเลือกผู้รับเงินต่อบรรทัดได้
+    if(!S.chartOfAccountsLoaded) await loadChartOfAccounts();
+    if(!S.whtIncomeTypesLoaded) await loadWhtIncomeTypes();
+    await loadOutstandingAdvances(); // รีเฟรชทุกครั้ง — ต้องใช้เลือกใบ advance ต้นทางตอนสร้างใบเคลียร์ใหม่
+    if(!S.advanceClearancesLoaded) await loadAdvanceClearances(S.advanceClearanceListFilter);
+  }
+  if(S.page==='fin_advance_clearance_detail' && S.dataMode!=='demo'){
+    if(!S.chartOfAccountsLoaded) await loadChartOfAccounts();
+    if(!S.externalPayeesLoaded) await loadExternalPayees();
+    if(!S.whtIncomeTypesLoaded) await loadWhtIncomeTypes();
+    if(S.selectedAdvanceClearanceId) await loadAdvanceClearanceDetail(S.selectedAdvanceClearanceId);
+  }
+  if(S.page==='fin_voucher_detail' && S.dataMode!=='demo'){
+    if(!S.chartOfAccountsLoaded) await loadChartOfAccounts();
+    if(!S.whtIncomeTypesLoaded) await loadWhtIncomeTypes();
+    if(S.selectedVoucherId) await loadVoucherDetail(S.selectedVoucherId);
+  }
+  if(S.page==='fin_advance_outstanding' && S.dataMode!=='demo'){
+    if(!S.employeesLoaded) await loadRealEmployees(); // dropdown filter ตามพนักงาน
+    await loadOutstandingAdvances(S.outstandingAdvancesFilter.employeeId); // รีเฟรชทุกครั้งที่เข้าหน้า — ยอดเปลี่ยนได้บ่อยจากการอนุมัติ/เคลียร์
+  }
+  if((S.page==='foreign_worker_docs' || S.page==='foreign_worker_expiry') && S.dataMode!=='demo'){
+    if(!S.employeesLoaded) await loadRealEmployees();
+    if(!S.foreignWorkerDocumentsLoaded) await loadRealForeignWorkerDocuments();
+  }
+  if(S.page==='fin_costs' && S.dataMode!=='demo' && !S.costsLoaded) await loadRealProjectCosts();
+  if(S.page==='fin_office' && S.dataMode!=='demo' && !S.officeExpensesLoaded) await loadRealOfficeExpenses();
+  if((S.page==='fin_revenue' || S.page==='fin_retention' || S.page==='fin_receive_payment') && S.dataMode!=='demo' && !S.revenueLoaded) await loadRealRevenue();
 }
 
 async function handleAction(act, el){
@@ -12020,171 +12205,19 @@ async function handleAction(act, el){
     // projects) — omitting it keeps every existing project link's behavior unchanged.
     if(el.dataset.id) S[el.dataset.idField || 'selectedProjectId'] = parseInt(el.dataset.id, 10);
     render();
-    // โครงการ (client_projects) backs the project pickers on cost/revenue/labor forms, budget-vs-
-    // actual, and the project list/detail pages themselves — load it once, on first visit to any
-    // of them, rather than duplicating the load call in every single one of those page branches.
-    const PROJECT_DEPENDENT_PAGES = ['fin_projects','fin_project_add','fin_project_detail','fin_costs','fin_revenue','fin_retention','fin_receive_payment','fin_labor','fin_labor_pay','create_pr','my_prs','all_prs','fin_po','fin_po_add','fin_po_detail','fin_wo','fin_wo_add','fin_wo_detail','fin_progress_claims','fin_progress_claim_add','fin_progress_claim_detail','fin_quotations','fin_quotation_add','fin_documents','fin_document_add','fin_petty_cash_funds','fin_vouchers_petty_cash','fin_vouchers_advance','fin_vouchers_other','fin_voucher_detail'];
-    if(PROJECT_DEPENDENT_PAGES.includes(S.page) && S.dataMode!=='demo' && !S.projectsLoaded) await loadRealProjects();
-    // PR (หัวข้อ 4) — ต่อ API จริงเสมอ ไม่มี demo dataset แล้ว (ดู pageOverview's comment)
-    if((S.page==='overview'||S.page==='my_prs'||S.page==='all_prs') && S.dataMode!=='demo' && !S.purchaseRequestsLoaded) await loadPurchaseRequests();
-    if(S.page==='pr_detail' && S.dataMode!=='demo') await loadPurchaseRequestDetail(S.selectedPurchaseRequestId);
-    if(S.page==='fin_tender_overview' && S.dataMode!=='demo' && !S.tenderOverviewLoaded) await loadTenderOverview();
-    if(S.page==='fin_project_schedule' && S.dataMode!=='demo') await loadProjectTasks(S.selectedProjectId);
-    if(S.page==='fin_tenders' && S.dataMode!=='demo' && !S.tendersLoaded) await loadRealTenders();
-    if(S.page==='fin_tender_detail' && S.dataMode!=='demo'){
-      if(!S.tendersLoaded) await loadRealTenders();
-      // Always refetch — the tender's status (and therefore its budget's existence/state) can have
-      // just changed via set-tender-status, so a stale cached value here would show wrong info.
-      await loadTenderBudget(S.selectedTenderId);
-      await loadTenderInstallments(S.selectedTenderId);
-    }
-    if(S.page==='fin_budget_detail' && S.dataMode!=='demo') await loadBudgetDetail(S.selectedBudgetId);
-    if(S.page==='fin_project_detail' && S.dataMode!=='demo'){
-      await loadProjectBudget(S.selectedProjectId); // same "always refetch" reasoning as fin_tender_detail above
-      await loadRealProjectDetail(S.selectedProjectId); // fetches the new detail fields + installments
-    }
-    if(S.page==='fin_po' && S.dataMode!=='demo' && !S.purchaseOrdersLoaded) await loadPurchaseOrders();
-    if(S.page==='fin_po_detail' && S.dataMode!=='demo') await loadPurchaseOrderDetail(S.selectedPurchaseOrderId);
-    if(S.page==='fin_wo' && S.dataMode!=='demo' && !S.subcontractTermsLoaded) await loadSubcontractTerms();
-    if(S.page==='fin_wo_add' && S.dataMode!=='demo'){
-      if(!S.subcontractorsLoaded) await loadSubcontractors();
-      if(!S.whtIncomeTypesLoaded) await loadWhtIncomeTypes();
-    }
-    if(S.page==='fin_wo_detail' && S.dataMode!=='demo') await loadSubcontractTermDetail(S.selectedSubcontractTermId);
-    if(S.page==='fin_progress_claims' && S.dataMode!=='demo' && !S.progressClaimsLoaded) await loadProgressClaims();
-    if(S.page==='fin_progress_claim_detail' && S.dataMode!=='demo') await loadProgressClaimDetail(S.selectedProgressClaimId);
-    if(S.page==='fin_subcontract_billings' && S.dataMode!=='demo' && !S.subcontractBillingsLoaded) await loadSubcontractBillings();
-    if(S.page==='fin_subcontract_billing_add' && S.dataMode!=='demo'){
-      if(S.approvedSubcontractTermsForBilling===undefined) await loadApprovedSubcontractTermsForBilling();
-      if(!S.whtIncomeTypesLoaded) await loadWhtIncomeTypes();
-    }
-    if(S.page==='fin_subcontract_billing_detail' && S.dataMode!=='demo') await loadSubcontractBillingDetail(S.selectedSubcontractBillingId);
-    if(S.page==='fin_quotations' && S.dataMode!=='demo' && !S.quotationsLoaded) await loadRealQuotations();
-    if(S.page==='fin_documents' && S.dataMode!=='demo' && !S.clientDocumentsLoaded) await loadRealClientDocuments();
-    // pageFinProjectAdd()'s PM/foreman dropdowns are sourced from DB.employees, same as pageFinLabor()'s.
-    if(S.page==='fin_project_add' && S.dataMode!=='demo' && !S.employeesLoaded) await loadRealEmployees();
-    if(S.page==='fin_project_add' && S.dataMode!=='demo' && !S.tendersLoaded) await loadRealTenders();
-    if(S.page==='users' && S.dataMode!=='demo' && !S.customerUsersLoaded) await loadCustomerUsers();
-    if(S.page==='conditions' && S.dataMode!=='demo' && !S.approvalConditionsLoaded) await loadApprovalConditions();
-    if(S.page==='job_positions' && S.dataMode!=='demo' && !S.jobPositionsLoaded) await loadRealJobPositions();
-    if(S.page==='leave_types' && S.dataMode!=='demo' && !S.leaveTypesLoaded) await loadRealLeaveTypes();
-    if(S.page==='public_holidays' && S.dataMode!=='demo' && !S.publicHolidaysLoaded) await loadRealPublicHolidays(S.publicHolidaysYear);
-    if(S.page==='emp_leave_request' && S.dataMode!=='demo'){
-      if(!S.employeesLoaded) await loadRealEmployees();
-      if(!S.leaveTypesLoaded) await loadRealLeaveTypes();
-      if(!S.leaveRequestsLoaded) await loadRealLeaveRequests();
-    }
-    if(S.page==='emp_leave_calendar' && S.dataMode!=='demo' && !S.leaveRequestsLoaded) await loadRealLeaveRequests();
-    if(S.page==='fin_labor' && S.dataMode!=='demo'){
-      if(!S.employeesLoaded) await loadRealEmployees();
-      if(!S.leaveRequestsLoaded) await loadRealLeaveRequests();
-      if(!S.laborCostsLoaded) await loadRealLaborCosts();
-    }
-    if(S.page==='fin_labor_pay' && S.dataMode!=='demo'){
-      if(!S.employeesLoaded) await loadRealEmployees();
-      if(!S.laborCostsLoaded) await loadRealLaborCosts();
-    }
-    if(S.page==='fin_journal' && S.dataMode!=='demo' && !S.journalEntriesLoaded) await loadRealJournalEntries();
-    if(S.page==='fin_trial_balance' && S.dataMode!=='demo' && !S.trialBalanceData) await loadTrialBalance();
-    if(S.page==='fin_income_statement' && S.dataMode!=='demo' && !S.incomeStatementData){
-      if(!S.incomeStatementFrom || !S.incomeStatementTo){
-        const now = new Date();
-        S.incomeStatementFrom = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`;
-        S.incomeStatementTo = now.toISOString().slice(0,10);
-      }
-      await loadIncomeStatement();
-    }
-    if(S.page==='fin_balance_sheet' && S.dataMode!=='demo' && !S.balanceSheetData) await loadBalanceSheet();
-    if(S.page==='fin_employees' && S.dataMode!=='demo'){
-      if(!S.employeesLoaded) await loadRealEmployees();
-      if(!S.customerUsersLoaded) await loadCustomerUsers();
-    }
-    if(S.page==='emp_applicants' && S.dataMode!=='demo'){
-      if(!S.jobApplicationsLoaded) await loadRealJobApplications();
-      if(!S.customerUsersLoaded) await loadCustomerUsers();
-    }
-    if(S.page==='approval_permissions' && S.dataMode!=='demo' && !S.customerUsersLoaded) await loadCustomerUsers();
-    if(S.page==='approval_permissions' && S.dataMode!=='demo' && !S.approvalRulesLoaded) await loadApprovalRules();
-    if(S.page==='subcontractors' && S.dataMode!=='demo' && !S.subcontractorsLoaded) await loadSubcontractors();
-    if(S.page==='fin_petty_cash_funds' && S.dataMode!=='demo' && !S.pettyCashFundsLoaded) await loadPettyCashFunds();
-    if(S.page==='fin_vouchers_petty_cash' && S.dataMode!=='demo'){
-      if(!S.pettyCashFundsLoaded) await loadPettyCashFunds(); // ฟอร์มสร้างใบเบิกต้องเลือกกองทุน
-      if(!S.employeesLoaded) await loadRealEmployees(); // ฟอร์มสร้างใบเบิกต้องเลือกพนักงานผู้รับเงิน
-      if(!S.chartOfAccountsLoaded) await loadChartOfAccounts();
-      if(!S.paymentVouchersLoadedByType.petty_cash) await loadPaymentVouchers('petty_cash');
-    }
-    if(S.page==='fin_vouchers_advance' && S.dataMode!=='demo'){
-      // เงินทดรองจ่ายไม่มีกองทุน จึงไม่ต้อง loadPettyCashFunds/loadChartOfAccounts (ไม่มีรหัสบัญชี
-      // ค่าใช้จ่ายให้เลือกในฟอร์มนี้ — ดู voucherTypeConfig().advance: needsFund/needsExpenseAccount=false)
-      if(!S.employeesLoaded) await loadRealEmployees(); // ฟอร์มสร้างใบเบิกต้องเลือกพนักงานผู้ขอเบิก
-      if(!S.paymentVouchersLoadedByType.advance) await loadPaymentVouchers('advance');
-    }
-    if(S.page==='fin_external_payees' && S.dataMode!=='demo'){
-      if(!S.chartOfAccountsLoaded) await loadChartOfAccounts(); // ฟอร์มมี dropdown รหัสบัญชีค่าใช้จ่ายเริ่มต้น
-      if(!S.externalPayeesLoaded) await loadExternalPayees();
-    }
-    if(S.page==='fin_vouchers_other' && S.dataMode!=='demo'){
-      if(!S.externalPayeesLoaded) await loadExternalPayees(); // ฟอร์มสร้างใบเบิกต้องเลือกผู้รับเงิน
-      if(!S.chartOfAccountsLoaded) await loadChartOfAccounts();
-      if(!S.whtIncomeTypesLoaded) await loadWhtIncomeTypes(); // dropdown ประเภทเงินได้มาตรา 40
-      if(!S.paymentVouchersLoadedByType.other) await loadPaymentVouchers('other');
-    }
-    if(S.page==='fin_wht_certificates' && S.dataMode!=='demo'){
-      await loadWhtCertificates(S.whtCertificatesFilter.month, S.whtCertificatesFilter.payeeName); // รีเฟรชทุกครั้งที่เข้าหน้า
-    }
-    if(S.page==='fin_advance_clearances' && S.dataMode!=='demo'){
-      if(!S.employeesLoaded) await loadRealEmployees(); // dropdown filter ตามพนักงาน
-      if(!S.externalPayeesLoaded) await loadExternalPayees(); // ฟอร์มสร้างเลือกผู้รับเงินต่อบรรทัดได้
-      if(!S.chartOfAccountsLoaded) await loadChartOfAccounts();
-      if(!S.whtIncomeTypesLoaded) await loadWhtIncomeTypes();
-      await loadOutstandingAdvances(); // รีเฟรชทุกครั้ง — ต้องใช้เลือกใบ advance ต้นทางตอนสร้างใบเคลียร์ใหม่
-      if(!S.advanceClearancesLoaded) await loadAdvanceClearances(S.advanceClearanceListFilter);
-    }
-    if(S.page==='fin_advance_clearance_detail' && S.dataMode!=='demo'){
-      if(!S.chartOfAccountsLoaded) await loadChartOfAccounts();
-      if(!S.externalPayeesLoaded) await loadExternalPayees();
-      if(!S.whtIncomeTypesLoaded) await loadWhtIncomeTypes();
-      if(S.selectedAdvanceClearanceId) await loadAdvanceClearanceDetail(S.selectedAdvanceClearanceId);
-    }
-    if(S.page==='fin_voucher_detail' && S.dataMode!=='demo'){
-      if(!S.chartOfAccountsLoaded) await loadChartOfAccounts();
-      if(!S.whtIncomeTypesLoaded) await loadWhtIncomeTypes();
-      if(S.selectedVoucherId) await loadVoucherDetail(S.selectedVoucherId);
-    }
-    if(S.page==='fin_advance_outstanding' && S.dataMode!=='demo'){
-      if(!S.employeesLoaded) await loadRealEmployees(); // dropdown filter ตามพนักงาน
-      await loadOutstandingAdvances(S.outstandingAdvancesFilter.employeeId); // รีเฟรชทุกครั้งที่เข้าหน้า — ยอดเปลี่ยนได้บ่อยจากการอนุมัติ/เคลียร์
-    }
-    if((S.page==='foreign_worker_docs' || S.page==='foreign_worker_expiry') && S.dataMode!=='demo'){
-      if(!S.employeesLoaded) await loadRealEmployees();
-      if(!S.foreignWorkerDocumentsLoaded) await loadRealForeignWorkerDocuments();
-    }
-    if(S.page==='fin_costs' && S.dataMode!=='demo' && !S.costsLoaded) await loadRealProjectCosts();
-    if(S.page==='fin_office' && S.dataMode!=='demo' && !S.officeExpensesLoaded) await loadRealOfficeExpenses();
-    if((S.page==='fin_revenue' || S.page==='fin_retention' || S.page==='fin_receive_payment') && S.dataMode!=='demo' && !S.revenueLoaded) await loadRealRevenue();
+    await loadDataForPage();
     return;
   }
   if(act==='switch-module'){
     S.module = el.dataset.module;
     S.page = S.module==='finance' ? (S.currentUser.role==='super_user' ? 'fin_overview' : 'fin_vouchers_petty_cash') : S.module==='employees' ? 'emp_overview' : S.module==='bidding' ? 'fin_tender_overview' : 'overview';
     render();
-    // Every OTHER module's default landing page reads straight from already-populated DB.* arrays
-    // (no S.xLoaded gate), so switch-module never needed to fetch anything before. fin_tender_overview
-    // is the first one that does (it shows a loading skeleton while !S.tenderOverviewLoaded) — without
-    // this, landing here via the module-switch button (rather than a sidebar 'nav' click, which DOES
-    // trigger loaders — see the big if(S.page===...) chain below) would leave the skeleton showing
-    // forever until the user happened to click something else in the sidebar.
-    if(S.module==='bidding' && S.dataMode!=='demo' && !S.tenderOverviewLoaded) await loadTenderOverview();
-    // Non-super_user roles land directly on fin_vouchers_petty_cash (see S.page assignment above) —
-    // same loaders the 'nav' handler runs when clicking that page from the sidebar, needed here too
-    // since switch-module bypasses that handler entirely.
-    if(S.page==='fin_vouchers_petty_cash' && S.dataMode!=='demo'){
-      if(!S.pettyCashFundsLoaded) await loadPettyCashFunds();
-      if(!S.employeesLoaded) await loadRealEmployees();
-      if(!S.chartOfAccountsLoaded) await loadChartOfAccounts();
-      if(!S.paymentVouchersLoadedByType.petty_cash) await loadPaymentVouchers('petty_cash');
-      render();
-    }
+    // switch-module กระโดดตรงไปหน้า default ของโมดูลนั้นโดยไม่ผ่าน 'nav' เลย — เรียก loadDataForPage()
+    // เดียวกับที่ 'nav' เรียกเสมอ กันบั๊ก "loader ไม่ทำงานเมื่อเข้าหน้าเดียวกันผ่านคนละทาง" (เจอจริงมาแล้ว
+    // ตอนหัวข้อ 1 ก่อนจะรวมเป็นฟังก์ชันเดียวแบบนี้ — เดิมต้อง duplicate loader ของ fin_vouchers_petty_cash/
+    // fin_tender_overview ไว้ตรงนี้ต่างหาก)
+    await loadDataForPage();
+    render();
     return;
   }
   if(act==='report-tab'){ S.reportTab = el.dataset.key; render(); return; }

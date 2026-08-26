@@ -36,7 +36,8 @@
     "test:wo-ui": "node tests/wo-ui.regression.js",
     "test:progress-claims-ui": "node tests/progress-claims-ui.regression.js",
     "test:subcontract-billings-ui": "node tests/subcontract-billings-ui.regression.js",
-    "test:regression-all": "npm run test:client-ledger && npm run test:pr-ui && npm run test:po-ui && npm run test:wo-ui && npm run test:progress-claims-ui && npm run test:subcontract-billings-ui"
+    "test:dual-module-nav": "node tests/dual-module-nav.regression.js",
+    "test:regression-all": "npm run test:client-ledger && npm run test:pr-ui && npm run test:po-ui && npm run test:wo-ui && npm run test:progress-claims-ui && npm run test:subcontract-billings-ui && npm run test:dual-module-nav"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
