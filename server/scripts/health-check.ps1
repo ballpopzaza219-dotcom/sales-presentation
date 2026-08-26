@@ -61,6 +61,7 @@ try {
 Write-Output "`n================================"
 if ($problems.Count -eq 0) {
   Write-Output "ทุกอย่างปกติ — ไม่พบปัญหา"
+  exit 0
 } else {
   Write-Output "พบ $($problems.Count) ปัญหา:"
   foreach ($p in $problems) { Write-Output "  - $p" }

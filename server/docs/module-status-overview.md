@@ -1,17 +1,13 @@
-# สถานะรวมโมดูล client ledger / PR — ณ จบหัวข้อ 1
+# สถานะรวมโมดูล client ledger / PR — เอกสารอ้างอิงเชิงเทคนิค
 
-อัปเดตล่าสุด: 2026-08-06 (จบหัวข้อ 1: 1.1-1.4 ครบ, หัวข้อ 4: PR ครบ) · แก้ไข: 2026-08-19 ·
-UI หัวข้อ 1 เสร็จครบ: 2026-08-21 · UI หัวข้อ 4 เสร็จครบ: 2026-08-21
-
-⚠️ **"เสร็จสมบูรณ์" ในเอกสารนี้เดิมหมายถึง backend/endpoint เท่านั้น** — ตอนสำรวจแรก (2026-08-19) พบว่า
-ทั้งหัวข้อ 1 (1.1-1.4) และหัวข้อ 4 (PR) ยังไม่มี UI ที่ต่อ API จริงเลยสักหน้า (หน้า `pagePRList`/
-`pageCreatePR` เดิมเป็น demo-mode ล้วนๆ อ่าน/เขียนแค่ `DB.prs` array เดโม hardcode) — ตอนนี้ทั้งสองหัวข้อ
-มี UI จริงต่อ API ครบแล้ว (หน้า demo เดิมของ PR ถูกลบทิ้งทั้งหมด) ดู `server/docs/README.md` สำหรับสถานะ
-ล่าสุด
+อัปเดตล่าสุด: 2026-08-25 — **ทุกหัวข้อ (1, 2, 3.1, 4, 5) เสร็จสมบูรณ์แล้ว** เหลือแค่ 3.2 (Project
+Complete, อสังหาริมทรัพย์) ที่ยังไม่มีนิยาม requirement — ดู [`README.md`](./README.md) สำหรับสรุปแบบ
+ภาษาคนไม่อ่านโค้ด และ [`pr-module-known-limitations.md`](./pr-module-known-limitations.md) สำหรับจุดที่
+ยังค้างจริง
 
 ## Endpoint ทั้งหมดที่มีจริง แยกตามหัวข้อ
 
-### หัวข้อ 1 — Client ledger (เงินสด/เงินทดรองจ่าย/จ่ายภายนอก) — **Backend + UI เสร็จสมบูรณ์ครบทั้ง 1.1-1.4 (2026-08-21)**
+### หัวข้อ 1 — Client ledger (เงินสด/เงินทดรองจ่าย/จ่ายภายนอก) — ✅ เสร็จสมบูรณ์
 
 **1.1 เงินสดย่อย**
 - `GET/POST/PUT /api/customer/petty-cash-funds`, `/:id`
@@ -31,29 +27,58 @@ UI หัวข้อ 1 เสร็จครบ: 2026-08-21 · UI หัวข�
 - `GET/POST/PUT /api/customer/payment-vouchers` + `/submit /approve /reject /cancel`
 - `GET /api/customer/payment-vouchers/:id/wht-certificates`
 
-### หัวข้อ 4 — ใบขอซื้อ (PR) — **Backend + UI เสร็จสมบูรณ์ครบ (UI เสร็จ 2026-08-21)**
+เทสถาวร: `server/tests/petty-cash-vouchers-ui.regression.js`, `advance-vouchers-ui.regression.js`,
+`external-payment-ui.regression.js`, `advance-clearance-ui.regression.js`,
+`advance-clearance-settle-ui.regression.js` + HTTP-level suite (`npm run test:client-ledger`)
+
+### หัวข้อ 2 — ผู้รับเหมาช่วง (subcontractor) — ✅ เสร็จสมบูรณ์ครบ 2.1-2.3
+
+**Master data**
+- `GET/POST/PUT /api/customer/subcontractors`
+
+**สัญญา/หนังสือสั่งจ้าง** (`client_subcontract_terms` — ตัวเดียวกับ "WO" ของหัวข้อ 5)
+- `GET/POST/PUT /api/customer/subcontract-terms`, `/:id` + `/submit /approve /reject /cancel /complete /terminate`
+
+**2.1-2.3 เบิกเงินตามสัญญา** (`client_subcontract_billings` — รวม 3 ประเภทในตารางเดียว ผ่าน
+`billing_type`: advance/progress/retention_release)
+- `GET/POST/PUT /api/customer/subcontract-billings`, `/:id` + `/submit /approve /reject /cancel`
+- `GET /api/customer/subcontract-terms/:id/balance` (ยอดเงินล่วงหน้าคงค้าง/เงินประกันผลงานที่กันไว้/ยอดเบิกสะสม — คำนวณสดจาก SUM ไม่เก็บเป็นคอลัมน์สะสม)
+- `GET /api/customer/subcontract-billings/:id/wht-certificates`
+
+เทสถาวร: `server/tests/subcontractors.regression.js` (HTTP-level, ส่วนหนึ่งของ `test:client-ledger`),
+`server/tests/subcontract-billings-ui.regression.js` (46 checks)
+
+### หัวข้อ 3 — บันทึกความคืบหน้าโครงการ (progress claims) — 🟡 3.1 เสร็จสมบูรณ์ / 3.2 ยังไม่เริ่ม
+
+**3.1 เรียกเก็บเงินจากเจ้าของโครงการ** (`client_progress_claims` — รองรับทั้ง claim_type=advance/progress
+และ claim_mode=installment/boq)
+- `GET/POST/PUT /api/customer/progress-claims`, `/:id` + `/submit /certify /approve /reject /cancel`
+- `GET /api/customer/projects/:id/outstanding-advance`
+
+**3.2 Project Complete (อสังหาริมทรัพย์)** — ยังไม่มีตาราง/endpoint ใดๆ เลย รอนิยาม requirement — ดู
+[`pr-module-known-limitations.md`](./pr-module-known-limitations.md)
+
+เทสถาวร: `server/tests/progress-claims-ui.regression.js` (30 checks)
+
+### หัวข้อ 4 — ใบขอซื้อ (PR) — ✅ เสร็จสมบูรณ์
 - `GET/POST/PUT /api/customer/purchase-requests`, `/:id` + `/submit /approve /reject /cancel`
 - `POST /api/customer/purchase-requests/:id/items/:itemId/consume /release /cancel-qty`
 - `GET /api/customer/purchase-requests/:id/items/:itemId/adjustments`
 
-### หัวข้อ 2 — ผู้รับเหมาช่วง (subcontractor) — **ไม่มีอะไรเลย**
-ไม่มีตาราง ไม่มี endpoint สักจุด — ดู known-limitations ข้อ 1
+เทสถาวร: `server/tests/pr-ui.regression.js` (26 checks) + `pr.regression.js` (HTTP-level)
 
-### หัวข้อ 3 — ⚠️ ไม่แน่ใจว่าคืออะไร ต้องถามคุณ (ดูรายการคำถามท้ายไฟล์)
-พบว่า `server/docs/pr-module-known-limitations.md` ที่มีอยู่ก่อนเซสชันนี้อ้างถึงตาราง/endpoint
-`client_progress_claims` (ใบขอเบิกความคืบหน้า?) แต่**ไม่มีอยู่จริงในโค้ดปัจจุบันเลย** — ไม่มีตาราง
-ไม่มี route ไม่มีร่องรอยอื่นใดนอกจากในไฟล์เอกสารนั้น ไม่แน่ใจว่าเป็นเอกสารที่เขียนไว้ล่วงหน้าก่อนสร้างจริง
-(แล้วยังไม่ได้ทำ) หรือเคยมีแล้วถูกลบ/ย้อนกลับไปในบางจุดของประวัติโปรเจกต์
+### หัวข้อ 5 — PO/WO — ✅ เขียนใหม่ทั้งหมดตามมาตรฐานชุดนี้
 
-### หัวข้อ 5 — PO/WO — **มีแค่ PO แบบพื้นฐานเดิม (ไม่ผ่านมาตรฐานชุดนี้เลย)**
-- `GET/POST /api/customer/purchase-orders`, `/:id`, `PUT .../status`, `DELETE /:id`
-- ของเดิมที่มีอยู่ก่อนเซสชันนี้ — **ไม่มี** composite FK เข้ม, **ไม่มี** idempotency, **ไม่มี**
-  approval workflow, **ไม่โพสต์ journal entry**, เก็บ items เป็น JSONB ก้อนเดียวแทนตารางแยก
-  ไม่ตรงกับกฎ CLAUDE.md ข้อ 1-9 ที่ใช้กับ PR/client ledger เลยสักข้อ — เวลาจะทำหัวข้อ 5 จริงต้อง
-  พิจารณาเขียนใหม่ทั้งหมด ไม่ใช่ต่อยอดของเดิม
-- WO (หนังสือสั่งจ้าง) — ไม่มีอะไรเลย
+**PO (ใบสั่งซื้อวัสดุ)** — `client_purchase_orders` เขียนใหม่ทั้งหมด (migration 0012), เดิมไม่มี
+composite FK/idempotency/approval workflow/journal entry เลยสักข้อ
+- `GET/POST/PUT /api/customer/purchase-orders`, `/:id` + `/submit /approve /reject /cancel`
 
-## Migration 0001-0006 แต่ละไฟล์เพิ่มอะไร
+**WO (สัญญาจ้างผู้รับเหมาช่วง)** — ใช้ `client_subcontract_terms` ร่วมกับหัวข้อ 2 โดยตรง (ไม่มี route
+แยกต่างหากชื่อ "work-orders" — ดูรายการ endpoint ในหัวข้อ 2 ด้านบน)
+
+เทสถาวร: `server/tests/po-ui.regression.js` (33 checks), `server/tests/wo-ui.regression.js` (27 checks)
+
+## Migration 0001-0016 แต่ละไฟล์เพิ่มอะไร
 
 | # | ชื่อไฟล์ | เพิ่มอะไร |
 |---|---|---|
@@ -63,9 +88,16 @@ UI หัวข้อ 1 เสร็จครบ: 2026-08-21 · UI หัวข�
 | 0004 | advance_approval_doctype | แยก `doc_type='advance'` + `can_approve_advance` (สิทธิ์อนุมัติเงินทดรองจ่ายแยกจากเงินสดย่อย) |
 | 0005 | advance_clearance_settle_split | `has_tax_invoice`+CHECK บน clearance_items, แยกสถานะ `settled` ออกจาก `approved` (แก้ settlement_required_check ให้ผูกกับ settled แทน), seed บัญชี 2110 (เจ้าหนี้พนักงาน) |
 | 0006 | external_payment_prep | VAT/WHT columns บน `client_payment_vouchers` (ใช้ตอน voucher_type=other), ขยาย `wht_certificates.source_type` รับ `payment_voucher`, แยก `doc_type='other'` + `can_approve_other` |
+| 0007 | manage_permission_flags | `can_manage_po`/`can_manage_petty_cash_fund`/`can_settle_cash` — แยกสิทธิ์ "จัดการ" ออกจากสิทธิ์ "อนุมัติ" (เดิมผูกกับ `super_user` ชั่วคราว) |
+| 0008 | fix_wht_income_types_ownership | แก้ ownership ของ `client_wht_income_types` ที่หลุดไปเป็น `postgres` (จากการรัน 0003 ผ่าน `psql -U postgres` ตรงๆ ตอนยังไม่มี Node.js) ให้กลับมาเป็น `sitereq_app` |
+| 0009 | subcontractors_master | `client_subcontractors` (master data ผู้รับเหมาช่วง) — ยังไม่แตะบัญชี/ภาษี |
+| 0010 | subcontractor_audit_doctype | `doc_type='subcontractor'` ใน audit log สำหรับแก้ไข master data ผู้รับเหมาช่วง |
+| 0011 | external_payee_audit_doctype | `doc_type='external_payee'` ใน audit log สำหรับแก้ไข master data ผู้รับเงินภายนอก |
+| 0012 | po_wo_batch | เขียนใหม่ `client_purchase_orders` ทั้งหมด + `client_subcontract_terms` (สัญญา/WO) ใหม่ตามมาตรฐานชุดนี้ |
+| 0013 | po_wo_approval_flag | `can_approve_po_wo` (คอลัมน์จริงที่ขาดหายไปตอนแรก ทำให้ `canApprove('po_wo', ...)` throw) |
+| 0014 | progress_claims_batch | `client_progress_claims`+`items`, บัญชีใหม่ `2160 เงินรับล่วงหน้าจากลูกค้า`, `can_certify_progress`/`can_approve_progress` |
+| 0015 | subcontract_billings_batch | `client_subcontract_billings`+`retention_release_items`, บัญชีใหม่ `1160`/`2130`/`2140`, `can_approve_subcontract_billing` |
+| 0016 | journal_source_type_subcontract_billing | เพิ่ม `'subcontract_billing'` เข้า `client_journal_entries.source_type` CHECK (แก้จากที่เคยใช้ `'manual'` ผิดหลักการชั่วคราว) |
 
-รวม: บริษัททุกบริษัทมีบัญชีใหม่ **5 รหัส** จากเซสชันนี้ (1110, 1150, 1170, 2110, 2120) — ไม่นับ 1260
-ที่มีอยู่ก่อนแล้วจากฟีเจอร์ client_revenue_payments เดิม
-
-## คำถามจากการสำรวจนี้ (ไม่ใช่ yes/no — รวบรวมไว้ท้ายรายงานหลักตามกฎใหม่)
-ดูท้าย `server/docs/pr-module-known-limitations.md`
+รวม: บริษัททุกบริษัทมีบัญชีใหม่ **9 รหัส** จากทุกเซสชัน (1110, 1150, 1160, 1170, 2110, 2120, 2130, 2140,
+2160) — ไม่นับ 1260 ที่มีอยู่ก่อนแล้วจากฟีเจอร์ `client_revenue_payments` เดิม
