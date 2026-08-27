@@ -1731,9 +1731,7 @@ async function openJobApplicationById(id){
     } catch(e){ toast(e.message, 'err'); return; }
   }
   S.appForm = {step:0, editId:a.id, draft:JSON.parse(JSON.stringify(a))};
-  S.page = 'emp_app_form'; render();
-  ensureGeoForAddress(S.appForm.draft);
-  if(!S.customerUsersLoaded) loadCustomerUsers();
+  await goToPage('emp_app_form');
 }
 // Clicking a "new_leave_request" notification — there's no single-record leave-request view (the
 // admin page always shows the whole list, same as when HR schedules/approves manually), so this
@@ -1741,8 +1739,7 @@ async function openJobApplicationById(id){
 // which opens one specific record.
 async function openLeaveRequestNotification(){
   S.module = 'employees';
-  if(S.dataMode!=='demo' && !S.leaveRequestsLoaded) await loadRealLeaveRequests();
-  S.page = 'emp_leave_request'; render();
+  await goToPage('emp_leave_request');
 }
 
 // ---- Cascading จังหวัด/อำเภอ/ตำบล address lookups (used by the job application form) ----
@@ -12401,6 +12398,26 @@ async function loadDataForPage(){
   if(S.page==='fin_costs' && S.dataMode!=='demo' && !S.costsLoaded) await loadRealProjectCosts();
   if(S.page==='fin_office' && S.dataMode!=='demo' && !S.officeExpensesLoaded) await loadRealOfficeExpenses();
   if((S.page==='fin_revenue' || S.page==='fin_retention' || S.page==='fin_receive_payment') && S.dataMode!=='demo' && !S.revenueLoaded) await loadRealRevenue();
+  if(S.page==='emp_app_form' && S.appForm){
+    await ensureGeoForAddress(S.appForm.draft);
+    if(S.dataMode!=='demo' && !S.customerUsersLoaded) await loadCustomerUsers();
+  }
+}
+
+// จุดเดียวที่เปลี่ยนหน้า/เปิดฟอร์มได้ทุกที่ในระบบนอกจาก act==='nav'/'switch-module' เอง (ซึ่งมี
+// loadDataForPage() ของตัวเองอยู่แล้วในโค้ดของ handler นั้นตรงๆ) — ต้องเรียกผ่านฟังก์ชันนี้เท่านั้น ห้าม
+// set S.page ตรงๆ แล้วค่อยเดาว่าต้องเรียก loader ตัวไหนเอง อีกเด็ดขาด (ดู CLAUDE.md กฎ "เปลี่ยนหน้าต้องผ่าน
+// goToPage() เท่านั้น") — เขียนขึ้นหลังเจอบั๊กคลาสเดียวกันนี้ซ้ำมาแล้วอย่างน้อย 6 ครั้งจากการ set S.page
+// ตรงๆ แล้วลืม/จำไม่ครบว่าต้องเรียก loader ตัวไหนบ้าง (switch-module ไม่ trigger loader เดียวกับ nav,
+// filter PO ไม่ reload, open-site-expense-add ไม่โหลดโครงการ, create-tender ลืม loadTenderInstallments,
+// create-PO ลืม loadPoReceiptSummary หลังเพิ่ม endpoint ใหม่เข้าไปทีหลัง, goto-add-project-from-pr ลืม
+// employees/tenders) — extraState คือ field อื่นที่ต้องตั้งค่าก่อนโหลด (เช่น selectedXxxId, module) ตั้ง
+// ค่าก่อนเรียก loadDataForPage() เสมอ เพราะ loader อ่านจาก S state ไม่ใช่ parameter ที่ส่งเข้ามาตรงๆ
+async function goToPage(page, extraState){
+  S.page = page;
+  if(extraState) Object.assign(S, extraState);
+  render();
+  await loadDataForPage();
 }
 
 async function handleAction(act, el){
@@ -12548,8 +12565,9 @@ async function handleAction(act, el){
     if(S.dataMode==='demo'){
       const user = DB.users.find(u=>u.username===uname && u.password===pass);
       if(!user){ toast('ชื่อผู้ใช้งานหรือรหัสผ่านไม่ถูกต้อง','err'); return; }
-      S.currentUser = user; S.view='dashboard'; S.page='overview';
-      render(); return;
+      S.currentUser = user; S.view='dashboard';
+      await goToPage('overview');
+      return;
     }
     const companyCode = document.getElementById('f-loginCompanyCode').value.trim().toUpperCase();
     if(!companyCode || !uname || !pass){ toast('กรุณากรอกรหัสบริษัท ชื่อผู้ใช้งาน และรหัสผ่าน','err'); return; }
@@ -12581,8 +12599,8 @@ async function handleAction(act, el){
         canSubmitGoodsReceipt: !!data.customer.can_submit_goods_receipt,
         canSubmitSiteExpense: !!data.customer.can_submit_site_expense,
       };
-      S.view='dashboard'; S.page='overview';
-      render();
+      S.view='dashboard';
+      await goToPage('overview');
       loadNotifications();
       if(PENDING_JOB_APPLICATION_ID) openJobApplicationById(parseInt(PENDING_JOB_APPLICATION_ID, 10));
     } catch(e){
@@ -12631,32 +12649,27 @@ async function handleAction(act, el){
 
   // ---- nav ----
   if(act==='nav'){
-    S.page = el.dataset.page;
+    const extra = {};
     // data-module lets a nav link also switch S.module (e.g. any link into fin_projects/
     // fin_project_add/fin_project_detail sets data-module="bidding", since those pages moved out of
     // the Finance sidebar — without this, arriving at a Bidding-module page while S.module was still
     // 'finance' would make renderDashboard's fallback-redirect check (nav.find against the WRONG
     // module's nav array) think the page doesn't belong anywhere and bounce back to fin_overview).
     // Omitting it (every other existing nav link) leaves S.module untouched, unchanged behavior.
-    if(el.dataset.module) S.module = el.dataset.module;
+    if(el.dataset.module) extra.module = el.dataset.module;
     // data-id-field lets a nav link target a different S property than the original
     // selectedProjectId default (added for Tenders/Budgets, which are separate entities from
     // projects) — omitting it keeps every existing project link's behavior unchanged.
-    if(el.dataset.id) S[el.dataset.idField || 'selectedProjectId'] = parseInt(el.dataset.id, 10);
-    render();
-    await loadDataForPage();
+    if(el.dataset.id) extra[el.dataset.idField || 'selectedProjectId'] = parseInt(el.dataset.id, 10);
+    await goToPage(el.dataset.page, extra);
     return;
   }
   if(act==='switch-module'){
-    S.module = el.dataset.module;
-    S.page = S.module==='finance' ? (S.currentUser.role==='super_user' ? 'fin_overview' : 'fin_vouchers_petty_cash') : S.module==='employees' ? 'emp_overview' : S.module==='bidding' ? 'fin_tender_overview' : 'overview';
-    render();
-    // switch-module กระโดดตรงไปหน้า default ของโมดูลนั้นโดยไม่ผ่าน 'nav' เลย — เรียก loadDataForPage()
-    // เดียวกับที่ 'nav' เรียกเสมอ กันบั๊ก "loader ไม่ทำงานเมื่อเข้าหน้าเดียวกันผ่านคนละทาง" (เจอจริงมาแล้ว
-    // ตอนหัวข้อ 1 ก่อนจะรวมเป็นฟังก์ชันเดียวแบบนี้ — เดิมต้อง duplicate loader ของ fin_vouchers_petty_cash/
-    // fin_tender_overview ไว้ตรงนี้ต่างหาก)
-    await loadDataForPage();
-    render();
+    const module = el.dataset.module;
+    const page = module==='finance' ? (S.currentUser.role==='super_user' ? 'fin_overview' : 'fin_vouchers_petty_cash') : module==='employees' ? 'emp_overview' : module==='bidding' ? 'fin_tender_overview' : 'overview';
+    // switch-module กระโดดตรงไปหน้า default ของโมดูลนั้น — ผ่าน goToPage() เดียวกับ 'nav' เสมอ กันบั๊ก
+    // "loader ไม่ทำงานเมื่อเข้าหน้าเดียวกันผ่านคนละทาง" (เจอจริงมาแล้วตอนหัวข้อ 1 ก่อนจะรวมเป็นจุดเดียวแบบนี้)
+    await goToPage(page, { module });
     return;
   }
   if(act==='report-tab'){ S.reportTab = el.dataset.key; render(); return; }
@@ -12705,9 +12718,8 @@ async function handleAction(act, el){
     return;
   }
   if(act==='goto-add-project-from-pr'){
-    S.module = 'bidding'; // Projects moved under Bidding (see biddingNavFor's comment) — was 'finance'
-    S.page = 'fin_project_add';
-    render();
+    // Projects moved under Bidding (see biddingNavFor's comment) — was 'finance'
+    await goToPage('fin_project_add', { module: 'bidding' });
     return;
   }
   if(act==='filter-pr-status'){ S.purchaseRequestListFilter.status = el.value; render(); return; }
@@ -12747,12 +12759,7 @@ async function handleAction(act, el){
       toast(tr('create_pr.create_success'));
       S.prForm = null;
       S.purchaseRequestsLoaded = false;
-      S.selectedPurchaseRequestId = data.purchaseRequest.id;
-      S.page = 'pr_detail';
-      // set S.page ตรงๆ แบบนี้ไม่ผ่าน act==='nav' จึงไม่ trigger hook loadPurchaseRequestDetail ที่ผูกไว้
-      // กับ nav handler เท่านั้น — ต้องเรียกเองตรงนี้ ไม่งั้นหน้า detail จะค้างที่ "กำลังโหลด..." ตลอดไป
-      // (พบจริงตอนเขียนเทส po-ui.regression.js — กด submit ทันทีหลัง redirect มาที่หน้า detail ใหม่)
-      await loadPurchaseRequestDetail(data.purchaseRequest.id);
+      await goToPage('pr_detail', { selectedPurchaseRequestId: data.purchaseRequest.id });
       return;
     } catch(e){ toast(e.message,'err'); if(S.prForm) S.prForm.submitting = false; }
     render(); return;
@@ -13091,8 +13098,8 @@ async function handleAction(act, el){
     const cert = (certPool||[]).find(c=>c.id===id);
     if(!cert){ toast('ไม่พบหนังสือรับรองนี้','err'); return; }
     S.printingWhtCertificate = cert;
-    S.page = 'fin_wht_certificate_print';
-    render(); return;
+    await goToPage('fin_wht_certificate_print');
+    return;
   }
   // ---------- เคลียร์เงินทดรองจ่าย (ข้อ 1.3) ----------
   if(act==='open-add-clearance'){
@@ -13558,17 +13565,13 @@ async function handleAction(act, el){
   if(act==='filter-app-position'){ S.appFilter = Object.assign({status:'',position:''}, S.appFilter, {position:el.value}); render(); return; }
   if(act==='new-application'){
     S.appForm = {step:0, editId:null, draft:blankJobApplication()};
-    S.page = 'emp_app_form'; render();
-    ensureGeoForAddress(S.appForm.draft);
-    if(S.dataMode!=='demo' && !S.customerUsersLoaded) loadCustomerUsers();
+    await goToPage('emp_app_form');
     return;
   }
   if(act==='view-application'){
     const a = DB.jobApplications.find(x=>x.id===parseInt(el.dataset.id));
     S.appForm = {step:0, editId:a.id, draft:JSON.parse(JSON.stringify(a))};
-    S.page = 'emp_app_form'; render();
-    ensureGeoForAddress(S.appForm.draft);
-    if(S.dataMode!=='demo' && !S.customerUsersLoaded) loadCustomerUsers();
+    await goToPage('emp_app_form');
     return;
   }
   // Same form as "ดูรายละเอียด" — steps 1-9 are always read-only once editId is set (see
@@ -13577,9 +13580,7 @@ async function handleAction(act, el){
   if(act==='review-application'){
     const a = DB.jobApplications.find(x=>x.id===parseInt(el.dataset.id));
     S.appForm = {step:9, editId:a.id, draft:JSON.parse(JSON.stringify(a))};
-    S.page = 'emp_app_form'; render();
-    ensureGeoForAddress(S.appForm.draft);
-    if(S.dataMode!=='demo' && !S.customerUsersLoaded) loadCustomerUsers();
+    await goToPage('emp_app_form');
     return;
   }
   if(act==='delete-application'){
@@ -13597,7 +13598,8 @@ async function handleAction(act, el){
   }
   if(act==='print-application'){
     S.printAppId = parseInt(el.dataset.id);
-    S.page = 'emp_app_print'; render(); return;
+    await goToPage('emp_app_print');
+    return;
   }
   if(act==='convert-application'){
     const a = DB.jobApplications.find(x=>x.id===parseInt(el.dataset.id));
@@ -13829,7 +13831,7 @@ async function handleAction(act, el){
     render(); return;
   }
   if(act==='appform-cancel'){
-    S.appForm = null; S.page = 'emp_applicants'; render(); return;
+    S.appForm = null; await goToPage('emp_applicants'); return;
   }
   if(act==='appform-add-sibling'){ S.appForm.draft.siblings.push({name:'', age:'', occupation:''}); render(); return; }
   if(act==='appform-remove-sibling'){ S.appForm.draft.siblings.splice(parseInt(el.dataset.idx),1); render(); return; }
@@ -13876,7 +13878,7 @@ async function handleAction(act, el){
         if(idx>=0) DB.jobApplications[idx] = data.application; else DB.jobApplications.push(data.application);
         toast(S.appForm.editId?'บันทึกการแก้ไขใบสมัครงานเรียบร้อยแล้ว':'ส่งใบสมัครงานเรียบร้อยแล้ว รอฝ่าย HR พิจารณา');
       } catch(e){ toast(e.message,'err'); return; }
-      S.appForm = null; S.page = 'emp_applicants'; render(); return;
+      S.appForm = null; await goToPage('emp_applicants'); return;
     }
     if(S.appForm.editId){
       const idx = DB.jobApplications.findIndex(x=>x.id===S.appForm.editId);
@@ -13889,7 +13891,7 @@ async function handleAction(act, el){
       DB.jobApplications.push(d);
       toast('ส่งใบสมัครงานเรียบร้อยแล้ว รอฝ่าย HR พิจารณา');
     }
-    S.appForm = null; S.page = 'emp_applicants'; render(); return;
+    S.appForm = null; await goToPage('emp_applicants'); return;
   }
   if(act==='appform-decision'){
     const decision = el.dataset.decision;
@@ -14211,14 +14213,7 @@ async function handleAction(act, el){
       DB.tenders.push(mapRealTender(data.tender));
       toast(tr('fin_tenders.added_toast'));
       S.tenderAddForm = null;
-      S.selectedTenderId = data.tender.id;
-      S.page = 'fin_tender_detail';
-      render();
-      // Navigating here sets S.page directly rather than going through the data-act="nav" handler
-      // (which is what normally triggers loadTenderBudget on arrival at fin_tender_detail — see the
-      // nav loading-trigger block) — so the fetch has to be kicked off explicitly here too, or the
-      // budget section is left permanently stuck on "loading".
-      await loadTenderBudget(data.tender.id);
+      await goToPage('fin_tender_detail', { selectedTenderId: data.tender.id });
     } catch(e){ S.tenderSaving = false; toast(e.message, 'err'); render(); }
     return;
   }
@@ -14650,15 +14645,7 @@ async function handleAction(act, el){
       DB.projects.push(mapRealProject(project.project));
       toast(tr('fin_projects.added_toast'));
       S.projectAddForm = null;
-      S.selectedProjectId = project.project.id;
-      S.module = 'bidding';
-      S.page = 'fin_project_detail';
-      render();
-      // Same reasoning as save-tender-full: navigating here sets S.page directly rather than going
-      // through data-act="nav" (which normally triggers loadProjectBudget/loadRealProjectDetail on
-      // arrival), so both fetches have to be kicked off explicitly here too.
-      await loadProjectBudget(project.project.id);
-      await loadRealProjectDetail(project.project.id);
+      await goToPage('fin_project_detail', { module: 'bidding', selectedProjectId: project.project.id });
     } catch(e){ S.projectSaving = false; toast(e.message, 'err'); render(); }
     return;
   }
@@ -14719,11 +14706,7 @@ async function handleAction(act, el){
       toast(tr('fin_po.added_toast'));
       S.poForm = null;
       S.purchaseOrdersLoaded = false;
-      S.selectedPurchaseOrderId = data.purchaseOrder.id;
-      S.page = 'fin_po_detail';
-      // เหตุผลเดียวกับ create-PR handler — set S.page ตรงๆ ไม่ผ่าน act==='nav' จึงไม่ trigger hook
-      // loadPurchaseOrderDetail ที่ผูกไว้กับ nav handler เท่านั้น ต้องเรียกเองตรงนี้
-      await loadPurchaseOrderDetail(data.purchaseOrder.id);
+      await goToPage('fin_po_detail', { selectedPurchaseOrderId: data.purchaseOrder.id });
       return;
     } catch(e){ toast(e.message,'err'); if(S.poForm) S.poForm.submitting = false; }
     render();
@@ -14798,9 +14781,7 @@ async function handleAction(act, el){
     const poId = parseInt(el.dataset.poId,10);
     const po = S.selectedPurchaseOrderDetail;
     S.goodsReceiptForm = { poId, poNo: po ? po.poNo : '', qtyByItem:{}, note:'', idempotencyKey: crypto.randomUUID() };
-    S.page = 'fin_goods_receipt_add';
-    render();
-    if(!S.poReceiptSummaryByPoId[poId]) await loadPoReceiptSummary(poId);
+    await goToPage('fin_goods_receipt_add');
     return;
   }
   if(act==='submit-goods-receipt'){
@@ -14830,10 +14811,7 @@ async function handleAction(act, el){
       S.goodsReceiptsLoaded = false;
       delete S.poReceiptSummaryByPoId[poId];
       S.goodsReceiptSaving = false;
-      S.page = 'fin_po_detail'; S.selectedPurchaseOrderId = poId;
-      render();
-      await loadPurchaseOrderDetail(poId);
-      await loadPoReceiptSummary(poId);
+      await goToPage('fin_po_detail', { selectedPurchaseOrderId: poId });
     } catch(e){ S.goodsReceiptSaving = false; toast(e.message,'err'); render(); }
     return;
   }
@@ -14845,11 +14823,7 @@ async function handleAction(act, el){
       projectId:'', expenseCase:'payable', linkedVoucherId:'', vendorName:'', expenseDate: bangkokTodayStr(),
       amount:'', description:'', hasTaxInvoice:false, note:'', idempotencyKey: crypto.randomUUID(),
     };
-    S.page = 'fin_site_expense_submission_add';
-    render();
-    // เปิดฟอร์มผ่าน custom action ตรงๆ ไม่ผ่าน act==='nav' จึงไม่ trigger loadDataForPage() ที่โหลด
-    // โครงการให้ dropdown ตัวเลือกอัตโนมัติ — ต้องเรียกเองตรงนี้ (บั๊กเดียวกับที่เจอจริงตอนเขียนเทส)
-    if(S.dataMode!=='demo' && !S.projectsLoaded) await loadRealProjects();
+    await goToPage('fin_site_expense_submission_add');
     return;
   }
   if(act==='select-se-case'){
@@ -14889,9 +14863,7 @@ async function handleAction(act, el){
       S.siteExpenseSubmissionForm = null;
       S.siteExpenseSubmissionsLoaded = false;
       S.siteExpenseSubmissionSaving = false;
-      S.page = 'fin_site_expense_submission_detail'; S.selectedSiteExpenseSubmissionId = data.siteExpenseSubmission.id;
-      render();
-      await loadSiteExpenseSubmissionDetail(data.siteExpenseSubmission.id);
+      await goToPage('fin_site_expense_submission_detail', { selectedSiteExpenseSubmissionId: data.siteExpenseSubmission.id });
     } catch(e){ S.siteExpenseSubmissionSaving = false; toast(e.message,'err'); render(); }
     return;
   }
@@ -14936,8 +14908,7 @@ async function handleAction(act, el){
       clearanceDate: bangkokTodayStr(), note: `${tr('fin_se.col_submission_no')}: ${s.submissionNo}`,
       items: [{ description: s.description || s.vendorName, expenseAccountCode:'', amount: String(s.amount), hasTaxInvoice: !!s.hasTaxInvoice, vatRate:'0', whtRate:'0', whtIncomeTypeCode:'', payeeExternalId:'', payeeName:'', payeeTaxId:'' }],
     };
-    S.page = 'fin_advance_clearances';
-    render();
+    await goToPage('fin_advance_clearances');
     return;
   }
   if(act==='prefill-create-voucher'){
@@ -14947,8 +14918,7 @@ async function handleAction(act, el){
       purpose: `${s.vendorName}${s.description?` — ${s.description}`:''} (${tr('fin_se.col_submission_no')}: ${s.submissionNo})`,
       hasTaxInvoice: !!s.hasTaxInvoice, vatRate:'0', whtRate:'0', whtIncomeTypeCode:'',
     }};
-    S.page = 'fin_vouchers_other';
-    render();
+    await goToPage('fin_vouchers_other');
     return;
   }
 
@@ -14975,10 +14945,7 @@ async function handleAction(act, el){
       toast(tr('fin_wo.added_toast'));
       S.woForm = null;
       S.subcontractTermsLoaded = false;
-      S.selectedSubcontractTermId = data.subcontractTerm.id;
-      S.page = 'fin_wo_detail';
-      // set S.page ตรงๆ ไม่ผ่าน act==='nav' — ต้องเรียก loader เองตรงนี้ (เหตุผลเดียวกับ create-PO handler)
-      await loadSubcontractTermDetail(data.subcontractTerm.id);
+      await goToPage('fin_wo_detail', { selectedSubcontractTermId: data.subcontractTerm.id });
       return;
     } catch(e){ toast(e.message,'err'); if(S.woForm) S.woForm.submitting = false; }
     render();
@@ -15141,9 +15108,7 @@ async function handleAction(act, el){
       toast(tr('fin_progress.added_toast'));
       S.progressClaimForm = null;
       S.progressClaimsLoaded = false;
-      S.selectedProgressClaimId = data.progressClaim.id;
-      S.page = 'fin_progress_claim_detail';
-      await loadProgressClaimDetail(data.progressClaim.id);
+      await goToPage('fin_progress_claim_detail', { selectedProgressClaimId: data.progressClaim.id });
       return;
     } catch(e){ toast(e.message,'err'); if(S.progressClaimForm) S.progressClaimForm.submitting = false; }
     render();
@@ -15290,9 +15255,7 @@ async function handleAction(act, el){
       toast(tr('fin_sbill.added_toast'));
       S.subcontractBillingForm = null;
       S.subcontractBillingsLoaded = false;
-      S.selectedSubcontractBillingId = data.subcontractBilling.id;
-      S.page = 'fin_subcontract_billing_detail';
-      await loadSubcontractBillingDetail(data.subcontractBilling.id);
+      await goToPage('fin_subcontract_billing_detail', { selectedSubcontractBillingId: data.subcontractBilling.id });
       return;
     } catch(e){ toast(e.message,'err'); if(S.subcontractBillingForm) S.subcontractBillingForm.submitting = false; }
     render();
@@ -15376,8 +15339,7 @@ async function handleAction(act, el){
       DB.quotations.push(mapRealQuotation(data.quotation));
       toast(tr('fin_quotations.added_toast'));
       S.quotationAddForm = null;
-      S.page = 'fin_quotations';
-      render();
+      await goToPage('fin_quotations');
     } catch(e){ toast(e.message, 'err'); }
     return;
   }
@@ -15416,8 +15378,7 @@ async function handleAction(act, el){
       toast(tr('fin_documents.added_toast'));
       S.documentSaving = false;
       S.documentAddForm = null;
-      S.page = 'fin_documents';
-      render();
+      await goToPage('fin_documents');
     } catch(e){ S.documentSaving = false; toast(e.message,'err'); render(); }
     return;
   }
