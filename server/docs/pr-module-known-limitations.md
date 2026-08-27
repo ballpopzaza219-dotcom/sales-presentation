@@ -142,6 +142,16 @@ goods-receipt-attachments/`, `server/uploads/site-expense-attachments/`) จะ�
 ลบ/ยกเลิกเอกสารเหล่านี้จริง (ยังไม่มี endpoint นั้นด้วยซ้ำ) หรือทำ scheduled cleanup job แยกต่างหาก
 (เช่น ลบไฟล์แนบของเอกสารที่ `rejected` เกิน N วัน) — ยังไม่ได้ออกแบบ
 
+**เมื่อไหร่ต้องกลับมาทำจริง** (2 เงื่อนไข อย่างใดอย่างหนึ่งเกิดก็ต้องทำ):
+1. เมื่อมีระบบ void/cancel ของเอกสารที่มีไฟล์แนบผูกอยู่ (goods receipt / site expense submission) —
+   ตอนออกแบบ endpoint นั้น ต้องลบทั้งแถวใน DB (`client_goods_receipt_attachments`/
+   `client_site_expense_attachments`) และไฟล์จริงบนดิสก์ (`fs.unlink()`) **พร้อมกันในทรานแซกชันเดียว**
+   ห้ามลบแถว DB แล้วเหลือไฟล์ค้าง หรือลบไฟล์แล้วเหลือแถวชี้ไปไฟล์ที่ไม่มีอยู่จริง — ใช้
+   `DELETE /api/customer/documents/:id` (ของ `client_documents`) เป็นแบบอ้างอิง เพราะทำถูกอยู่แล้ว
+2. เมื่อโฟลเดอร์ `server/uploads/` รวมทั้งหมดมีขนาดเกิน **X GB** (ยังไม่ได้กำหนดเลข X ที่ชัดเจน — เสนอ
+   ผูกกับเกณฑ์เตือนพื้นที่ดิสก์ใน `health-check.ps1` เช่น ถ้า `uploads/` กินพื้นที่เกิน 50% ของเกณฑ์เตือน
+   20GB คือ 10GB ให้เริ่มพิจารณาทำ cleanup job ได้แล้ว)
+
 ---
 
 ## ตารางสรุปด่วน
