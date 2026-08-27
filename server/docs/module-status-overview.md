@@ -1,9 +1,9 @@
 # สถานะรวมโมดูล client ledger / PR — เอกสารอ้างอิงเชิงเทคนิค
 
-อัปเดตล่าสุด: 2026-08-25 — **ทุกหัวข้อ (1, 2, 3.1, 4, 5) เสร็จสมบูรณ์แล้ว** เหลือแค่ 3.2 (Project
-Complete, อสังหาริมทรัพย์) ที่ยังไม่มีนิยาม requirement — ดู [`README.md`](./README.md) สำหรับสรุปแบบ
-ภาษาคนไม่อ่านโค้ด และ [`pr-module-known-limitations.md`](./pr-module-known-limitations.md) สำหรับจุดที่
-ยังค้างจริง
+อัปเดตล่าสุด: 2026-08-27 — **ทุกหัวข้อ (1, 2, 3.1, 4, 5) + งานหน้างาน (ตรวจรับของ/ส่งบิลค่าใช้จ่าย) +
+โครงสร้าง PR⇄Finance เสร็จสมบูรณ์แล้ว** เหลือแค่ 3.2 (Project Complete, อสังหาริมทรัพย์) ที่ยังไม่มีนิยาม
+requirement — ดู [`README.md`](./README.md) สำหรับสรุปแบบภาษาคนไม่อ่านโค้ด และ
+[`pr-module-known-limitations.md`](./pr-module-known-limitations.md) สำหรับจุดที่ยังค้างจริง
 
 ## Endpoint ทั้งหมดที่มีจริง แยกตามหัวข้อ
 
@@ -78,7 +78,49 @@ composite FK/idempotency/approval workflow/journal entry เลยสักข�
 
 เทสถาวร: `server/tests/po-ui.regression.js` (33 checks), `server/tests/wo-ui.regression.js` (27 checks)
 
-## Migration 0001-0016 แต่ละไฟล์เพิ่มอะไร
+### งานหน้างาน — ตรวจรับของตาม PO + ส่งบิลค่าใช้จ่ายจากหน้างาน — ✅ เสร็จสมบูรณ์
+
+**ตรวจรับของ** (`client_goods_receipts`+`items`+`attachments`, migration 0017) — ไม่มี submit/approve
+สร้างคือขั้นสุดท้ายในตัวเอง ยอดรับสะสมต่อบรรทัด PO คำนวณสดจาก SUM เสมอ
+- `GET/POST /api/customer/goods-receipts`, `GET /:id`
+- `GET /api/customer/purchase-orders/:id/receipt-summary` (สั่ง/รับแล้ว/คงเหลือต่อบรรทัด)
+- `GET /api/customer/goods-receipts/:id/attachments/:attachmentId/file`
+- แก้ `POST /api/customer/purchase-orders/:id/cancel` ให้บล็อก 409 ถ้ามีการตรวจรับของไปแล้ว
+
+**ส่งบิลค่าใช้จ่ายจากหน้างาน** (`client_site_expense_submissions`+`attachments`, migration 0018) — เป็น
+inbox/triage เท่านั้น ไม่โพสต์ journal เอง บัญชีต้องสร้างเอกสารจริงเอง (ใบเคลียร์เงินทดรองจ่าย/payment
+voucher) แล้วกลับมาปิดเรื่องอ้างอิงเอกสารที่สร้างจริง
+- `GET/POST /api/customer/site-expense-submissions`, `GET /:id`
+- `GET /api/customer/site-expense-submissions/:id/attachments/:attachmentId/file`
+- `POST /api/customer/site-expense-submissions/:id/reject /close`
+
+**ไฟล์แนบ** — ครั้งแรกที่ schema เต็ม (`storage_path`/`mime_type`/`file_size`/`checksum` จาก migration
+0001) ถูกต่อ endpoint จริง (2 ตารางเดิมของหัวข้อ 1 มี schema เดียวกันแต่ไม่เคยมี endpoint) — เก็บที่
+`server/uploads/goods-receipt-attachments/` และ `server/uploads/site-expense-attachments/` ไฟล์ละ
+ไม่เกิน 5MB สูงสุด 5 ไฟล์ต่อคำขอ (jpg/png/webp/pdf เท่านั้น) เข้าถึงได้เฉพาะผ่าน endpoint ที่เช็ค
+`requireCustomerAuth` + `company_id` scope ทุกครั้ง (ยืนยันแล้วด้วยการทดสอบจริง: ไม่ auth = 401,
+ข้ามบริษัท = 404, ไม่มีทาง static-serve หลุดออกไปเพราะมี guard บล็อก `/server/*` ทั้งหมดอยู่แล้ว) — ยังไม่มี
+กลไกลบไฟล์เมื่อเอกสารถูกตีกลับ/ปิดเรื่อง (ดู known-limitations)
+
+เทสถาวร: `server/tests/site-work-ui.regression.js` (28 checks)
+
+### โครงสร้าง PR⇄Finance — เอกสารปฏิบัติการเห็นได้จาก 2 โมดูล — ✅ เสร็จสมบูรณ์
+
+`pr-system.html` มี `DOC_GROUP_ACCESS` เป็นจุดเดียวที่ตัดสิน "ใครเห็นเมนูเอกสารกลุ่มไหนบ้าง" ให้ทั้ง
+`navFor()` (โมดูล PR) และ `financeNavFor()` (โมดูล Finance) ดึงจากจุดเดียวกันเสมอ — เอกสารปฏิบัติการ (PR,
+PO, WO, ผู้รับเหมาช่วง, เบิกเงินผู้รับเหมาช่วง, ตรวจรับของ, ส่งบิลหน้างาน, เงินสดย่อย/เงินทดรองจ่าย)
+เห็นได้จากทั้ง 2 โมดูล ส่วนเอกสารบัญชี/ปิดงวดล้วนๆ (สมุดรายวัน, งบทดลอง, งบการเงิน, รายรับ-ต้นทุน,
+ลูกหนี้-เจ้าหนี้ ฯลฯ) เปิดเฉพาะโมดูล Finance + `super_user` เหมือนเดิม
+
+การเปลี่ยนหน้า/เปิดฟอร์มทุกจุดในระบบต้องผ่าน `goToPage(page, extraState)` เท่านั้น (ห้าม set `S.page`
+ตรงๆ ที่ไหนอีก — ดู CLAUDE.md หมวด "กฎการเขียน frontend") ซึ่งเรียก `loadDataForPage()` ให้อัตโนมัติเสมอ —
+แก้บั๊กคลาส "เปลี่ยนหน้าแล้วข้อมูลที่หน้านั้นต้องใช้ไม่ถูกโหลด" ที่เจอจริงมาแล้ว 6 จุด (switch-module,
+เปิดฟอร์มส่งบิลหน้างาน, เปิดฟอร์มสร้างโครงการจาก PR, สร้าง tender/PO สำเร็จแล้ว redirect ไปหน้า detail
+ที่โหลดข้อมูลไม่ครบ)
+
+เทสถาวร: `server/tests/dual-module-nav.regression.js` (62 checks)
+
+## Migration 0001-0018 แต่ละไฟล์เพิ่มอะไร
 
 | # | ชื่อไฟล์ | เพิ่มอะไร |
 |---|---|---|
@@ -98,6 +140,9 @@ composite FK/idempotency/approval workflow/journal entry เลยสักข�
 | 0014 | progress_claims_batch | `client_progress_claims`+`items`, บัญชีใหม่ `2160 เงินรับล่วงหน้าจากลูกค้า`, `can_certify_progress`/`can_approve_progress` |
 | 0015 | subcontract_billings_batch | `client_subcontract_billings`+`retention_release_items`, บัญชีใหม่ `1160`/`2130`/`2140`, `can_approve_subcontract_billing` |
 | 0016 | journal_source_type_subcontract_billing | เพิ่ม `'subcontract_billing'` เข้า `client_journal_entries.source_type` CHECK (แก้จากที่เคยใช้ `'manual'` ผิดหลักการชั่วคราว) |
+| 0017 | goods_receipts_batch | `client_goods_receipts`+`items`+`attachments`, `can_submit_goods_receipt`, แก้ `/purchase-orders/:id/cancel` ให้บล็อกถ้ารับของไปแล้ว |
+| 0018 | site_expense_submissions_batch | `client_site_expense_submissions`+`attachments`, `can_submit_site_expense` |
 
 รวม: บริษัททุกบริษัทมีบัญชีใหม่ **9 รหัส** จากทุกเซสชัน (1110, 1150, 1160, 1170, 2110, 2120, 2130, 2140,
-2160) — ไม่นับ 1260 ที่มีอยู่ก่อนแล้วจากฟีเจอร์ `client_revenue_payments` เดิม
+2160) — ไม่นับ 1260 ที่มีอยู่ก่อนแล้วจากฟีเจอร์ `client_revenue_payments` เดิม (0017/0018 ไม่เพิ่มบัญชีใหม่
+— เป็น log ปฏิบัติการ ไม่ใช่เอกสารการเงินที่โพสต์ journal เอง)
