@@ -58,6 +58,19 @@ try {
   $problems += "build-con.com เชื่อมต่อไม่ได้เลย: $($_.Exception.Message)"
 }
 
+Write-Output "`n=== พื้นที่ดิสก์ ==="
+$diskWarnGB = 20
+try {
+  $drives = Get-PSDrive -PSProvider FileSystem -ErrorAction Stop
+  foreach ($d in $drives) {
+    $freeGB = [math]::Round($d.Free / 1GB, 1)
+    Write-Output "  $($d.Name): เหลือว่าง $freeGB GB"
+    if ($freeGB -lt $diskWarnGB) { $problems += "ไดรฟ์ $($d.Name): เหลือว่างแค่ $freeGB GB (ต่ำกว่าเกณฑ์เตือน $diskWarnGB GB)" }
+  }
+} catch {
+  Write-Output "  ERROR: เช็คพื้นที่ดิสก์ไม่ได้: $($_.Exception.Message)"
+}
+
 Write-Output "`n================================"
 if ($problems.Count -eq 0) {
   Write-Output "ทุกอย่างปกติ — ไม่พบปัญหา"
