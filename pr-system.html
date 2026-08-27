@@ -762,6 +762,20 @@ let S = {
   approvedSubcontractTermsForBilling:undefined, // สัญญาที่ status='approved' — ตัวเลือกในฟอร์มสร้างใบเบิกเงิน
   subcontractTermBalanceById:{},   // subcontractTermId -> {contractValue, progressBilledTotal, advanceOutstanding, retentionHeld}
   progressBillingsForRetentionPicker:undefined, // งวด progress ที่อนุมัติแล้วของสัญญาที่เลือก (สำหรับ retention_release)
+  // งานหน้างาน (งานที่ 1) — ตรวจรับของตาม PO
+  goodsReceipts:[], goodsReceiptsLoaded:false,
+  goodsReceiptListFilter:{poId:''},
+  selectedGoodsReceiptId:null, selectedGoodsReceiptDetail:undefined,
+  goodsReceiptForm:null,       // set lazily when opening ตรวจรับของ จาก fin_po_detail — {poId,poNo,items:[...],note,idempotencyKey}
+  poReceiptSummaryByPoId:{},   // poId -> {purchaseOrder,items:[{poItemId,material,unit,qtyOrdered,qtyReceived,qtyRemaining}]}
+  // งานหน้างาน (งานที่ 2) — ส่งบิลค่าใช้จ่ายจากหน้างาน
+  siteExpenseSubmissions:[], siteExpenseSubmissionsLoaded:false,
+  siteExpenseSubmissionListFilter:{status:''},
+  selectedSiteExpenseSubmissionId:null, selectedSiteExpenseSubmissionDetail:undefined,
+  siteExpenseSubmissionForm:null, // set lazily on first render of pageFinSiteExpenseSubmissionAdd()
+  siteExpenseRejectForm:null,     // {id, reason:''}
+  siteExpenseCloseForm:null,      // {id, resultDocType:'', resultDocId:'', closingNote:''}
+  offsetableVouchersLoaded:false, // petty_cash+advance ที่ status='approved' รวมกัน — ตัวเลือก linkedVoucherId
   quotationsLoaded:false,
   quotationAddForm:null,      // set lazily on first render of pageFinQuotationAdd()
   clientDocumentsLoaded:false,
@@ -1551,6 +1565,67 @@ async function loadProgressBillingsForRetentionPicker(termId){
     S.progressBillingsForRetentionPicker = data.subcontractBillings;
   } catch(e){ toast(e.message, 'err'); S.progressBillingsForRetentionPicker = []; }
   render();
+}
+// ---------------- งานหน้างาน (งานที่ 1) — ตรวจรับของตาม PO ----------------
+async function loadGoodsReceipts(){
+  try{
+    const params = new URLSearchParams();
+    if(S.goodsReceiptListFilter.poId) params.set('poId', S.goodsReceiptListFilter.poId);
+    const qs = params.toString();
+    const data = await apiCall('GET', '/api/customer/goods-receipts'+(qs?`?${qs}`:''));
+    S.goodsReceipts = data.goodsReceipts;
+  } catch(e){ toast(e.message, 'err'); }
+  S.goodsReceiptsLoaded = true; render();
+}
+async function loadGoodsReceiptDetail(id){
+  S.selectedGoodsReceiptDetail = undefined;
+  render();
+  try{
+    const data = await apiCall('GET', `/api/customer/goods-receipts/${id}`);
+    S.selectedGoodsReceiptDetail = data.goodsReceipt;
+  } catch(e){ toast(e.message, 'err'); S.selectedGoodsReceiptDetail = null; }
+  render();
+}
+async function loadPoReceiptSummary(poId){
+  try{
+    const data = await apiCall('GET', `/api/customer/purchase-orders/${poId}/receipt-summary`);
+    S.poReceiptSummaryByPoId[poId] = data;
+  } catch(e){ toast(e.message, 'err'); }
+  render();
+}
+// ---------------- งานหน้างาน (งานที่ 2) — ส่งบิลค่าใช้จ่ายจากหน้างาน ----------------
+async function loadSiteExpenseSubmissions(){
+  try{
+    const params = new URLSearchParams();
+    if(S.siteExpenseSubmissionListFilter.status) params.set('status', S.siteExpenseSubmissionListFilter.status);
+    const qs = params.toString();
+    const data = await apiCall('GET', '/api/customer/site-expense-submissions'+(qs?`?${qs}`:''));
+    S.siteExpenseSubmissions = data.siteExpenseSubmissions;
+  } catch(e){ toast(e.message, 'err'); }
+  S.siteExpenseSubmissionsLoaded = true; render();
+}
+async function loadSiteExpenseSubmissionDetail(id){
+  S.selectedSiteExpenseSubmissionDetail = undefined;
+  render();
+  try{
+    const data = await apiCall('GET', `/api/customer/site-expense-submissions/${id}`);
+    S.selectedSiteExpenseSubmissionDetail = data.siteExpenseSubmission;
+  } catch(e){ toast(e.message, 'err'); S.selectedSiteExpenseSubmissionDetail = null; }
+  render();
+}
+// ใบเบิกเงินสดย่อย/เงินทดรองจ่ายที่ status='approved' รวมสองประเภท — ตัวเลือก linkedVoucherId ตอนเลือก
+// กรณี ก (advance_offset) ไม่มี endpoint รวม 2 ประเภทให้ตรงๆ จึงยิง 2 ครั้งแล้ว merge ฝั่ง client แทน
+async function loadOffsetableVouchers(){
+  try{
+    if(!S.paymentVouchersLoadedByType.petty_cash) await loadPaymentVouchers('petty_cash');
+    if(!S.paymentVouchersLoadedByType.advance) await loadPaymentVouchers('advance');
+  } catch(e){ toast(e.message, 'err'); }
+  S.offsetableVouchersLoaded = true; render();
+}
+function offsetableVouchersList(){
+  const pc = (S.paymentVouchersByType.petty_cash || []).filter(v => v.status === 'approved');
+  const adv = (S.paymentVouchersByType.advance || []).filter(v => v.status === 'approved');
+  return [...pc, ...adv];
 }
 // โหลด PR ที่อนุมัติแล้วของโครงการที่เลือกไว้ในฟอร์มสร้าง PO — ให้เลือกใบมาดึงรายการ (undefined=กำลังโหลด)
 async function loadApprovedPrsForPoProject(projectId){
@@ -2847,11 +2922,13 @@ function financeNavFor(u){
   if(docGroupVisible('fin_external_payees', u)) cashItemsFinance.push({key:'fin_external_payees', label:tr('nav.fin_external_payees'), icon:'userPlus'});
   if(docGroupVisible('fin_vouchers_other', u)) cashItemsFinance.push({key:'fin_vouchers_other', label:tr('nav.fin_vouchers_other'), icon:'wallet'});
   if(docGroupVisible('fin_wht_certificates', u)) cashItemsFinance.push({key:'fin_wht_certificates', label:tr('nav.fin_wht_certificates'), icon:'doc'});
+  if(docGroupVisible('fin_site_expense_submissions', u)) cashItemsFinance.push({key:'fin_site_expense_submissions', label:tr('nav.fin_site_expense_submissions'), icon:'doc'});
   if(cashItemsFinance.length) items.push({key:'section', label:tr('nav.section_petty_cash')}, ...cashItemsFinance);
   const treasuryItems = [];
   if(u.role==='super_user') treasuryItems.push({key:'fin_stock', label:tr('nav.fin_stock'), icon:'boxes'}, {key:'fin_cashbank', label:tr('nav.fin_cashbank'), icon:'bank'});
   if(docGroupVisible('fin_po', u)) treasuryItems.push({key:'fin_po', label:tr('nav.fin_po'), icon:'fileStack'});
   if(docGroupVisible('fin_wo', u)) treasuryItems.push({key:'fin_wo', label:tr('nav.fin_wo'), icon:'fileStack'});
+  if(docGroupVisible('fin_goods_receipts', u)) treasuryItems.push({key:'fin_goods_receipts', label:tr('nav.fin_goods_receipts'), icon:'boxes'});
   if(u.role==='super_user') treasuryItems.push({key:'fin_quotations', label:tr('nav.fin_quotations'), icon:'fileStack'}, {key:'fin_documents', label:tr('nav.fin_documents'), icon:'fileStack'});
   if(treasuryItems.length) items.push({key:'section', label:tr('nav.section_treasury')}, ...treasuryItems);
   if(u.role==='super_user'){
@@ -2923,6 +3000,11 @@ const DOC_GROUP_ACCESS = {
   fin_subcontract_billings: { hiddenKeys: ['fin_subcontract_billing_add','fin_subcontract_billing_detail'], visible: () => true },
   // หัวข้อ 3
   fin_progress_claims: { hiddenKeys: ['fin_progress_claim_add','fin_progress_claim_detail'], visible: () => true },
+  // งานหน้างาน — ตรวจรับของ (canManagePo เห็นด้วยเสมอ เพราะเป็นคนดูแล PO อยู่แล้ว)
+  fin_goods_receipts: { hiddenKeys: ['fin_goods_receipt_add','fin_goods_receipt_detail'], visible: u => u.role==='super_user' || u.canManagePo || u.canSubmitGoodsReceipt },
+  // งานหน้างาน — ส่งบิลค่าใช้จ่าย (คนหน้างานที่มี flag เห็นเพื่อส่งเรื่อง — ฝั่งประมวลผล/ปิดเรื่องคุมแยก
+  // ด้วย hasSiteExpenseProcessPermission ที่ server.js อยู่แล้ว ไม่ใช่จาก nav visibility ตรงนี้)
+  fin_site_expense_submissions: { hiddenKeys: ['fin_site_expense_submission_add','fin_site_expense_submission_detail'], visible: u => u.role==='super_user' || u.canSettleCash || u.canSubmitSiteExpense },
 };
 function docGroupVisible(key, u){ const g = DOC_GROUP_ACCESS[key]; return g ? g.visible(u) : true; }
 
@@ -2948,6 +3030,12 @@ function navFor(u){
       {key:'all_prs', label:tr('nav.all_prs'), icon:'list'},
     );
   }
+  // งานหน้างาน — ตรวจรับของ/ส่งบิลค่าใช้จ่าย — วางไว้เป็น section แรกสุดรองจาก PR เพราะเป็นงานที่คนหน้างาน
+  // (กลุ่มเป้าหมายหลักของ flag can_submit_goods_receipt/can_submit_site_expense) ต้องใช้บ่อยที่สุด
+  const siteWorkItems = [];
+  if(docGroupVisible('fin_goods_receipts', u)) siteWorkItems.push({key:'fin_goods_receipts', label:tr('nav.fin_goods_receipts'), icon:'boxes'});
+  if(docGroupVisible('fin_site_expense_submissions', u)) siteWorkItems.push({key:'fin_site_expense_submissions', label:tr('nav.fin_site_expense_submissions'), icon:'doc'});
+  if(siteWorkItems.length) items.push({key:'section', label:tr('nav.section_site_work')}, ...siteWorkItems);
   // หัวข้อ 1 — เงินสดย่อย/เงินทดรองจ่าย/เคลียร์/เจ้าหนี้ภายนอก — เปิดทุกคน (เหมือน PR) เพราะเป็นเรื่องที่
   // พนักงานทั่วไปต้องใช้บ่อยที่สุด จึงวางไว้เป็น section แรกสุดรองจาก PR เอง
   const cashItems = [];
@@ -3184,6 +3272,12 @@ function renderPage(){
     case 'fin_subcontract_billings': return pageFinSubcontractBillings();
     case 'fin_subcontract_billing_add': return pageFinSubcontractBillingAdd();
     case 'fin_subcontract_billing_detail': return pageFinSubcontractBillingDetail();
+    case 'fin_goods_receipts': return pageFinGoodsReceipts();
+    case 'fin_goods_receipt_add': return pageFinGoodsReceiptAdd();
+    case 'fin_goods_receipt_detail': return pageFinGoodsReceiptDetail();
+    case 'fin_site_expense_submissions': return pageFinSiteExpenseSubmissions();
+    case 'fin_site_expense_submission_add': return pageFinSiteExpenseSubmissionAdd();
+    case 'fin_site_expense_submission_detail': return pageFinSiteExpenseSubmissionDetail();
     case 'fin_quotations': return pageFinQuotations();
     case 'fin_quotation_add': return pageFinQuotationAdd();
     case 'fin_documents': return pageFinDocuments();
@@ -6825,6 +6919,8 @@ function pageFinPurchaseOrderDetail(){
     </table></div>
   </div>
 
+  ${po.status==='approved' ? pageFinPurchaseOrderReceiptSummaryCard(po) : ''}
+
   <div class="card" style="padding:20px 22px;">
     <div class="small-btn-row" style="justify-content:flex-end;">
       ${po.status==='draft' && (isOwner||canApprove) ? `<button class="btn btn-primary btn-sm" data-act="submit-po" data-id="${po.id}" ${isVoucherActionPending('po-submit',po.id)?'disabled':''}>${tr('pr.action_submit')}</button>` : ''}
@@ -6841,6 +6937,311 @@ function pageFinPurchaseOrderDetail(){
       </div>
     </div>` : ''}
   </div>`;
+}
+
+// ---------------- งานหน้างาน (งานที่ 1) — ตรวจรับของตาม PO (goods receipt) ----------------
+function pageFinPurchaseOrderReceiptSummaryCard(po){
+  const summary = S.poReceiptSummaryByPoId[po.id];
+  const u = S.currentUser;
+  const canSubmitReceipt = u.role==='super_user' || u.canManagePo || u.canSubmitGoodsReceipt;
+  return `
+  <div class="card" style="padding:20px 22px; margin-bottom:16px;">
+    <div class="page-head" style="margin:0 0 10px;">
+      <div class="section-title" style="margin:0;">${tr('fin_gr.receipt_summary_title')}</div>
+      ${canSubmitReceipt ? `<button class="btn btn-primary btn-sm" data-act="open-goods-receipt-add" data-po-id="${po.id}">${ICN.plus} ${tr('fin_gr.add_receipt')}</button>` : ''}
+    </div>
+    ${!summary ? `<div class="hint">${tr('common.loading')}</div>` : `
+    <div class="table-wrap"><table>
+      <thead><tr><th>${tr('create_pr.col_material')}</th><th>${tr('create_pr.col_unit')}</th><th>${tr('fin_gr.col_qty_ordered')}</th><th>${tr('fin_gr.col_qty_received')}</th><th>${tr('fin_gr.col_qty_remaining')}</th></tr></thead>
+      <tbody>${summary.items.map(it=>`
+        <tr>
+          <td>${esc(it.material)}</td>
+          <td>${esc(it.unit)}</td>
+          <td class="mono">${fmtMoney(it.qtyOrdered)}</td>
+          <td class="mono">${fmtMoney(it.qtyReceived)}</td>
+          <td class="mono" style="${it.qtyRemaining>0?'color:var(--orange);font-weight:700;':''}">${fmtMoney(it.qtyRemaining)}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>
+    <div class="small-btn-row" style="justify-content:flex-end; margin-top:10px;">
+      <button class="btn btn-ghost btn-sm" data-act="nav" data-page="fin_goods_receipts" data-id="${po.id}" data-id-field="_grFilterPoId">${tr('fin_gr.view_receipts_for_po')}</button>
+    </div>`}
+  </div>`;
+}
+function serializePoOptionForReceipt(po){ return `<option value="${po.id}">${esc(po.poNo)} — ${esc(po.supplierName)}</option>`; }
+function pageFinGoodsReceipts(){
+  const list = S.goodsReceipts;
+  const f = S.goodsReceiptListFilter;
+  return `
+  <div class="page-head">
+    <div><h2>${tr('nav.fin_goods_receipts')}</h2><div class="sub">${tr('fin_gr.subtitle')}</div></div>
+  </div>
+  <div class="card" style="padding:16px 18px; margin-bottom:14px;">
+    <div class="field" style="max-width:280px;"><label>${tr('fin_gr.filter_po_label')}</label>
+      <input id="gr-filter-po" value="${esc(f.poId)}" placeholder="${tr('fin_gr.filter_po_placeholder')}" oninput="S.goodsReceiptListFilter.poId=this.value;" onblur="handleAction('filter-gr-po', this);">
+    </div>
+  </div>
+  ${list.length===0 ? `<div class="card" style="padding:30px; text-align:center;"><div class="hint">${tr('fin_gr.no_receipts_hint')}</div></div>` : `
+  <div class="table-wrap"><table>
+    <thead><tr><th>${tr('fin_gr.col_receipt_no')}</th><th>${tr('fin_gr.col_po_no')}</th><th>${tr('fin_gr.col_receipt_date')}</th><th>${tr('fin_gr.col_note')}</th><th></th></tr></thead>
+    <tbody>${list.map(r=>`
+      <tr>
+        <td>${esc(r.receiptNo||'-')}</td>
+        <td>${esc(r.poNo||'-')}</td>
+        <td>${r.receiptDate}</td>
+        <td>${esc(r.note||'-')}</td>
+        <td><button class="btn btn-ghost btn-sm" data-act="nav" data-page="fin_goods_receipt_detail" data-id="${r.id}" data-id-field="selectedGoodsReceiptId">${tr('common.view_detail')}</button></td>
+      </tr>`).join('')}
+    </tbody>
+  </table></div>`}`;
+}
+function pageFinGoodsReceiptAdd(){
+  const f = S.goodsReceiptForm;
+  if(!f) return `<div class="page-head"><h2>${tr('common.loading')}</h2></div>`;
+  const summary = S.poReceiptSummaryByPoId[f.poId];
+  return `
+  <div class="page-head">
+    <div><h2>${tr('fin_gr.add_receipt')}</h2><div class="sub">${esc(f.poNo)}</div></div>
+  </div>
+  <div class="card" style="padding:20px 22px; margin-bottom:16px;">
+    ${!summary ? `<div class="hint">${tr('common.loading')}</div>` : `
+    <div class="table-wrap"><table>
+      <thead><tr><th>${tr('create_pr.col_material')}</th><th>${tr('create_pr.col_unit')}</th><th>${tr('fin_gr.col_qty_remaining')}</th><th>${tr('fin_gr.col_qty_to_receive')}</th></tr></thead>
+      <tbody>${summary.items.map(it=>`
+        <tr>
+          <td>${esc(it.material)}</td>
+          <td>${esc(it.unit)}</td>
+          <td class="mono">${fmtMoney(it.qtyRemaining)}</td>
+          <td>${it.qtyRemaining>0
+            ? `<input type="number" min="0" step="any" style="max-width:120px;" value="${esc(f.qtyByItem[it.poItemId]||'')}" oninput="S.goodsReceiptForm.qtyByItem['${it.poItemId}']=this.value;">`
+            : `<span class="hint">${tr('fin_gr.fully_received_hint')}</span>`}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    </div>`}
+    <div class="field" style="margin-top:14px;"><label>${tr('create_pr.remark_label')}</label>
+      <textarea id="gr-note" oninput="S.goodsReceiptForm.note=this.value;">${esc(f.note)}</textarea>
+    </div>
+    <div class="field" style="margin-top:10px;"><label>${tr('fin_gr.photos_label')}</label>
+      <input type="file" id="gr-photos" accept="image/jpeg,image/png,image/webp,application/pdf" multiple>
+      <div class="hint">${tr('fin_gr.photos_hint')}</div>
+    </div>
+    <div class="small-btn-row" style="justify-content:flex-end; margin-top:14px;">
+      <button class="btn btn-ghost btn-sm" data-act="nav" data-page="fin_po_detail" data-id="${f.poId}" data-id-field="selectedPurchaseOrderId">${tr('common.cancel')}</button>
+      <button class="btn btn-primary btn-sm" data-act="submit-goods-receipt" ${S.goodsReceiptSaving?'disabled':''}>${tr('common.save')}</button>
+    </div>
+  </div>`;
+}
+function pageFinGoodsReceiptDetail(){
+  const r = S.selectedGoodsReceiptDetail;
+  if(r===undefined) return `<div class="page-head"><h2>${tr('common.loading')}</h2></div>`;
+  if(r===null) return `<div class="page-head"><h2>${tr('fin_gr.not_found')}</h2></div>`;
+  return `
+  <div class="page-head">
+    <div>
+      <button class="btn btn-ghost btn-sm" data-act="nav" data-page="fin_goods_receipts" style="margin-bottom:8px;">${ICN.chevronLeft} ${tr('common.back')}</button>
+      <h2>${esc(r.receiptNo||'-')}</h2>
+      <div class="sub">${esc(r.poNo||'-')} · ${r.receiptDate}</div>
+    </div>
+  </div>
+  <div class="card" style="padding:20px 22px; margin-bottom:16px;">
+    <div class="table-wrap"><table>
+      <thead><tr><th>${tr('create_pr.col_material')}</th><th>${tr('create_pr.col_unit')}</th><th>${tr('fin_gr.col_qty_ordered')}</th><th>${tr('fin_gr.col_qty_received')}</th></tr></thead>
+      <tbody>${r.items.map(it=>`
+        <tr><td>${esc(it.material)}</td><td>${esc(it.unit)}</td><td class="mono">${fmtMoney(it.qtyOrdered)}</td><td class="mono">${fmtMoney(it.qtyReceived)}</td></tr>`).join('')}
+      </tbody>
+    </table></div>
+    ${r.note ? `<div style="margin-top:10px;"><div class="lbl">${tr('create_pr.remark_label')}</div><div>${esc(r.note)}</div></div>` : ''}
+  </div>
+  ${attachmentGalleryCard(r.attachments, id=>`/api/customer/goods-receipts/${r.id}/attachments/${id}/file`)}`;
+}
+// การ์ดแสดงไฟล์แนบแบบใช้ร่วมกัน (goods receipt / site expense submission) — รูปแสดง thumbnail, ไฟล์อื่น
+// (pdf) แสดงเป็นลิงก์ดูไฟล์ — fileUrlFn(attachmentId) คืน URL ของ endpoint serve ไฟล์นั้น
+function attachmentGalleryCard(attachments, fileUrlFn){
+  if(!attachments || attachments.length===0) return '';
+  return `
+  <div class="card" style="padding:20px 22px;">
+    <div class="section-title">${tr('fin_gr.attachments_title')}</div>
+    <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:10px;">
+      ${attachments.map(a=>{
+        const url = fileUrlFn(a.id);
+        const isImage = (a.mimeType||'').startsWith('image/');
+        return isImage
+          ? `<a href="${url}" target="_blank" rel="noopener"><img src="${url}" alt="${esc(a.fileName)}" style="width:120px; height:120px; object-fit:cover; border-radius:var(--radius-sm); border:1px solid var(--border);"></a>`
+          : `<a href="${url}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">${ICN.doc} ${esc(a.fileName)}</a>`;
+      }).join('')}
+    </div>
+  </div>`;
+}
+
+// ---------------- งานหน้างาน (งานที่ 2) — ส่งบิลค่าใช้จ่ายจากหน้างาน (site expense submission) ----------------
+function siteExpenseStatusLabels(){
+  return { submitted: tr('fin_se.status_submitted'), rejected: tr('fin_se.status_rejected'), closed: tr('fin_se.status_closed') };
+}
+function siteExpenseStatusBadgeClass(s){
+  return s==='submitted' ? 'badge-pending' : s==='closed' ? 'badge-approved' : s==='rejected' ? 'badge-rejected' : 'badge-draft';
+}
+function siteExpenseCaseLabels(){
+  return { advance_offset: tr('fin_se.case_advance_offset'), reimbursement: tr('fin_se.case_reimbursement'), payable: tr('fin_se.case_payable') };
+}
+function pageFinSiteExpenseSubmissions(){
+  const list = S.siteExpenseSubmissions;
+  const f = S.siteExpenseSubmissionListFilter;
+  const u = S.currentUser;
+  const canSubmit = u.role==='super_user' || u.canSubmitSiteExpense;
+  return `
+  <div class="page-head">
+    <div><h2>${tr('nav.fin_site_expense_submissions')}</h2><div class="sub">${tr('fin_se.subtitle')}</div></div>
+    ${canSubmit ? `<button class="btn btn-primary" data-act="open-site-expense-add">${ICN.plus} ${tr('fin_se.add_submission')}</button>` : ''}
+  </div>
+  <div class="card" style="padding:16px 18px; margin-bottom:14px;">
+    <div class="field" style="max-width:220px;"><label>${tr('pr.filter_status')}</label>
+      <select data-act="filter-se-status">
+        <option value="">${tr('pr.filter_status_all')}</option>
+        ${Object.entries(siteExpenseStatusLabels()).map(([k,label])=>`<option value="${k}" ${f.status===k?'selected':''}>${label}</option>`).join('')}
+      </select>
+    </div>
+  </div>
+  ${list.length===0 ? `<div class="card" style="padding:30px; text-align:center;"><div class="hint">${tr('fin_se.no_submissions_hint')}</div></div>` : `
+  <div class="table-wrap"><table>
+    <thead><tr><th>${tr('fin_se.col_submission_no')}</th><th>${tr('fin_se.col_vendor')}</th><th>${tr('pr.col_total')}</th><th>${tr('fin_project_add.section_project_info')}</th><th>${tr('pr.col_status')}</th><th></th></tr></thead>
+    <tbody>${list.map(s=>`
+      <tr>
+        <td>${esc(s.submissionNo||'-')}</td>
+        <td>${esc(s.vendorName)}</td>
+        <td class="mono">${fmtMoney(s.amount)}</td>
+        <td>${esc(s.projectName||'-')}</td>
+        <td><span class="badge ${siteExpenseStatusBadgeClass(s.status)}">${siteExpenseStatusLabels()[s.status]||s.status}</span></td>
+        <td><button class="btn btn-ghost btn-sm" data-act="nav" data-page="fin_site_expense_submission_detail" data-id="${s.id}" data-id-field="selectedSiteExpenseSubmissionId">${tr('common.view_detail')}</button></td>
+      </tr>`).join('')}
+    </tbody>
+  </table></div>`}`;
+}
+function pageFinSiteExpenseSubmissionAdd(){
+  const f = S.siteExpenseSubmissionForm;
+  if(!f) return `<div class="page-head"><h2>${tr('common.loading')}</h2></div>`;
+  const offsetable = offsetableVouchersList();
+  return `
+  <div class="page-head">
+    <div><h2>${tr('fin_se.add_submission')}</h2><div class="sub">${tr('fin_se.add_subtitle')}</div></div>
+  </div>
+  <div class="card" style="padding:20px 22px; margin-bottom:16px;">
+    <div class="field"><label>${tr('fin_project_add.section_project_info')}</label>
+      <select id="se-project" oninput="S.siteExpenseSubmissionForm.projectId=this.value;">
+        <option value="">${tr('fin_sbill.pick_term_placeholder')}</option>
+        ${(DB.projects||[]).map(p=>`<option value="${p.id}" ${f.projectId==p.id?'selected':''}>${esc(p.name)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field" style="margin-top:10px;"><label>${tr('fin_se.case_label')}</label>
+      <select data-act="select-se-case">
+        <option value="payable" ${f.expenseCase==='payable'?'selected':''}>${tr('fin_se.case_payable')}</option>
+        <option value="reimbursement" ${f.expenseCase==='reimbursement'?'selected':''}>${tr('fin_se.case_reimbursement')}</option>
+        <option value="advance_offset" ${f.expenseCase==='advance_offset'?'selected':''}>${tr('fin_se.case_advance_offset')}</option>
+      </select>
+    </div>
+    ${f.expenseCase==='advance_offset' ? `
+    <div class="field" style="margin-top:10px;"><label>${tr('fin_se.linked_voucher_label')}</label>
+      ${!S.offsetableVouchersLoaded ? `<div class="hint">${tr('common.loading')}</div>` : offsetable.length===0 ? `<div class="hint">${tr('fin_se.no_offsetable_vouchers_hint')}</div>` : `
+      <select id="se-linked-voucher" oninput="S.siteExpenseSubmissionForm.linkedVoucherId=this.value;">
+        <option value="">${tr('fin_sbill.pick_term_placeholder')}</option>
+        ${offsetable.map(v=>`<option value="${v.id}" ${f.linkedVoucherId==v.id?'selected':''}>${esc(v.voucherNo||('#'+v.id))} — ${esc(v.payeeName)} (${fmtMoney(v.amount)})</option>`).join('')}
+      </select>`}
+    </div>` : ''}
+    <div class="field" style="margin-top:10px;"><label>${tr('fin_se.vendor_label')}</label>
+      <input id="se-vendor" value="${esc(f.vendorName)}" oninput="S.siteExpenseSubmissionForm.vendorName=this.value;">
+      ${f.expenseCase!=='advance_offset' ? `<div class="hint">${tr('fin_se.vendor_not_linked_hint')}</div>` : ''}
+    </div>
+    <div class="split" style="margin-top:10px;">
+      <div class="field"><label>${tr('fin_po.issue_date_label')}</label><input type="date" id="se-date" value="${f.expenseDate}" oninput="S.siteExpenseSubmissionForm.expenseDate=this.value;"></div>
+      <div class="field"><label>${tr('pr.col_total')}</label><input type="number" min="0" step="0.01" id="se-amount" value="${esc(f.amount)}" oninput="S.siteExpenseSubmissionForm.amount=this.value;"></div>
+    </div>
+    <div class="field" style="margin-top:10px;"><label>${tr('create_pr.col_material')}</label>
+      <textarea id="se-description" oninput="S.siteExpenseSubmissionForm.description=this.value;">${esc(f.description)}</textarea>
+    </div>
+    <div class="field" style="margin-top:10px;"><label><input type="checkbox" ${f.hasTaxInvoice?'checked':''} onchange="S.siteExpenseSubmissionForm.hasTaxInvoice=this.checked;"> ${tr('fin_sbill.has_tax_invoice_label')}</label></div>
+    <div class="field" style="margin-top:10px;"><label>${tr('create_pr.remark_label')}</label>
+      <textarea id="se-note" oninput="S.siteExpenseSubmissionForm.note=this.value;">${esc(f.note)}</textarea>
+    </div>
+    <div class="field" style="margin-top:10px;"><label>${tr('fin_gr.photos_label')}</label>
+      <input type="file" id="se-photos" accept="image/jpeg,image/png,image/webp,application/pdf" multiple>
+      <div class="hint">${tr('fin_se.photos_hint')}</div>
+    </div>
+    <div class="small-btn-row" style="justify-content:flex-end; margin-top:14px;">
+      <button class="btn btn-ghost btn-sm" data-act="nav" data-page="fin_site_expense_submissions">${tr('common.cancel')}</button>
+      <button class="btn btn-primary btn-sm" data-act="submit-site-expense" ${S.siteExpenseSubmissionSaving?'disabled':''}>${tr('common.save')}</button>
+    </div>
+  </div>`;
+}
+function pageFinSiteExpenseSubmissionDetail(){
+  const s = S.selectedSiteExpenseSubmissionDetail;
+  if(s===undefined) return `<div class="page-head"><h2>${tr('common.loading')}</h2></div>`;
+  if(s===null) return `<div class="page-head"><h2>${tr('fin_gr.not_found')}</h2></div>`;
+  const u = S.currentUser;
+  const canProcess = u.role==='super_user' || u.canSettleCash===true;
+  const rf = S.siteExpenseRejectForm;
+  const cf = S.siteExpenseCloseForm;
+  return `
+  <div class="page-head">
+    <div>
+      <button class="btn btn-ghost btn-sm" data-act="nav" data-page="fin_site_expense_submissions" style="margin-bottom:8px;">${ICN.chevronLeft} ${tr('common.back')}</button>
+      <h2>${esc(s.submissionNo||'-')} <span class="badge ${siteExpenseStatusBadgeClass(s.status)}">${siteExpenseStatusLabels()[s.status]||s.status}</span></h2>
+      <div class="sub">${esc(s.vendorName)} · ${esc(s.projectName||'-')}</div>
+    </div>
+  </div>
+  <div class="card" style="padding:20px 22px; margin-bottom:16px;">
+    <div class="split">
+      <div><div class="lbl">${tr('fin_se.case_label')}</div><div>${siteExpenseCaseLabels()[s.expenseCase]||s.expenseCase}</div></div>
+      <div><div class="lbl">${tr('fin_po.issue_date_label')}</div><div>${s.expenseDate}</div></div>
+      <div><div class="lbl">${tr('pr.col_total')}</div><div class="mono">${fmtMoney(s.amount)}</div></div>
+    </div>
+    ${s.linkedVoucherNo ? `<div style="margin-top:10px;"><div class="lbl">${tr('fin_se.linked_voucher_label')}</div><div>${esc(s.linkedVoucherNo)}</div></div>` : ''}
+    ${s.description ? `<div style="margin-top:10px;"><div class="lbl">${tr('create_pr.col_material')}</div><div>${esc(s.description)}</div></div>` : ''}
+    <div style="margin-top:10px;"><div class="lbl">${tr('fin_sbill.has_tax_invoice_label')}</div><div>${s.hasTaxInvoice ? tr('common.yes') : tr('common.no')}</div></div>
+    ${s.note ? `<div style="margin-top:10px;"><div class="lbl">${tr('create_pr.remark_label')}</div><div>${esc(s.note)}</div></div>` : ''}
+    ${s.status==='rejected' && s.rejectedReason ? `<div style="margin-top:10px; color:var(--red);"><div class="lbl">${tr('pr.rejected_reason_label')}</div><div>${esc(s.rejectedReason)}</div></div>` : ''}
+    ${s.status==='closed' ? `<div style="margin-top:10px; color:var(--green);"><div class="lbl">${tr('fin_se.result_doc_label')}</div><div>${s.resultDocType==='advance_clearance'?tr('nav.fin_advance_clearances'):tr('nav.fin_vouchers_other')} #${s.resultDocId}${s.closingNote?` — ${esc(s.closingNote)}`:''}</div></div>` : ''}
+  </div>
+  ${attachmentGalleryCard(s.attachments, id=>`/api/customer/site-expense-submissions/${s.id}/attachments/${id}/file`)}
+  ${s.status==='submitted' && canProcess ? `
+  <div class="card" style="padding:20px 22px; margin-top:16px;">
+    <div class="section-title">${tr('fin_se.process_section_title')}</div>
+    <div class="hint" style="margin-bottom:10px;">${s.expenseCase==='advance_offset' ? tr('fin_se.prefill_hint_clearance') : tr('fin_se.prefill_hint_voucher')}</div>
+    <div class="small-btn-row">
+      ${s.expenseCase==='advance_offset'
+        ? `<button class="btn btn-navy btn-sm" data-act="prefill-create-clearance" data-id="${s.id}">${tr('fin_se.btn_create_clearance')}</button>`
+        : `<button class="btn btn-navy btn-sm" data-act="prefill-create-voucher" data-id="${s.id}">${tr('fin_se.btn_create_voucher')}</button>`}
+    </div>
+    <div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--border);">
+      <div class="section-title" style="font-size:14px;">${tr('fin_se.close_section_title')}</div>
+      ${!cf ? `<button class="btn btn-primary btn-sm" data-act="open-se-close" data-id="${s.id}">${tr('fin_se.btn_close')}</button>` : `
+      <div class="split">
+        <div class="field"><label>${tr('fin_se.result_doc_type_label')}</label>
+          <select oninput="S.siteExpenseCloseForm.resultDocType=this.value;">
+            <option value="advance_clearance" ${cf.resultDocType==='advance_clearance'?'selected':''}>${tr('nav.fin_advance_clearances')}</option>
+            <option value="payment_voucher" ${cf.resultDocType==='payment_voucher'?'selected':''}>${tr('nav.fin_vouchers_other')}</option>
+          </select>
+        </div>
+        <div class="field"><label>${tr('fin_se.result_doc_id_label')}</label>
+          <input type="number" value="${esc(cf.resultDocId)}" oninput="S.siteExpenseCloseForm.resultDocId=this.value;">
+        </div>
+      </div>
+      <div class="field" style="margin-top:8px;"><label>${tr('create_pr.remark_label')}</label>
+        <input value="${esc(cf.closingNote)}" oninput="S.siteExpenseCloseForm.closingNote=this.value;">
+      </div>
+      <div class="small-btn-row" style="justify-content:flex-end; margin-top:10px;">
+        <button class="btn btn-ghost btn-sm" data-act="cancel-se-close">${tr('common.cancel')}</button>
+        <button class="btn btn-primary btn-sm" data-act="submit-se-close" data-id="${s.id}">${tr('fin_se.btn_close')}</button>
+      </div>`}
+    </div>
+    <div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--border);">
+      ${!rf ? `<button class="btn btn-danger btn-sm" data-act="open-se-reject" data-id="${s.id}">${tr('pr.action_reject')}</button>` : `
+      <div class="field"><label>${tr('pr.rejected_reason_label')}</label><input value="${esc(rf.reason)}" oninput="S.siteExpenseRejectForm.reason=this.value;"></div>
+      <div class="small-btn-row" style="justify-content:flex-end;">
+        <button class="btn btn-ghost btn-sm" data-act="cancel-se-reject">${tr('common.cancel')}</button>
+        <button class="btn btn-danger btn-sm" data-act="submit-se-reject" data-id="${s.id}">${tr('pr.action_reject')}</button>
+      </div>`}
+    </div>
+  </div>` : ''}`;
 }
 
 // ---------------- ใบสั่งจ้างผู้รับเหมาช่วง (Work Order, หัวข้อ 5 รอบ B) — real backend, client_subcontract_terms ----------------
@@ -8215,7 +8616,7 @@ function pageApprovalPermissions(){
           <th rowspan="2">${tr('common.col_role')}</th>
           <th colspan="2">${tr('approval_permissions.group_other')}</th>
           <th colspan="8">${tr('approval_permissions.group_doc_approval')}</th>
-          <th colspan="3">${tr('approval_permissions.group_execution')}</th>
+          <th colspan="5">${tr('approval_permissions.group_execution')}</th>
         </tr>
         <tr>
           <th>${tr('approval_permissions.col_permission')}</th>
@@ -8231,10 +8632,12 @@ function pageApprovalPermissions(){
           <th>${tr('approval_permissions.col_manage_po')}</th>
           <th>${tr('approval_permissions.col_manage_petty_cash_fund')}</th>
           <th>${tr('approval_permissions.col_settle_cash')}</th>
+          <th>${tr('approval_permissions.col_submit_goods_receipt')}</th>
+          <th>${tr('approval_permissions.col_submit_site_expense')}</th>
         </tr>
       </thead>
       <tbody>
-        ${rows.length===0 ? `<tr><td colspan="16"><div class="empty" style="padding:20px 0;">${tr('users.no_users_yet')}</div></td></tr>` : rows.map(cu=>{
+        ${rows.length===0 ? `<tr><td colspan="18"><div class="empty" style="padding:20px 0;">${tr('users.no_users_yet')}</div></td></tr>` : rows.map(cu=>{
           // ห้าม self-grant/self-revoke (ตรงกับ backend) — ซ่อนปุ่มบนแถวของตัวเอง แม้จะเป็น super_user
           const canManageThisRow = canManage && S.currentUser.id !== cu.id;
           return `
@@ -8255,6 +8658,8 @@ function pageApprovalPermissions(){
             ${permFlagCell(cu, 'can_manage_po', canManageThisRow)}
             ${permFlagCell(cu, 'can_manage_petty_cash_fund', canManageThisRow)}
             ${permFlagCell(cu, 'can_settle_cash', canManageThisRow)}
+            ${permFlagCell(cu, 'can_submit_goods_receipt', canManageThisRow)}
+            ${permFlagCell(cu, 'can_submit_site_expense', canManageThisRow)}
           </tr>`;}).join('')}
       </tbody>
     </table></div>
@@ -11849,7 +12254,7 @@ async function loadDataForPage(){
   // โครงการ (client_projects) backs the project pickers on cost/revenue/labor forms, budget-vs-
   // actual, and the project list/detail pages themselves — load it once, on first visit to any
   // of them, rather than duplicating the load call in every single one of those page branches.
-  const PROJECT_DEPENDENT_PAGES = ['fin_projects','fin_project_add','fin_project_detail','fin_costs','fin_revenue','fin_retention','fin_receive_payment','fin_labor','fin_labor_pay','create_pr','my_prs','all_prs','fin_po','fin_po_add','fin_po_detail','fin_wo','fin_wo_add','fin_wo_detail','fin_progress_claims','fin_progress_claim_add','fin_progress_claim_detail','fin_quotations','fin_quotation_add','fin_documents','fin_document_add','fin_petty_cash_funds','fin_vouchers_petty_cash','fin_vouchers_advance','fin_vouchers_other','fin_voucher_detail'];
+  const PROJECT_DEPENDENT_PAGES = ['fin_projects','fin_project_add','fin_project_detail','fin_costs','fin_revenue','fin_retention','fin_receive_payment','fin_labor','fin_labor_pay','create_pr','my_prs','all_prs','fin_po','fin_po_add','fin_po_detail','fin_wo','fin_wo_add','fin_wo_detail','fin_progress_claims','fin_progress_claim_add','fin_progress_claim_detail','fin_quotations','fin_quotation_add','fin_documents','fin_document_add','fin_petty_cash_funds','fin_vouchers_petty_cash','fin_vouchers_advance','fin_vouchers_other','fin_voucher_detail','fin_site_expense_submission_add'];
   if(PROJECT_DEPENDENT_PAGES.includes(S.page) && S.dataMode!=='demo' && !S.projectsLoaded) await loadRealProjects();
   // PR (หัวข้อ 4) — ต่อ API จริงเสมอ ไม่มี demo dataset แล้ว (ดู pageOverview's comment)
   if((S.page==='overview'||S.page==='my_prs'||S.page==='all_prs') && S.dataMode!=='demo' && !S.purchaseRequestsLoaded) await loadPurchaseRequests();
@@ -11870,7 +12275,15 @@ async function loadDataForPage(){
     await loadRealProjectDetail(S.selectedProjectId); // fetches the new detail fields + installments
   }
   if(S.page==='fin_po' && S.dataMode!=='demo' && !S.purchaseOrdersLoaded) await loadPurchaseOrders();
-  if(S.page==='fin_po_detail' && S.dataMode!=='demo') await loadPurchaseOrderDetail(S.selectedPurchaseOrderId);
+  if(S.page==='fin_po_detail' && S.dataMode!=='demo'){
+    await loadPurchaseOrderDetail(S.selectedPurchaseOrderId);
+    await loadPoReceiptSummary(S.selectedPurchaseOrderId); // ตาราง "สั่ง/รับแล้ว/คงเหลือ" ต่อบรรทัด
+  }
+  if(S.page==='fin_goods_receipts' && S.dataMode!=='demo' && !S.goodsReceiptsLoaded) await loadGoodsReceipts();
+  if(S.page==='fin_goods_receipt_add' && S.dataMode!=='demo' && S.goodsReceiptForm && !S.poReceiptSummaryByPoId[S.goodsReceiptForm.poId]) await loadPoReceiptSummary(S.goodsReceiptForm.poId);
+  if(S.page==='fin_goods_receipt_detail' && S.dataMode!=='demo') await loadGoodsReceiptDetail(S.selectedGoodsReceiptId);
+  if(S.page==='fin_site_expense_submissions' && S.dataMode!=='demo' && !S.siteExpenseSubmissionsLoaded) await loadSiteExpenseSubmissions();
+  if(S.page==='fin_site_expense_submission_detail' && S.dataMode!=='demo') await loadSiteExpenseSubmissionDetail(S.selectedSiteExpenseSubmissionId);
   if(S.page==='fin_wo' && S.dataMode!=='demo' && !S.subcontractTermsLoaded) await loadSubcontractTerms();
   if(S.page==='fin_wo_add' && S.dataMode!=='demo'){
     if(!S.subcontractorsLoaded) await loadSubcontractors();
@@ -12165,6 +12578,8 @@ async function handleAction(act, el){
         canCertifyProgress: !!data.customer.can_certify_progress,
         canApproveProgress: !!data.customer.can_approve_progress,
         canApproveSubcontractBilling: !!data.customer.can_approve_subcontract_billing,
+        canSubmitGoodsReceipt: !!data.customer.can_submit_goods_receipt,
+        canSubmitSiteExpense: !!data.customer.can_submit_site_expense,
       };
       S.view='dashboard'; S.page='overview';
       render();
@@ -14375,6 +14790,166 @@ async function handleAction(act, el){
     } catch(e){ toast(e.message,'err'); }
     S.voucherActionPending['po-cancel-'+id] = false;
     render(); return;
+  }
+
+  // ---- งานหน้างาน (งานที่ 1) — ตรวจรับของตาม PO ----
+  if(act==='filter-gr-po'){ await loadGoodsReceipts(); return; }
+  if(act==='open-goods-receipt-add'){
+    const poId = parseInt(el.dataset.poId,10);
+    const po = S.selectedPurchaseOrderDetail;
+    S.goodsReceiptForm = { poId, poNo: po ? po.poNo : '', qtyByItem:{}, note:'', idempotencyKey: crypto.randomUUID() };
+    S.page = 'fin_goods_receipt_add';
+    render();
+    if(!S.poReceiptSummaryByPoId[poId]) await loadPoReceiptSummary(poId);
+    return;
+  }
+  if(act==='submit-goods-receipt'){
+    const f = S.goodsReceiptForm;
+    const items = Object.entries(f.qtyByItem)
+      .filter(([,v])=>v!=='' && v!=null && parseFloat(v)>0)
+      .map(([poItemId,qtyReceived])=>({poItemId:parseInt(poItemId,10), qtyReceived}));
+    if(items.length===0){ toast(tr('fin_gr.no_items_err'),'err'); return; }
+    if(S.goodsReceiptSaving) return;
+    // ต้องอ่าน fileInput.files ก่อน render() เสมอ — render() วาด DOM ใหม่ทั้งหน้า ทำให้ <input type="file">
+    // เดิม (พร้อมไฟล์ที่ผู้ใช้เลือกไว้) ถูกทิ้งไปเป็น element เปล่าอันใหม่ก่อนจะยิง request จริง (เจอบั๊กนี้
+    // จริงตอนเขียนเทส — สลับลำดับผิดจาก pattern ที่ถูกต้องของ act==='save-fwd' เดิม)
+    const fd = new FormData();
+    fd.append('poId', f.poId);
+    fd.append('items', JSON.stringify(items));
+    fd.append('note', f.note||'');
+    const fileInput = document.getElementById('gr-photos');
+    if(fileInput) for(const file of fileInput.files) fd.append('photos', file);
+    S.goodsReceiptSaving = true; render();
+    try{
+      const res = await fetch('/api/customer/goods-receipts', { method:'POST', body: fd, headers: {'Idempotency-Key': f.idempotencyKey} });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.error || tr('users.save_failed_err'));
+      toast(tr('fin_gr.added_toast'));
+      const poId = f.poId;
+      S.goodsReceiptForm = null;
+      S.goodsReceiptsLoaded = false;
+      delete S.poReceiptSummaryByPoId[poId];
+      S.goodsReceiptSaving = false;
+      S.page = 'fin_po_detail'; S.selectedPurchaseOrderId = poId;
+      render();
+      await loadPurchaseOrderDetail(poId);
+      await loadPoReceiptSummary(poId);
+    } catch(e){ S.goodsReceiptSaving = false; toast(e.message,'err'); render(); }
+    return;
+  }
+
+  // ---- งานหน้างาน (งานที่ 2) — ส่งบิลค่าใช้จ่ายจากหน้างาน ----
+  if(act==='filter-se-status'){ S.siteExpenseSubmissionListFilter.status = el.value; await loadSiteExpenseSubmissions(); return; }
+  if(act==='open-site-expense-add'){
+    S.siteExpenseSubmissionForm = {
+      projectId:'', expenseCase:'payable', linkedVoucherId:'', vendorName:'', expenseDate: bangkokTodayStr(),
+      amount:'', description:'', hasTaxInvoice:false, note:'', idempotencyKey: crypto.randomUUID(),
+    };
+    S.page = 'fin_site_expense_submission_add';
+    render();
+    // เปิดฟอร์มผ่าน custom action ตรงๆ ไม่ผ่าน act==='nav' จึงไม่ trigger loadDataForPage() ที่โหลด
+    // โครงการให้ dropdown ตัวเลือกอัตโนมัติ — ต้องเรียกเองตรงนี้ (บั๊กเดียวกับที่เจอจริงตอนเขียนเทส)
+    if(S.dataMode!=='demo' && !S.projectsLoaded) await loadRealProjects();
+    return;
+  }
+  if(act==='select-se-case'){
+    S.siteExpenseSubmissionForm.expenseCase = el.value;
+    if(el.value!=='advance_offset') S.siteExpenseSubmissionForm.linkedVoucherId = '';
+    render();
+    if(el.value==='advance_offset' && !S.offsetableVouchersLoaded) await loadOffsetableVouchers();
+    return;
+  }
+  if(act==='submit-site-expense'){
+    const f = S.siteExpenseSubmissionForm;
+    if(!f.projectId){ toast(tr('fin_sbill.term_required_err'),'err'); return; }
+    if(f.expenseCase==='advance_offset' && !f.linkedVoucherId){ toast(tr('fin_se.no_offsetable_vouchers_hint'),'err'); return; }
+    if(!f.vendorName || !f.vendorName.trim()){ toast(tr('fin_sbill.gross_amount_required_err'),'err'); return; }
+    if(!f.amount || parseFloat(f.amount)<=0){ toast(tr('fin_sbill.gross_amount_required_err'),'err'); return; }
+    const fileInput = document.getElementById('se-photos');
+    const files = fileInput ? [...fileInput.files] : [];
+    if(files.length===0){ toast(tr('fin_se.photos_hint'),'err'); return; }
+    if(S.siteExpenseSubmissionSaving) return;
+    S.siteExpenseSubmissionSaving = true; render();
+    try{
+      const fd = new FormData();
+      fd.append('projectId', f.projectId);
+      fd.append('expenseCase', f.expenseCase);
+      if(f.expenseCase==='advance_offset') fd.append('linkedVoucherId', f.linkedVoucherId);
+      fd.append('vendorName', f.vendorName.trim());
+      fd.append('expenseDate', f.expenseDate);
+      fd.append('amount', f.amount);
+      fd.append('description', f.description||'');
+      fd.append('hasTaxInvoice', f.hasTaxInvoice ? 'true' : 'false');
+      fd.append('note', f.note||'');
+      for(const file of files) fd.append('photos', file);
+      const res = await fetch('/api/customer/site-expense-submissions', { method:'POST', body: fd, headers: {'Idempotency-Key': f.idempotencyKey} });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.error || tr('users.save_failed_err'));
+      toast(tr('fin_se.added_toast'));
+      S.siteExpenseSubmissionForm = null;
+      S.siteExpenseSubmissionsLoaded = false;
+      S.siteExpenseSubmissionSaving = false;
+      S.page = 'fin_site_expense_submission_detail'; S.selectedSiteExpenseSubmissionId = data.siteExpenseSubmission.id;
+      render();
+      await loadSiteExpenseSubmissionDetail(data.siteExpenseSubmission.id);
+    } catch(e){ S.siteExpenseSubmissionSaving = false; toast(e.message,'err'); render(); }
+    return;
+  }
+  if(act==='open-se-reject'){ S.siteExpenseRejectForm = { id: parseInt(el.dataset.id,10), reason:'' }; render(); return; }
+  if(act==='cancel-se-reject'){ S.siteExpenseRejectForm = null; render(); return; }
+  if(act==='submit-se-reject'){
+    const id = parseInt(el.dataset.id,10);
+    const reason = (S.siteExpenseRejectForm.reason||'').trim();
+    if(!reason){ toast(tr('pr.rejected_reason_required_err'),'err'); return; }
+    try{
+      await apiCall('POST', `/api/customer/site-expense-submissions/${id}/reject`, { reason });
+      toast(tr('fin_se.reject_ok_toast'));
+      S.siteExpenseRejectForm = null;
+      await loadSiteExpenseSubmissionDetail(id);
+    } catch(e){ toast(e.message,'err'); }
+    return;
+  }
+  if(act==='open-se-close'){ S.siteExpenseCloseForm = { id: parseInt(el.dataset.id,10), resultDocType:'payment_voucher', resultDocId:'', closingNote:'' }; render(); return; }
+  if(act==='cancel-se-close'){ S.siteExpenseCloseForm = null; render(); return; }
+  if(act==='submit-se-close'){
+    const id = parseInt(el.dataset.id,10);
+    const cf = S.siteExpenseCloseForm;
+    if(!cf.resultDocId){ toast(tr('fin_se.result_doc_id_label'),'err'); return; }
+    try{
+      await apiCall('POST', `/api/customer/site-expense-submissions/${id}/close`, {
+        resultDocType: cf.resultDocType, resultDocId: parseInt(cf.resultDocId,10), closingNote: cf.closingNote,
+      });
+      toast(tr('fin_se.close_ok_toast'));
+      S.siteExpenseCloseForm = null;
+      await loadSiteExpenseSubmissionDetail(id);
+    } catch(e){ toast(e.message,'err'); }
+    return;
+  }
+  // ปุ่ม prefill — เปิดฟอร์มสร้างเอกสารปลายทางพร้อมข้อมูลกรอกไว้ให้บางส่วน (ไม่ auto-convert ตามที่ยืนยันแล้ว
+  // — บัญชียังต้องกดสร้างเอกสารเองจริง แค่ลดการพิมพ์ซ้ำ) vendorName เป็น free text ไม่ได้ผูกกับ
+  // client_external_payees จึง prefill payeeExternalId ให้ไม่ได้ (ดู fin_se.vendor_not_linked_hint)
+  if(act==='prefill-create-clearance'){
+    const s = S.selectedSiteExpenseSubmissionDetail;
+    S.advanceClearanceForm = {
+      mode:'new', idempotencyKey: crypto.randomUUID(),
+      advanceVoucherId: s.linkedVoucherId||'', advanceAmount:0, advanceVoucherNo: s.linkedVoucherNo||'', advanceEmployeeName:'',
+      clearanceDate: bangkokTodayStr(), note: `${tr('fin_se.col_submission_no')}: ${s.submissionNo}`,
+      items: [{ description: s.description || s.vendorName, expenseAccountCode:'', amount: String(s.amount), hasTaxInvoice: !!s.hasTaxInvoice, vatRate:'0', whtRate:'0', whtIncomeTypeCode:'', payeeExternalId:'', payeeName:'', payeeTaxId:'' }],
+    };
+    S.page = 'fin_advance_clearances';
+    render();
+    return;
+  }
+  if(act==='prefill-create-voucher'){
+    const s = S.selectedSiteExpenseSubmissionDetail;
+    S.voucherForm = { voucherType:'other', idempotencyKey: crypto.randomUUID(), values:{
+      pettyCashFundId:'', payeeEmployeeId:'', payeeExternalId:'', projectId: s.projectId||'', amount: String(s.amount), expenseAccountCode:'',
+      purpose: `${s.vendorName}${s.description?` — ${s.description}`:''} (${tr('fin_se.col_submission_no')}: ${s.submissionNo})`,
+      hasTaxInvoice: !!s.hasTaxInvoice, vatRate:'0', whtRate:'0', whtIncomeTypeCode:'',
+    }};
+    S.page = 'fin_vouchers_other';
+    render();
+    return;
   }
 
   // ---- Finance: ใบสั่งจ้างผู้รับเหมาช่วง (Work Order, หัวข้อ 5 รอบ B) ----

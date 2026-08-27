@@ -2514,6 +2514,7 @@ const MANAGE_PERMISSION_FLAG_COLUMNS = new Set([
   'can_manage_po', 'can_manage_petty_cash_fund', 'can_settle_cash',
   'can_approve_budget', 'can_approve_pr', 'can_approve_po_wo', 'can_approve_petty_cash', 'can_approve_advance', 'can_approve_other',
   'can_certify_progress', 'can_approve_progress', 'can_approve_subcontract_billing',
+  'can_submit_goods_receipt', 'can_submit_site_expense',
 ]);
 app.put('/api/customer/users/:id/permission-flags', requireCustomerAuth, async (req, res) => {
   const targetId = parseInt(req.params.id, 10);
@@ -8591,6 +8592,20 @@ app.post('/api/customer/purchase-orders/:id/cancel', requireCustomerAuth, async 
       cancelIsOverride = permCheck.isOverride;
     }
 
+    // migration 0012 comment เตือนไว้: เมื่อมีระบบรับของ (migration 0017) ต้องเพิ่มเงื่อนไขห้าม cancel PO
+    // ที่รับของไปแล้วบางส่วน/ทั้งหมด — ล็อก po_items เรียงตาม id ก่อนเสมอ (ลำดับเดียวกับที่
+    // POST /goods-receipts ล็อก เพื่อกันเดดล็อกข้ามสองทรานแซกชัน) แล้วค่อยเช็คว่ามี receipt items อ้างอิง
+    // บรรทัดไหนบ้างหรือไม่ — แยก statement จากการ FOR UPDATE ตาม CLAUDE.md ข้อ 7
+    const cancelPoItemIds = (await client.query('SELECT id FROM client_purchase_order_items WHERE purchase_order_id=$1', [id])).rows.map(r => r.id);
+    if (cancelPoItemIds.length > 0) {
+      await client.query('SELECT id FROM client_purchase_order_items WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE', [cancelPoItemIds]);
+      const receiptCheck = await client.query('SELECT 1 FROM client_goods_receipt_items WHERE po_item_id = ANY($1::int[]) LIMIT 1', [cancelPoItemIds]);
+      if (receiptCheck.rowCount > 0) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: 'ยกเลิกใบสั่งซื้อไม่ได้ — มีการตรวจรับของแล้วบางส่วนหรือทั้งหมด' });
+      }
+    }
+
     if (status === 'approved') {
       // auto-release: คืนยอดทุกบรรทัดที่เคย consume ไปตอน approve — 1 บรรทัด PO item ถูก consume แค่ครั้ง
       // เดียวตอน approve เท่านั้น (ไม่มีทาง consume ซ้ำ) จึง release เท่ากับ qty เดิมของบรรทัดนั้นได้ตรงๆ
@@ -10969,6 +10984,473 @@ app.get('/api/customer/subcontract-billings/:id/wht-certificates', requireCustom
     [companyId, id]
   );
   res.json({ whtCertificates: r.rows.map(serializeWhtCertificate) });
+});
+
+// ---------------- ไฟล์แนบสำหรับงานหน้างาน (goods receipt / site expense submission) ----------------
+// ครั้งแรกที่ schema แบบเต็ม (storage_path/mime_type/file_size/checksum) ถูกต่อ endpoint จริง — 2 ตาราง
+// เดิมของหัวข้อ 1 (client_payment_voucher_attachments/client_advance_clearance_attachments, migration
+// 0001) มี schema หน้าตาเดียวกันแต่ไม่เคยมี endpoint ต่อเลยสักจุด — ใช้กลไก multer diskStorage เดียวกับ
+// clientDocUpload/revenueDocUpload (สุ่มชื่อไฟล์กันชนกัน, จำกัด 5MB/ไฟล์, รับ jpg/png/webp/pdf) แต่รองรับ
+// หลายไฟล์ต่อ 1 คำขอ (.array()) และคำนวณ checksum (sha256) จากไฟล์ที่บันทึกแล้วบนดิสก์ทันทีหลังอัปโหลด
+const GOODS_RECEIPT_ATTACHMENTS_DIR = path.join(__dirname, 'uploads', 'goods-receipt-attachments');
+fs.mkdirSync(GOODS_RECEIPT_ATTACHMENTS_DIR, { recursive: true });
+const SITE_EXPENSE_ATTACHMENTS_DIR = path.join(__dirname, 'uploads', 'site-expense-attachments');
+fs.mkdirSync(SITE_EXPENSE_ATTACHMENTS_DIR, { recursive: true });
+const ALLOWED_SITE_ATTACHMENT_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'application/pdf']);
+const MAX_SITE_ATTACHMENTS_PER_UPLOAD = 5;
+function makeSiteAttachmentUpload(dir) {
+  return multer({
+    storage: multer.diskStorage({
+      destination: (req, file, cb) => cb(null, dir),
+      filename: (req, file, cb) => cb(null, `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${path.extname(file.originalname).slice(0, 10)}`),
+    }),
+    limits: { fileSize: 5 * 1024 * 1024, files: MAX_SITE_ATTACHMENTS_PER_UPLOAD },
+    fileFilter: (req, file, cb) => cb(null, ALLOWED_SITE_ATTACHMENT_MIME.has(file.mimetype)),
+  });
+}
+function siteAttachmentErrorMessage(err) {
+  if (err.code === 'LIMIT_FILE_SIZE') return 'ไฟล์มีขนาดใหญ่เกิน 5MB';
+  if (err.code === 'LIMIT_FILE_COUNT') return `แนบได้สูงสุด ${MAX_SITE_ATTACHMENTS_PER_UPLOAD} ไฟล์ต่อครั้ง`;
+  return 'อัปโหลดไฟล์ไม่สำเร็จ (รองรับ jpg, png, webp, pdf)';
+}
+const goodsReceiptAttachmentUpload = makeSiteAttachmentUpload(GOODS_RECEIPT_ATTACHMENTS_DIR);
+function uploadGoodsReceiptAttachmentsMiddleware(req, res, next) {
+  goodsReceiptAttachmentUpload.array('photos', MAX_SITE_ATTACHMENTS_PER_UPLOAD)(req, res, (err) => {
+    if (err) return res.status(400).json({ error: siteAttachmentErrorMessage(err) });
+    next();
+  });
+}
+const siteExpenseAttachmentUpload = makeSiteAttachmentUpload(SITE_EXPENSE_ATTACHMENTS_DIR);
+function uploadSiteExpenseAttachmentsMiddleware(req, res, next) {
+  siteExpenseAttachmentUpload.array('photos', MAX_SITE_ATTACHMENTS_PER_UPLOAD)(req, res, (err) => {
+    if (err) return res.status(400).json({ error: siteAttachmentErrorMessage(err) });
+    next();
+  });
+}
+function cleanupUploadedFiles(files, dir) {
+  for (const f of files || []) fs.unlink(path.join(dir, f.filename), () => {});
+}
+async function insertGoodsReceiptAttachments(client, { receiptId, companyId, files, uploadedBy }) {
+  for (const f of files || []) {
+    const checksum = crypto.createHash('sha256').update(fs.readFileSync(f.path)).digest('hex');
+    await client.query(
+      `INSERT INTO client_goods_receipt_attachments (company_id, receipt_id, file_name, storage_path, mime_type, file_size, checksum, uploaded_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [companyId, receiptId, f.originalname, f.filename, f.mimetype, f.size, checksum, uploadedBy]
+    );
+  }
+}
+async function insertSiteExpenseAttachments(client, { submissionId, companyId, files, uploadedBy }) {
+  for (const f of files || []) {
+    const checksum = crypto.createHash('sha256').update(fs.readFileSync(f.path)).digest('hex');
+    await client.query(
+      `INSERT INTO client_site_expense_attachments (company_id, submission_id, file_name, storage_path, mime_type, file_size, checksum, uploaded_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [companyId, submissionId, f.originalname, f.filename, f.mimetype, f.size, checksum, uploadedBy]
+    );
+  }
+}
+
+// ---------------- งานหน้างาน (งานที่ 1) — ตรวจรับของตาม PO (goods receipt, migration 0017) ----------------
+// ไม่มี submit/approve — สร้างคือขั้นสุดท้ายในตัวเอง (แค่ log ว่าของมาถึงจริงกี่ชิ้น) ทยอยรับหลายครั้งต่อ
+// PO ใบเดียวได้ (partial receipt) ยอดรับสะสมต่อบรรทัดคำนวณสดจาก SUM เสมอ (ดูคอมเมนต์เต็มใน migration 0017)
+//
+// ⚠️ ข้อจำกัดที่ทราบแล้ว: multer เซฟไฟล์ลงดิสก์ก่อนถึง route handler เสมอ — ถ้า retry ด้วย
+// Idempotency-Key เดิม (คำขอที่ 2 เป็นต้นไปของการ retry จริง หรือคำขอที่ไม่มี header นี้เลย) จะมีไฟล์ใหม่
+// ถูกเซฟซ้ำอีกชุดบนดิสก์เสมอแม้ withIdempotency จะคืนผลเดิมโดยไม่เขียน DB ซ้ำ — ไฟล์จาก retry เหล่านั้น
+// กลายเป็น orphan บนดิสก์ ไม่ถูก reference จาก DB เลย ยอมรับเป็นข้อจำกัดที่ทราบแล้ว (แก้ต้องเปลี่ยน
+// withIdempotency ที่ endpoint อื่นทั้งระบบใช้ร่วมกันอยู่ ความเสี่ยงสูงกว่าประโยชน์ที่ได้)
+function hasGoodsReceiptSubmitPermission(customer) {
+  return customer.role === 'super_user' || customer.can_submit_goods_receipt === true;
+}
+function serializeGoodsReceiptItem(row) {
+  return { id: row.id, poItemId: row.po_item_id, material: row.material, unit: row.unit, qtyOrdered: Number(row.qty_ordered), qtyReceived: Number(row.qty_received) };
+}
+function serializeGoodsReceiptAttachment(row) {
+  return { id: row.id, fileName: row.file_name, mimeType: row.mime_type, fileSize: row.file_size, createdAt: row.created_at };
+}
+function serializeGoodsReceipt(row) {
+  return {
+    id: row.id, poId: row.po_id, poNo: row.po_no, receiptNo: row.receipt_no, receiptDate: row.receipt_date,
+    note: row.note, createdBy: row.created_by, createdAt: row.created_at,
+    items: row.items || [], attachments: row.attachments || [],
+  };
+}
+const CLIENT_GOODS_RECEIPT_SELECT = `
+  SELECT gr.id, gr.po_id, po.po_no, gr.receipt_no, to_char(gr.receipt_date,'YYYY-MM-DD') AS receipt_date,
+    gr.note, gr.created_by, gr.created_at
+  FROM client_goods_receipts gr JOIN client_purchase_orders po ON po.id = gr.po_id`;
+async function fetchFullGoodsReceipt(dbClient, id, companyId) {
+  const r = await dbClient.query(`${CLIENT_GOODS_RECEIPT_SELECT} WHERE gr.id=$1 AND gr.company_id=$2`, [id, companyId]);
+  if (r.rowCount === 0) return null;
+  const items = await dbClient.query(
+    `SELECT gri.id, gri.po_item_id, poi.material, poi.unit, poi.qty AS qty_ordered, gri.qty_received
+     FROM client_goods_receipt_items gri JOIN client_purchase_order_items poi ON poi.id = gri.po_item_id
+     WHERE gri.receipt_id=$1 ORDER BY gri.id`, [id]
+  );
+  const attachments = await dbClient.query(
+    `SELECT id, file_name, mime_type, file_size, created_at FROM client_goods_receipt_attachments WHERE receipt_id=$1 ORDER BY id`, [id]
+  );
+  return serializeGoodsReceipt({ ...r.rows[0], items: items.rows.map(serializeGoodsReceiptItem), attachments: attachments.rows.map(serializeGoodsReceiptAttachment) });
+}
+async function generateClientGoodsReceiptNo(client, companyId) {
+  const year = getBangkokYear() + 543;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const seq = await nextDocumentSeq(client, companyId, 'goods_receipt');
+    const no = `GR-${year}-` + String(seq).padStart(4, '0');
+    const exists = await client.query('SELECT 1 FROM client_goods_receipts WHERE company_id=$1 AND receipt_no=$2', [companyId, no]);
+    if (exists.rowCount === 0) return no;
+  }
+  throw new Error('ไม่สามารถสร้างเลขที่ใบตรวจรับของได้');
+}
+
+// สรุปยอดสั่ง/รับแล้ว/คงเหลือ ต่อบรรทัด PO — ใช้ทั้งหน้ารายการ PO (แสดงยอดคงค้าง) และหน้าสร้างใบตรวจรับ
+app.get('/api/customer/purchase-orders/:id/receipt-summary', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const po = await pool.query('SELECT id, po_no, status FROM client_purchase_orders WHERE id=$1 AND company_id=$2', [id, companyId]);
+  if (po.rowCount === 0) return res.status(404).json({ error: 'ไม่พบใบสั่งซื้อ' });
+  const items = await pool.query(
+    `SELECT poi.id AS po_item_id, poi.material, poi.unit, poi.qty AS qty_ordered,
+       COALESCE(SUM(gri.qty_received), 0)::numeric AS qty_received,
+       (poi.qty - COALESCE(SUM(gri.qty_received), 0))::numeric AS qty_remaining
+     FROM client_purchase_order_items poi
+     LEFT JOIN client_goods_receipt_items gri ON gri.po_item_id = poi.id
+     WHERE poi.purchase_order_id=$1
+     GROUP BY poi.id, poi.material, poi.unit, poi.qty
+     ORDER BY poi.idx`,
+    [id]
+  );
+  res.json({
+    purchaseOrder: { id: po.rows[0].id, poNo: po.rows[0].po_no, status: po.rows[0].status },
+    items: items.rows.map(r => ({
+      poItemId: r.po_item_id, material: r.material, unit: r.unit,
+      qtyOrdered: Number(r.qty_ordered), qtyReceived: Number(r.qty_received), qtyRemaining: Number(r.qty_remaining),
+    })),
+  });
+});
+
+app.get('/api/customer/goods-receipts', requireCustomerAuth, async (req, res) => {
+  const companyId = req.customer.company_id;
+  const { poId } = req.query;
+  const conditions = ['gr.company_id=$1'];
+  const params = [companyId];
+  if (poId) { params.push(parseInt(poId, 10)); conditions.push(`gr.po_id=$${params.length}`); }
+  const r = await pool.query(`${CLIENT_GOODS_RECEIPT_SELECT} WHERE ${conditions.join(' AND ')} ORDER BY gr.id DESC`, params);
+  res.json({ goodsReceipts: r.rows.map(serializeGoodsReceipt) });
+});
+
+app.get('/api/customer/goods-receipts/:id', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const gr = await fetchFullGoodsReceipt(pool, id, req.customer.company_id);
+  if (!gr) return res.status(404).json({ error: 'ไม่พบใบตรวจรับของ' });
+  res.json({ goodsReceipt: gr });
+});
+
+app.get('/api/customer/goods-receipts/:id/attachments/:attachmentId/file', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const attachmentId = parseInt(req.params.attachmentId, 10);
+  const companyId = req.customer.company_id;
+  const r = await pool.query(
+    'SELECT storage_path FROM client_goods_receipt_attachments WHERE id=$1 AND receipt_id=$2 AND company_id=$3',
+    [attachmentId, id, companyId]
+  );
+  if (r.rowCount === 0) return res.status(404).json({ error: 'ไม่พบไฟล์แนบ' });
+  res.sendFile(path.join(GOODS_RECEIPT_ATTACHMENTS_DIR, r.rows[0].storage_path));
+});
+
+app.post('/api/customer/goods-receipts', requireCustomerAuth, uploadGoodsReceiptAttachmentsMiddleware, async (req, res) => {
+  if (!hasGoodsReceiptSubmitPermission(req.customer)) {
+    cleanupUploadedFiles(req.files, GOODS_RECEIPT_ATTACHMENTS_DIR);
+    return res.status(403).json({ error: 'ไม่มีสิทธิ์ตรวจรับของ' });
+  }
+  const companyId = req.customer.company_id;
+  const poId = parseInt(req.body.poId, 10);
+  await withIdempotency(req, res, 'goods-receipts-create', async (client) => {
+    if (!poId) { cleanupUploadedFiles(req.files, GOODS_RECEIPT_ATTACHMENTS_DIR); return { status: 400, body: { error: 'กรุณาระบุใบสั่งซื้อ' } }; }
+    const po = await client.query('SELECT id, status FROM client_purchase_orders WHERE id=$1 AND company_id=$2', [poId, companyId]);
+    if (po.rowCount === 0) { cleanupUploadedFiles(req.files, GOODS_RECEIPT_ATTACHMENTS_DIR); return { status: 404, body: { error: 'ไม่พบใบสั่งซื้อ' } }; }
+    if (po.rows[0].status !== 'approved') { cleanupUploadedFiles(req.files, GOODS_RECEIPT_ATTACHMENTS_DIR); return { status: 400, body: { error: 'ตรวจรับของได้เฉพาะใบสั่งซื้อที่อนุมัติแล้วเท่านั้น' } }; }
+
+    let items;
+    try { items = JSON.parse(req.body.items || '[]'); } catch (e) { items = null; }
+    if (!Array.isArray(items) || items.length === 0) { cleanupUploadedFiles(req.files, GOODS_RECEIPT_ATTACHMENTS_DIR); return { status: 400, body: { error: 'กรุณาระบุอย่างน้อย 1 รายการที่รับของ' } }; }
+    const safeItems = [];
+    for (const it of items) {
+      const qty = parsePositiveNumericValue(it.qtyReceived);
+      if (!it.poItemId || qty === null) { cleanupUploadedFiles(req.files, GOODS_RECEIPT_ATTACHMENTS_DIR); return { status: 400, body: { error: 'ระบุจำนวนที่รับไม่ถูกต้องในบางรายการ' } }; }
+      safeItems.push({ poItemId: parseInt(it.poItemId, 10), qty });
+    }
+    const poItemIds = [...new Set(safeItems.map(i => i.poItemId))].sort((a, b) => a - b);
+
+    // ---- กันรับของเกินยอดสั่ง — ล็อก po_items ก่อนเสมอ เรียง id (ลำดับเดียวกับที่ /cancel ล็อก กันเดดล็อก) ----
+    const lockedItems = await client.query(
+      'SELECT id, material, qty FROM client_purchase_order_items WHERE id = ANY($1::int[]) AND purchase_order_id=$2 ORDER BY id FOR UPDATE',
+      [poItemIds, poId]
+    );
+    if (lockedItems.rowCount !== poItemIds.length) {
+      cleanupUploadedFiles(req.files, GOODS_RECEIPT_ATTACHMENTS_DIR);
+      return { status: 400, body: { error: 'มีบรรทัดที่ไม่ใช่ของใบสั่งซื้อนี้ปนอยู่' } };
+    }
+    const itemsById = new Map(lockedItems.rows.map(r => [r.id, r]));
+    // แยก statement คำนวณ SUM จากการล็อกข้างบน ตาม CLAUDE.md ข้อ 7 เสมอ
+    const already = await client.query(
+      `SELECT po_item_id, COALESCE(SUM(qty_received),0)::numeric AS received
+       FROM client_goods_receipt_items WHERE po_item_id = ANY($1::int[]) GROUP BY po_item_id`,
+      [poItemIds]
+    );
+    const receivedById = new Map(already.rows.map(r => [r.po_item_id, r.received]));
+    for (const it of safeItems) {
+      const poItem = itemsById.get(it.poItemId);
+      const alreadyReceived = receivedById.get(it.poItemId) || '0';
+      const check = await client.query(
+        `SELECT ($1::numeric + $2::numeric) > $3::numeric AS over, ($3::numeric - $1::numeric) AS remaining`,
+        [alreadyReceived, it.qty, poItem.qty]
+      );
+      if (check.rows[0].over) {
+        cleanupUploadedFiles(req.files, GOODS_RECEIPT_ATTACHMENTS_DIR);
+        return { status: 400, body: { error: `รับของเกินยอดสั่งที่บรรทัด "${poItem.material}" — สั่ง ${poItem.qty} / รับไปแล้ว ${alreadyReceived} / เหลือรับได้อีก ${check.rows[0].remaining} แต่กรอกมา ${it.qty}` } };
+      }
+    }
+
+    const receiptNo = await generateClientGoodsReceiptNo(client, companyId);
+    const insert = await client.query(
+      `INSERT INTO client_goods_receipts (company_id, po_id, receipt_no, receipt_date, note, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+      [companyId, poId, receiptNo, req.body.receiptDate || getBangkokDateStr(), (req.body.note || '').trim(), req.customer.id]
+    );
+    const receiptId = insert.rows[0].id;
+    for (const it of safeItems) {
+      await client.query(
+        `INSERT INTO client_goods_receipt_items (company_id, receipt_id, po_item_id, qty_received) VALUES ($1,$2,$3,$4::numeric)`,
+        [companyId, receiptId, it.poItemId, it.qty]
+      );
+    }
+    await insertGoodsReceiptAttachments(client, { receiptId, companyId, files: req.files, uploadedBy: req.customer.id });
+    await writeAuditLog(client, {
+      companyId, docType: 'goods_receipt', docId: receiptId, action: 'create', performedBy: req.customer.id,
+      reason: `สร้างใบตรวจรับของ ${receiptNo} (PO ${po.rows[0].id})`,
+    });
+
+    const result = await fetchFullGoodsReceipt(client, receiptId, companyId);
+    return { status: 200, body: { goodsReceipt: result } };
+  });
+});
+
+// ---------------- งานหน้างาน (งานที่ 2) — ส่งบิลค่าใช้จ่ายจากหน้างาน (site expense submission, migration 0018) ----------------
+// เป็น inbox/triage record เท่านั้น ไม่ใช่เอกสารการเงินเอง ไม่โพสต์ journal ตัวเอง — บัญชีต้องกดปุ่ม prefill
+// ไปสร้างเอกสารจริงเอง แล้วกลับมา "ปิดเรื่อง" อ้างอิงเลขที่เอกสารที่สร้างจริง (ดูคอมเมนต์เต็มใน
+// migration 0018 สำหรับความหมายของ 3 กรณี expense_case)
+function hasSiteExpenseSubmitPermission(customer) {
+  return customer.role === 'super_user' || customer.can_submit_site_expense === true;
+}
+function serializeSiteExpenseAttachment(row) {
+  return { id: row.id, fileName: row.file_name, mimeType: row.mime_type, fileSize: row.file_size, createdAt: row.created_at };
+}
+function serializeSiteExpenseSubmission(row) {
+  return {
+    id: row.id, submissionNo: row.submission_no, projectId: row.project_id, projectName: row.project_name,
+    expenseCase: row.expense_case, linkedVoucherId: row.linked_voucher_id, linkedVoucherNo: row.linked_voucher_no,
+    vendorName: row.vendor_name, expenseDate: row.expense_date, amount: Number(row.amount),
+    description: row.description, hasTaxInvoice: row.has_tax_invoice, note: row.note,
+    status: row.status, rejectedReason: row.rejected_reason,
+    resultDocType: row.result_doc_type, resultDocId: row.result_doc_id,
+    submittedBy: row.submitted_by, closedBy: row.closed_by, closedAt: row.closed_at, closingNote: row.closing_note,
+    createdAt: row.created_at, attachments: row.attachments || [],
+  };
+}
+const CLIENT_SITE_EXPENSE_SUBMISSION_SELECT = `
+  SELECT ses.id, ses.submission_no, ses.project_id, cp.name AS project_name, ses.expense_case,
+    ses.linked_voucher_id, lv.voucher_no AS linked_voucher_no,
+    ses.vendor_name, to_char(ses.expense_date,'YYYY-MM-DD') AS expense_date, ses.amount, ses.description,
+    ses.has_tax_invoice, ses.note, ses.status, ses.rejected_reason, ses.result_doc_type, ses.result_doc_id,
+    ses.submitted_by, ses.closed_by, ses.closed_at, ses.closing_note, ses.created_at
+  FROM client_site_expense_submissions ses
+  JOIN client_projects cp ON cp.id = ses.project_id
+  LEFT JOIN client_payment_vouchers lv ON lv.id = ses.linked_voucher_id`;
+async function fetchFullSiteExpenseSubmission(dbClient, id, companyId) {
+  const r = await dbClient.query(`${CLIENT_SITE_EXPENSE_SUBMISSION_SELECT} WHERE ses.id=$1 AND ses.company_id=$2`, [id, companyId]);
+  if (r.rowCount === 0) return null;
+  const attachments = await dbClient.query(
+    `SELECT id, file_name, mime_type, file_size, created_at FROM client_site_expense_attachments WHERE submission_id=$1 ORDER BY id`, [id]
+  );
+  return serializeSiteExpenseSubmission({ ...r.rows[0], attachments: attachments.rows.map(serializeSiteExpenseAttachment) });
+}
+async function generateClientSiteExpenseSubmissionNo(client, companyId) {
+  const year = getBangkokYear() + 543;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const seq = await nextDocumentSeq(client, companyId, 'site_expense_submission');
+    const no = `SE-${year}-` + String(seq).padStart(4, '0');
+    const exists = await client.query('SELECT 1 FROM client_site_expense_submissions WHERE company_id=$1 AND submission_no=$2', [companyId, no]);
+    if (exists.rowCount === 0) return no;
+  }
+  throw new Error('ไม่สามารถสร้างเลขที่ใบส่งบิลได้');
+}
+
+app.get('/api/customer/site-expense-submissions', requireCustomerAuth, async (req, res) => {
+  const companyId = req.customer.company_id;
+  const { status } = req.query;
+  const conditions = ['ses.company_id=$1'];
+  const params = [companyId];
+  if (status) { params.push(status); conditions.push(`ses.status=$${params.length}`); }
+  const r = await pool.query(`${CLIENT_SITE_EXPENSE_SUBMISSION_SELECT} WHERE ${conditions.join(' AND ')} ORDER BY ses.id DESC`, params);
+  res.json({ siteExpenseSubmissions: r.rows.map(row => serializeSiteExpenseSubmission(row)) });
+});
+
+app.get('/api/customer/site-expense-submissions/:id', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const ses = await fetchFullSiteExpenseSubmission(pool, id, req.customer.company_id);
+  if (!ses) return res.status(404).json({ error: 'ไม่พบใบส่งบิล' });
+  res.json({ siteExpenseSubmission: ses });
+});
+
+app.get('/api/customer/site-expense-submissions/:id/attachments/:attachmentId/file', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const attachmentId = parseInt(req.params.attachmentId, 10);
+  const companyId = req.customer.company_id;
+  const r = await pool.query(
+    'SELECT storage_path FROM client_site_expense_attachments WHERE id=$1 AND submission_id=$2 AND company_id=$3',
+    [attachmentId, id, companyId]
+  );
+  if (r.rowCount === 0) return res.status(404).json({ error: 'ไม่พบไฟล์แนบ' });
+  res.sendFile(path.join(SITE_EXPENSE_ATTACHMENTS_DIR, r.rows[0].storage_path));
+});
+
+app.post('/api/customer/site-expense-submissions', requireCustomerAuth, uploadSiteExpenseAttachmentsMiddleware, async (req, res) => {
+  if (!hasSiteExpenseSubmitPermission(req.customer)) {
+    cleanupUploadedFiles(req.files, SITE_EXPENSE_ATTACHMENTS_DIR);
+    return res.status(403).json({ error: 'ไม่มีสิทธิ์ส่งบิลค่าใช้จ่ายจากหน้างาน' });
+  }
+  const companyId = req.customer.company_id;
+  await withIdempotency(req, res, 'site-expense-submissions-create', async (client) => {
+    // ต้องมีอย่างน้อย 1 ไฟล์แนบเสมอ — บังคับที่ชั้นแอปเท่านั้น (ดูคอมเมนต์ migration 0018)
+    if (!req.files || req.files.length === 0) {
+      return { status: 400, body: { error: 'กรุณาแนบรูปบิล/ใบเสร็จอย่างน้อย 1 ไฟล์' } };
+    }
+    const { projectId, expenseCase, linkedVoucherId, vendorName, expenseDate, amount, description, hasTaxInvoice, note } = req.body;
+    if (!projectId) { cleanupUploadedFiles(req.files, SITE_EXPENSE_ATTACHMENTS_DIR); return { status: 400, body: { error: 'กรุณาเลือกโครงการ' } }; }
+    const proj = await client.query('SELECT 1 FROM client_projects WHERE id=$1 AND company_id=$2', [projectId, companyId]);
+    if (proj.rowCount === 0) { cleanupUploadedFiles(req.files, SITE_EXPENSE_ATTACHMENTS_DIR); return { status: 400, body: { error: 'ไม่พบโครงการนี้ในบริษัทของคุณ' } }; }
+    if (!['advance_offset', 'reimbursement', 'payable'].includes(expenseCase)) {
+      cleanupUploadedFiles(req.files, SITE_EXPENSE_ATTACHMENTS_DIR);
+      return { status: 400, body: { error: 'กรุณาเลือกประเภทที่มาของเงินให้ถูกต้อง' } };
+    }
+    let safeLinkedVoucherId = null;
+    if (expenseCase === 'advance_offset') {
+      if (!linkedVoucherId) { cleanupUploadedFiles(req.files, SITE_EXPENSE_ATTACHMENTS_DIR); return { status: 400, body: { error: 'กรุณาเลือกใบเบิกเงินสดย่อย/เงินทดรองจ่ายที่จะผูก' } }; }
+      const v = await client.query(
+        `SELECT 1 FROM client_payment_vouchers WHERE id=$1 AND company_id=$2 AND voucher_type IN ('petty_cash','advance') AND status='approved'`,
+        [linkedVoucherId, companyId]
+      );
+      if (v.rowCount === 0) { cleanupUploadedFiles(req.files, SITE_EXPENSE_ATTACHMENTS_DIR); return { status: 400, body: { error: 'ไม่พบใบเบิกเงินสดย่อย/เงินทดรองจ่ายที่อนุมัติแล้วตามที่ระบุ' } }; }
+      safeLinkedVoucherId = parseInt(linkedVoucherId, 10);
+    } else if (linkedVoucherId) {
+      cleanupUploadedFiles(req.files, SITE_EXPENSE_ATTACHMENTS_DIR);
+      return { status: 400, body: { error: 'ระบุใบเบิกที่จะผูกได้เฉพาะกรณีเบิกเงินสดย่อย/ทดรองจ่ายมาก่อนเท่านั้น' } };
+    }
+    if (!vendorName || !String(vendorName).trim()) { cleanupUploadedFiles(req.files, SITE_EXPENSE_ATTACHMENTS_DIR); return { status: 400, body: { error: 'กรุณาระบุชื่อร้านค้า' } }; }
+    const safeAmount = parsePositiveNumericValue(amount);
+    if (safeAmount === null) { cleanupUploadedFiles(req.files, SITE_EXPENSE_ATTACHMENTS_DIR); return { status: 400, body: { error: 'กรุณาระบุจำนวนเงินให้ถูกต้อง (มากกว่า 0)' } }; }
+
+    const submissionNo = await generateClientSiteExpenseSubmissionNo(client, companyId);
+    const insert = await client.query(
+      `INSERT INTO client_site_expense_submissions
+         (company_id, submission_no, project_id, expense_case, linked_voucher_id, vendor_name, expense_date,
+          amount, description, has_tax_invoice, note, submitted_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::numeric,$9,$10,$11,$12) RETURNING id`,
+      [companyId, submissionNo, projectId, expenseCase, safeLinkedVoucherId, vendorName.trim(),
+       expenseDate || getBangkokDateStr(), safeAmount, (description || '').trim(), hasTaxInvoice === 'true' || hasTaxInvoice === true,
+       (note || '').trim(), req.customer.id]
+    );
+    const submissionId = insert.rows[0].id;
+    await insertSiteExpenseAttachments(client, { submissionId, companyId, files: req.files, uploadedBy: req.customer.id });
+    await writeAuditLog(client, {
+      companyId, docType: 'site_expense_submission', docId: submissionId, action: 'create', performedBy: req.customer.id,
+      reason: `ส่งบิลค่าใช้จ่ายจากหน้างาน ${submissionNo} (${vendorName.trim()}, ${safeAmount} บาท)`,
+    });
+
+    const result = await fetchFullSiteExpenseSubmission(client, submissionId, companyId);
+    return { status: 200, body: { siteExpenseSubmission: result } };
+  });
+});
+
+// ยืนยันจากผู้ใช้แล้ว: ปิดเรื่อง/ตีกลับ = super_user || can_settle_cash — การปิดเรื่องคือการยืนยันว่า
+// สร้างเอกสารการเงินให้แล้วจริง เป็นงานฝ่ายบัญชี/การเงินโดยตรง ไม่ใช่ทุกคนที่เข้า Finance ได้ (ทุก role
+// เข้า Finance ได้แล้วแต่เห็นเฉพาะบางหมวด) — เลือกใช้ can_settle_cash (flag เดิมของคนบันทึกการจ่าย/รับ
+// เงินจริง จาก migration 0007) แทนที่จะเพิ่ม flag ใหม่ เพื่อไม่ให้จำนวน flag ในระบบเพิ่มโดยไม่จำเป็น
+function hasSiteExpenseProcessPermission(customer) {
+  return customer.role === 'super_user' || customer.can_settle_cash === true;
+}
+app.post('/api/customer/site-expense-submissions/:id/reject', requireCustomerAuth, async (req, res) => {
+  if (!hasSiteExpenseProcessPermission(req.customer)) return res.status(403).json({ error: 'ไม่มีสิทธิ์ดำเนินการเรื่องนี้' });
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const { reason } = req.body || {};
+  if (!reason || !String(reason).trim()) return res.status(400).json({ error: 'กรุณาระบุเหตุผลที่ตีกลับ' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT status FROM client_site_expense_submissions WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบใบส่งบิล' }); }
+    if (r.rows[0].status !== 'submitted') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'ตีกลับได้เฉพาะเรื่องที่ยังไม่ได้ดำเนินการเท่านั้น' }); }
+    await client.query(`UPDATE client_site_expense_submissions SET status='rejected', rejected_reason=$1 WHERE id=$2`, [reason.trim(), id]);
+    await writeAuditLog(client, {
+      companyId, docType: 'site_expense_submission', docId: id, action: 'reject',
+      fromStatus: 'submitted', toStatus: 'rejected', performedBy: req.customer.id, reason: reason.trim(),
+    });
+    await client.query('COMMIT');
+    res.json({ siteExpenseSubmission: await fetchFullSiteExpenseSubmission(pool, id, companyId) });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'ตีกลับใบส่งบิลไม่สำเร็จ' });
+  } finally {
+    client.release();
+  }
+});
+
+app.post('/api/customer/site-expense-submissions/:id/close', requireCustomerAuth, async (req, res) => {
+  if (!hasSiteExpenseProcessPermission(req.customer)) return res.status(403).json({ error: 'ไม่มีสิทธิ์ดำเนินการเรื่องนี้' });
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const { resultDocType, resultDocId, closingNote } = req.body || {};
+  if (!['advance_clearance', 'payment_voucher'].includes(resultDocType)) {
+    return res.status(400).json({ error: 'ระบุประเภทเอกสารปลายทางไม่ถูกต้อง' });
+  }
+  const parsedResultDocId = parseInt(resultDocId, 10);
+  if (!parsedResultDocId) return res.status(400).json({ error: 'กรุณาระบุเลขที่เอกสารที่สร้างจริง' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT status FROM client_site_expense_submissions WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบใบส่งบิล' }); }
+    if (r.rows[0].status !== 'submitted') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'ปิดเรื่องได้เฉพาะเรื่องที่ยังไม่ได้ดำเนินการเท่านั้น' }); }
+    // ยืนยันว่าเอกสารปลายทางมีอยู่จริงในบริษัทนี้ก่อนอ้างอิง — กัน typo/พิมพ์เลขที่ผิดตอนปิดเรื่อง (คนละ
+    // query แยกตามประเภทตรงๆ แทนการต่อชื่อตารางเข้า SQL string แม้ resultDocType จะผ่าน whitelist มาแล้วก็ตาม)
+    const target = resultDocType === 'advance_clearance'
+      ? await client.query('SELECT 1 FROM client_advance_clearances WHERE id=$1 AND company_id=$2', [parsedResultDocId, companyId])
+      : await client.query('SELECT 1 FROM client_payment_vouchers WHERE id=$1 AND company_id=$2', [parsedResultDocId, companyId]);
+    if (target.rowCount === 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'ไม่พบเอกสารปลายทางที่ระบุในบริษัทของคุณ' }); }
+    await client.query(
+      `UPDATE client_site_expense_submissions
+       SET status='closed', result_doc_type=$1, result_doc_id=$2, closing_note=$3, closed_by=$4, closed_at=now()
+       WHERE id=$5`,
+      [resultDocType, parsedResultDocId, (closingNote || '').trim(), req.customer.id, id]
+    );
+    await writeAuditLog(client, {
+      companyId, docType: 'site_expense_submission', docId: id, action: 'close',
+      fromStatus: 'submitted', toStatus: 'closed', performedBy: req.customer.id,
+      reason: `ปิดเรื่องเป็นเอกสาร ${resultDocType} #${parsedResultDocId}${closingNote ? `: ${closingNote.trim()}` : ''}`,
+    });
+    await client.query('COMMIT');
+    res.json({ siteExpenseSubmission: await fetchFullSiteExpenseSubmission(pool, id, companyId) });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'ปิดเรื่องไม่สำเร็จ' });
+  } finally {
+    client.release();
+  }
 });
 
 app.post('/api/customer/purchase-requests/:id/items/:itemId/consume', requireCustomerAuth, async (req, res) => {

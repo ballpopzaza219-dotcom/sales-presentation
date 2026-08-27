@@ -26,6 +26,12 @@ const USERS = [
   // hasPrItemActionPermission/hasSubcontractorManagePermission แยกจาก super_user (ต้องพิสูจน์ว่า flag
   // เพียงอย่างเดียวพอ ไม่ต้องพึ่ง role)
   { username: 'fx_procurement', companyId: COMPANY_A_ID, role: 'maker', flags: { can_manage_po: true } },
+  // งานหน้างาน — role='maker' ล้วนๆ (ไม่มี can_manage_po/can_settle_cash) มีแค่ 2 flag ส่งเรื่องหน้างาน
+  // แยกกัน เพื่อพิสูจน์ว่าทั้งสอง flag เป็นอิสระจากกันจริง (มีอันหนึ่งไม่ได้แปลว่ามีอีกอันด้วย)
+  { username: 'fx_sitework', companyId: COMPANY_A_ID, role: 'maker', flags: { can_submit_goods_receipt: true, can_submit_site_expense: true } },
+  // มีแค่ can_settle_cash เท่านั้น (ไม่ใช่ super_user ไม่มี flag อื่นเลย) — พิสูจน์ว่า flag เดียวนี้พอสำหรับ
+  // ปิดเรื่อง/ตีกลับคิวส่งบิลหน้างาน ตามที่ผู้ใช้ยืนยัน (hasSiteExpenseProcessPermission)
+  { username: 'fx_settler', companyId: COMPANY_A_ID, role: 'maker', flags: { can_settle_cash: true } },
 ];
 
 // [username, docType, minAmount, maxAmount] — fx_approver_norule ตั้งใจไม่มี rule เลย (เทส no_rule)
