@@ -2656,6 +2656,7 @@ const DEFAULT_CLIENT_CHART_OF_ACCOUNTS = [
   { code: '2120', name: 'ภาษีหัก ณ ที่จ่ายค้างนำส่ง', category: 'liability' },
   { code: '2150', name: 'ค่าแรงค้างจ่าย', category: 'liability' },
   { code: '2160', name: 'เงินรับล่วงหน้าจากลูกค้า', category: 'liability' }, // เพิ่มใน migration 0014 (หัวข้อ 3, advance payment)
+  { code: '2141', name: 'ภาษีขาย', category: 'liability' }, // เพิ่มใน migration 0019 — เตรียมไว้ล่วงหน้า ยังไม่มี endpoint อ้างถึง
   { code: '4100', name: 'รายได้ค่าก่อสร้าง', category: 'revenue' },
   { code: '5100', name: 'ต้นทุนวัสดุ', category: 'expense' },
   { code: '5200', name: 'ต้นทุนผู้รับเหมาช่วง', category: 'expense' },
