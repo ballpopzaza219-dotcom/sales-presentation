@@ -143,8 +143,9 @@ async function journalLinesFor(sourceId) {
     const advApproved = await call('fx_approver_mid', 'POST', `/api/customer/subcontract-billings/${advId}/approve`, {}, idemKey('sb-adv-approve'));
     assert(advApproved.subcontractBilling.status === 'approved', 'อนุมัติใบเบิกเงินล่วงหน้าโดยคนละคนสำเร็จจริง');
     assert(!!advApproved.issuedWhtCertificate, `ออกหนังสือรับรองหัก ณ ที่จ่าย (50 ทวิ) จริงสำหรับเงินล่วงหน้าที่มี WHT (ได้ cert=${advApproved.issuedWhtCertificate})`);
-    const advCert = await pool.query(`SELECT gross_amount, wht_amount, source_type FROM client_wht_certificates WHERE cert_no=$1`, [advApproved.issuedWhtCertificate]);
+    const advCert = await pool.query(`SELECT gross_amount, wht_amount, source_type, wht_form FROM client_wht_certificates WHERE cert_no=$1`, [advApproved.issuedWhtCertificate]);
     assert(advCert.rowCount === 1 && advCert.rows[0].source_type === 'subcontractor_payment' && Number(advCert.rows[0].wht_amount) === 180, '50 ทวิ บันทึก source_type=subcontractor_payment และยอด WHT ถูกต้องจริง');
+    assert(advCert.rows[0].wht_form === 'pnd3', `50 ทวิ คำนวณ wht_form ถูกต้องตาม taxpayer_type='individual' ของผู้รับเหมาช่วง (migration 0020) (ได้ ${advCert.rows[0].wht_form})`);
 
     const advLines = await journalLinesFor(advId);
     const dr1160 = advLines.find(l => l.account_code === '1160' && Number(l.debit_amount) === 6000);

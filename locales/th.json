@@ -1398,6 +1398,7 @@
   "clearance.item_field_amount": "จำนวนเงิน",
   "clearance.item_field_payee": "ผู้รับเงิน",
   "clearance.item_payee_manual_option": "ระบุเอง (ไม่ผูก master data)",
+  "clearance.item_payee_required_for_wht_hint": "มีอัตราหัก ณ ที่จ่าย ต้องเลือกผู้รับเงินจาก master data เท่านั้น (ระบุเองไม่ได้)",
   "clearance.item_field_payee_name": "ชื่อผู้รับเงิน",
   "clearance.item_field_payee_tax_id": "เลขผู้เสียภาษี",
   "clearance.item_net_amount_label": "ยอดสุทธิรายการนี้",

@@ -1398,6 +1398,7 @@
   "clearance.item_field_amount": "Amount",
   "clearance.item_field_payee": "Payee",
   "clearance.item_payee_manual_option": "Enter manually (not linked to master data)",
+  "clearance.item_payee_required_for_wht_hint": "Withholding tax applied — you must select a payee from master data (manual entry not allowed)",
   "clearance.item_field_payee_name": "Payee Name",
   "clearance.item_field_payee_tax_id": "Tax ID",
   "clearance.item_net_amount_label": "Line net amount",

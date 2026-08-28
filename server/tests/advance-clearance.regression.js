@@ -71,6 +71,7 @@ async function makeApprovedAdvanceVoucher(amount, approverUsername = 'fx_approve
     await login('fx_approver_floor', codeA);
     await login('fx_approver_norule', codeA);
     await login('fx_other_co', codeB);
+    await login('fx_super', codeA);
 
     // ================= 1) no_rule / cross-company / self-approval (ใบเคลียร์ยอดเล็ก ไม่มี WHT) =================
     const voucher1 = await makeApprovedAdvanceVoucher(10000);
@@ -121,16 +122,35 @@ async function makeApprovedAdvanceVoucher(amount, approverUsername = 'fx_approve
     assert(eOverCeiling.status === 403 && eOverCeiling.body.code === 'over_ceiling', `ยอด 60,000 เกินเพดาน fx_approver_mid (50,000) -> over_ceiling (ได้ code ${eOverCeiling.body.code})`);
 
     // ================= 4) VAT + WHT + overage (2120/1170/2110) + 50-tawi snapshot freeze =================
+    // มี WHT>0 ต้องผูก payeeExternalId (master data) เสมอตั้งแต่ migration 0020 — ต้องรู้ taxpayer_type
+    // เพื่อคำนวณ wht_form (ภ.ง.ด.3/53) ตอนออก 50 ทวิ ฟรีเทกซ์ล้วนๆ ใช้ไม่ได้อีกต่อไป
     const voucher3 = await makeApprovedAdvanceVoucher(5000);
     createdVoucherIds.push(voucher3.id);
-    const payeeTaxId = '1234567890123';
+    const payeeTaxId = '1' + String(Date.now()).padStart(12, '0').slice(0, 12);
+    const payeeName = `ผู้รับเหมาทดสอบ Regression ${Date.now()}`;
+    const payeeCreate = await call('fx_super', 'POST', '/api/customer/external-payees', {
+      name: payeeName, taxpayerType: 'juristic', taxId: payeeTaxId,
+    });
+    const payeeExternalId = payeeCreate.externalPayee.id;
+
+    // มี WHT>0 แต่ระบุผู้รับเงินแบบฟรีเทกซ์ (ไม่ผูก payeeExternalId) ต้องถูกปฏิเสธ 400 ทันที
+    const eNoPayeeExternalId = await callExpectError('fx_maker', 'POST', '/api/customer/advance-clearances', {
+      advanceVoucherId: voucher3.id,
+      items: [{
+        description: 'ค่าบริการที่ปรึกษา (ฟรีเทกซ์)', expenseAccountCode: '5300', amount: 3000,
+        hasTaxInvoice: true, vatRate: 7, whtRate: 3, whtIncomeTypeCode: '40_2',
+        payeeName: 'ผู้รับเหมาฟรีเทกซ์ไม่มี master data', payeeTaxId: '9999999999999',
+      }],
+    }, idemKey('advcl-create-reject-freetext-wht'));
+    assert(eNoPayeeExternalId.status === 400 && /master data/.test(eNoPayeeExternalId.body.error), `รายการมี WHT>0 แต่ไม่ผูก payeeExternalId ถูกปฏิเสธ 400 จริง (migration 0020, ได้ status=${eNoPayeeExternalId.status})`);
+
     const clearance3Create = await call('fx_maker', 'POST', '/api/customer/advance-clearances', {
       advanceVoucherId: voucher3.id,
       items: [
         {
           description: 'ค่าบริการที่ปรึกษา', expenseAccountCode: '5300', amount: 3000,
           hasTaxInvoice: true, vatRate: 7, whtRate: 3, whtIncomeTypeCode: '40_2',
-          payeeName: 'ผู้รับเหมาทดสอบ Regression', payeeTaxId,
+          payeeExternalId,
         },
         { description: 'ค่าวัสดุเบ็ดเตล็ด', expenseAccountCode: '5100', amount: 2500, payeeName: 'ร้านวัสดุทดสอบเบ็ดเตล็ด' },
       ],
@@ -157,12 +177,13 @@ async function makeApprovedAdvanceVoucher(amount, approverUsername = 'fx_approve
 
     // ---- 50-tawi snapshot freeze ----
     const certRes = await pool.query(
-      `SELECT id, cert_no, wht_income_type_code, wht_income_type_name_snapshot, payee_name, payee_tax_id, wht_rate, wht_amount
+      `SELECT id, cert_no, wht_income_type_code, wht_income_type_name_snapshot, payee_name, payee_tax_id, wht_rate, wht_amount, wht_form
        FROM client_wht_certificates WHERE source_type='advance_clearance_item' AND cert_no=$1`,
       [approve3.issuedWhtCertificates[0]]
     );
     const cert = certRes.rows[0];
-    assert(cert.payee_name === 'ผู้รับเหมาทดสอบ Regression' && cert.payee_tax_id === payeeTaxId, 'ใบ 50 ทวิ บันทึกชื่อ/เลขผู้เสียภาษีผู้รับเงินถูกต้อง');
+    assert(cert.payee_name === payeeName && cert.payee_tax_id === payeeTaxId, 'ใบ 50 ทวิ บันทึกชื่อ/เลขผู้เสียภาษีผู้รับเงินถูกต้อง');
+    assert(cert.wht_form === 'pnd53', `ใบ 50 ทวิ คำนวณ wht_form ถูกต้องตาม taxpayer_type='juristic' ของผู้รับเงิน (ได้ ${cert.wht_form})`);
     assert(Number(cert.wht_amount) === 90, `ใบ 50 ทวิ บันทึกยอดหัก ณ ที่จ่าย = 90 ถูกต้อง (ได้ ${cert.wht_amount})`);
 
     whtTypeCode = cert.wht_income_type_code;

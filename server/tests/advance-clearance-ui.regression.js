@@ -64,6 +64,15 @@ async function makeApprovedAdvanceVoucher(companyCode, employeeIdPlaceholderInde
 
     await httpLogin('fx_maker', companyCode);
     await httpLogin('fx_approver_mid', companyCode);
+    await httpLogin('fx_super', companyCode);
+
+    // มี WHT>0 ต้องผูก payeeExternalId (master data) เสมอตั้งแต่ migration 0020 — สร้างไว้ก่อนเปิด
+    // browser เลย (ก่อน loadExternalPayees() ครั้งแรกของ session นี้จะ cache รายชื่อไว้)
+    console.log('Creating prerequisite external payee via HTTP...');
+    const payeeCreate = await call('fx_super', 'POST', '/api/customer/external-payees', {
+      name: `ที่ปรึกษาอิสระ E2E ${Date.now()}`, taxpayerType: 'individual', taxId: '1' + String(Date.now()).padStart(12, '0').slice(0, 12),
+    });
+    const consultantPayeeId = payeeCreate.externalPayee.id;
 
     console.log('Creating prerequisite approved advance vouchers via HTTP...');
     const voucherExact = await makeApprovedAdvanceVoucher(companyCode, employeeId, 10000);
@@ -144,8 +153,8 @@ async function makeApprovedAdvanceVoucher(companyCode, employeeIdPlaceholderInde
     await page.fill('#ci-desc-2', 'ค่าบริการวิชาชีพ (มี VAT+WHT)');
     await page.selectOption('#ci-account-2', '5300');
     await page.fill('#ci-amount-2', '5000');
-    await page.fill('#ci-payeename-2', 'ที่ปรึกษาอิสระ E2E');
-    await page.fill('#ci-payeetaxid-2', '1234567890123');
+    // มี WHT>0 ต้องผูกผู้รับเงินจาก master data เท่านั้น (migration 0020) — ระบุฟรีเทกซ์ไม่ได้อีกต่อไป
+    await page.selectOption('#ci-payeeselect-2', String(consultantPayeeId));
     await page.check('#ci-hastax-2');
     await page.fill('#ci-vatrate-2', '7');
     await page.selectOption('#ci-whttype-2', '40_2');

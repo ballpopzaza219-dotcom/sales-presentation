@@ -129,12 +129,13 @@ function idemKey(label) { return `${label}-${Date.now()}-${idemCounter++}`; }
     assert(totalDr === totalCr, `Journal entry สมดุล Dr รวม (${totalDr}) = Cr รวม (${totalCr})`);
 
     const certRes = await pool.query(
-      `SELECT payee_name, payee_tax_id, wht_amount FROM client_wht_certificates WHERE source_type='payment_voucher' AND source_id=$1`,
+      `SELECT payee_name, payee_tax_id, wht_amount, wht_form FROM client_wht_certificates WHERE source_type='payment_voucher' AND source_id=$1`,
       [vTax.id]
     );
     assert(certRes.rows[0].payee_name === 'บริษัท ผู้รับเหมาทดสอบ Regression จำกัด', 'ใบ 50 ทวิ ดึงชื่อผู้รับเงินจาก master data (client_external_payees) ถูกต้อง ไม่ใช่ free text');
     assert(certRes.rows[0].payee_tax_id === '9876543210987', 'ใบ 50 ทวิ ดึงเลขผู้เสียภาษีจาก master data ถูกต้อง');
     assert(Number(certRes.rows[0].wht_amount) === 300, `ใบ 50 ทวิ บันทึกยอดหัก ณ ที่จ่าย = 300 ถูกต้อง (ได้ ${certRes.rows[0].wht_amount})`);
+    assert(certRes.rows[0].wht_form === 'pnd53', `ใบ 50 ทวิ คำนวณ wht_form ถูกต้องตาม taxpayer_type='juristic' ของผู้รับเงิน (migration 0020) (ได้ ${certRes.rows[0].wht_form})`);
 
     console.log(`\nALL ${passed} CHECKS PASSED`);
   } catch (err) {

@@ -159,7 +159,15 @@ async function login(username, companyCode) {
     const incomeTypes = await call('fx_maker', 'GET', '/api/customer/wht-income-types');
     assert(Array.isArray(incomeTypes.incomeTypes) && incomeTypes.incomeTypes.length > 0, `มีรายชื่อประเภทเงินได้มาตรา 40 จริง (ได้ ${incomeTypes.incomeTypes.length} รายการ)`);
     const salaryType = incomeTypes.incomeTypes.find(t => t.code === '40_1');
-    assert(salaryType && salaryType.defaultRate === null, `40(1) เงินเดือน defaultRate เป็น null จริง (ไม่ fallback เป็น 0) (ได้ ${salaryType && salaryType.defaultRate})`);
+    assert(salaryType && salaryType.rateIndividual === null && salaryType.rateJuristic === null, `40(1) เงินเดือน rateIndividual/rateJuristic เป็น null ทั้งคู่จริง (ไม่ fallback เป็น 0) (ได้ ${salaryType && JSON.stringify({rateIndividual: salaryType.rateIndividual, rateJuristic: salaryType.rateJuristic})})`);
+
+    // ================= 11) migration 0020: แยก 40(8) เป็นค่าบริการ/ค่าขนส่ง =================
+    const old408 = incomeTypes.incomeTypes.find(t => t.code === '40_8');
+    assert(!old408, 'รหัส 40_8 เดิมถูกปิดใช้งานแล้ว ไม่โผล่ในลิสต์ is_active=true อีกต่อไป');
+    const service408 = incomeTypes.incomeTypes.find(t => t.code === '40_8_service');
+    const transport408 = incomeTypes.incomeTypes.find(t => t.code === '40_8_transport');
+    assert(service408 && service408.rateIndividual === 3 && service408.rateJuristic === 3, `40_8_service (ค่าบริการทั่วไป) มีอัตรา 3% ทั้งบุคคลธรรมดา/นิติบุคคล (ได้ ${service408 && JSON.stringify({i:service408.rateIndividual,j:service408.rateJuristic})})`);
+    assert(transport408 && transport408.rateIndividual === 1 && transport408.rateJuristic === 1, `40_8_transport (ค่าขนส่ง) มีอัตรา 1% ทั้งบุคคลธรรมดา/นิติบุคคล (ได้ ${transport408 && JSON.stringify({i:transport408.rateIndividual,j:transport408.rateJuristic})})`);
 
     console.log(`\nALL ${passed} CHECKS PASSED`);
   } catch (err) {

@@ -1030,6 +1030,15 @@ async function loadExternalPayees(){
   render();
 }
 
+// อ่านอัตรา WHT ตาม taxpayer_type ของผู้รับเงิน (migration 0020) — ห้าม fallback ข้ามคอลัมน์
+// rateIndividual/rateJuristic เด็ดขาด คืน null ถ้าไม่มีอัตราสำหรับประเภทนั้น (เช่น 40(1)) หรือไม่รู้จัก
+// taxpayerType เลย ให้ผู้เรียก (UI) แสดง hint ให้กรอกเอง ส่วนการปฏิเสธจริงเกิดที่ server เสมอ
+function whtRateForTaxpayer(type, taxpayerType){
+  if(!type) return null;
+  if(taxpayerType==='individual') return type.rateIndividual;
+  if(taxpayerType==='juristic') return type.rateJuristic;
+  return null;
+}
 async function loadWhtIncomeTypes(){
   try {
     const res = await fetch('/api/customer/wht-income-types');
@@ -7307,6 +7316,8 @@ function pageFinWoAdd(){
   const f = S.woForm;
   const activeSubcontractors = (S.subcontractors||[]).filter(s=>s.isActive);
   const selectedWhtType = (S.whtIncomeTypes||[]).find(t=>t.code===f.whtIncomeTypeCode);
+  const selectedSubcontractor = (S.subcontractors||[]).find(s=>String(s.id)===String(f.subcontractorId));
+  const selectedWhtRate = whtRateForTaxpayer(selectedWhtType, selectedSubcontractor && selectedSubcontractor.taxpayerType);
   return `
   <div class="page-head">
     <div>
@@ -7340,8 +7351,8 @@ function pageFinWoAdd(){
         </select>
       </div>
       <div class="field"><label>${tr('fin_wo.wht_rate_label')}</label>
-        <input id="wo-wht-rate" type="number" placeholder="${selectedWhtType && selectedWhtType.defaultRate!==null ? selectedWhtType.defaultRate+'%' : tr('fin_wo.wht_rate_hint_use_default')}" value="${prVal(f.whtRate)}" oninput="S.woForm.whtRate=this.value;">
-        ${selectedWhtType && selectedWhtType.defaultRate===null && !f.whtRate ? `<div class="hint" style="color:var(--red);">${tr('fin_wo.wht_rate_null_warning')}</div>` : ''}
+        <input id="wo-wht-rate" type="number" placeholder="${selectedWhtType && selectedWhtRate!==null ? selectedWhtRate+'%' : tr('fin_wo.wht_rate_hint_use_default')}" value="${prVal(f.whtRate)}" oninput="S.woForm.whtRate=this.value;">
+        ${selectedWhtType && selectedWhtRate===null && !f.whtRate ? `<div class="hint" style="color:var(--red);">${tr('fin_wo.wht_rate_null_warning')}</div>` : ''}
       </div>
     </div>
     <div class="split">
@@ -10119,18 +10130,30 @@ function toggleVatRateField(){
   if(!hasInvoice) vatInput.value = '0';
   updateOtherVoucherSummary();
 }
-// เลือกประเภทเงินได้มาตรา 40 แล้ว auto-fill อัตราหัก ณ ที่จ่ายจาก default_rate ถ้ามี (ผู้ใช้แก้ไขเองต่อได้
-// เสมอ ไม่ lock ฟิลด์) — ถ้า default_rate เป็น null (เช่น 40(1) เงินเดือน คำนวณตามอัตราก้าวหน้า ไม่ใช่ %
-// คงที่ — ดู CLAUDE.md ข้อ 17) ต้องเตือนชัดเจนว่าต้องกรอกอัตราเอง ไม่ fallback เป็น 0 เงียบๆ
+// เลือกประเภทเงินได้มาตรา 40 แล้ว auto-fill อัตราหัก ณ ที่จ่ายตาม taxpayer_type ของผู้รับเงินที่เลือกไว้
+// (migration 0020 — ห้าม fallback ข้ามคอลัมน์ rateIndividual/rateJuristic) ผู้ใช้แก้ไขเองต่อได้เสมอ ไม่
+// lock ฟิลด์ — ถ้าไม่มีอัตราสำหรับประเภทนั้น (เช่น 40(1) เงินเดือน คำนวณตามอัตราก้าวหน้า ไม่ใช่ % คงที่ —
+// ดู CLAUDE.md ข้อ 17) ต้องเตือนชัดเจนว่าต้องกรอกอัตราเอง ไม่ fallback เป็น 0 เงียบๆ
 function onWhtIncomeTypeChange(){
   const code = document.getElementById('f-vWhtIncomeType').value;
   const type = (S.whtIncomeTypes||[]).find(t=>t.code===code);
+  // อ่านค่าจาก DOM สดๆ (ไม่ใช่ S.voucherForm.values.payeeExternalId) เพราะ select ตัวนี้ไม่มี onchange
+  // เขียนกลับ state ระหว่างกรอก — อ่านตรงจาก DOM ตอน submit เท่านั้น (ดู save-voucher-full)
+  const payeeEl = document.getElementById('f-vExternalPayee');
+  const payee = payeeEl && payeeEl.value ? (S.externalPayees||[]).find(p=>String(p.id)===payeeEl.value) : null;
   const warnEl = document.getElementById('vWhtNullRateWarning');
   const whtRateInput = document.getElementById('f-vWhtRate');
-  if(type && type.defaultRate !== null){
-    whtRateInput.value = type.defaultRate;
+  // ยังไม่เลือกผู้รับเงิน = ยังไม่รู้ taxpayer_type ยังเลือกอัตราไม่ได้ ไม่โชว์คำเตือนผิดสาเหตุ
+  if(!payee){
     warnEl.style.display = 'none';
-  } else if(type && type.defaultRate === null){
+    updateOtherVoucherSummary();
+    return;
+  }
+  const rate = whtRateForTaxpayer(type, payee.taxpayerType);
+  if(type && rate !== null){
+    whtRateInput.value = rate;
+    warnEl.style.display = 'none';
+  } else if(type && rate === null){
     warnEl.style.display = '';
   } else {
     warnEl.style.display = 'none';
@@ -10186,7 +10209,7 @@ function renderVoucherCreateForm(voucherType){
           <input id="f-vWhtRate" type="number" min="0" max="100" step="0.01" value="${esc(f.values.whtRate)}" oninput="updateOtherVoucherSummary()">
         </div>
       </div>
-      <div id="vWhtNullRateWarning" class="callout callout-error" style="margin-top:10px; display:${(()=>{ const t=(S.whtIncomeTypes||[]).find(x=>x.code===f.values.whtIncomeTypeCode); return t && t.defaultRate===null ? '' : 'none'; })()};">${tr('voucher.oth_wht_null_rate_warning')}</div>
+      <div id="vWhtNullRateWarning" class="callout callout-error" style="margin-top:10px; display:${(()=>{ const t=(S.whtIncomeTypes||[]).find(x=>x.code===f.values.whtIncomeTypeCode); const p=(S.externalPayees||[]).find(x=>String(x.id)===String(f.values.payeeExternalId)); return t && whtRateForTaxpayer(t, p && p.taxpayerType)===null ? '' : 'none'; })()};">${tr('voucher.oth_wht_null_rate_warning')}</div>
       <div class="card" style="margin-top:12px; padding:12px 16px; background:var(--surface,#fff);">
         <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:8px; font-size:13px;">
           <div><div class="hint">${tr('voucher.oth_summary_gross')}</div><div class="mono" id="vSummaryGross">0.00</div></div>
@@ -10566,17 +10589,26 @@ function toggleClearanceItemVat(idx){
 }
 function onClearanceItemWhtTypeChange(idx){
   const code = document.getElementById(`ci-whttype-${idx}`).value;
-  S.advanceClearanceForm.items[idx].whtIncomeTypeCode = code;
+  const it = S.advanceClearanceForm.items[idx];
+  it.whtIncomeTypeCode = code;
   const type = (S.whtIncomeTypes||[]).find(t=>t.code===code);
+  const payee = (S.externalPayees||[]).find(p=>String(p.id)===String(it.payeeExternalId));
   const warnEl = document.getElementById(`ci-whtwarn-${idx}`);
   const rateInput = document.getElementById(`ci-whtrate-${idx}`);
-  if(type && type.defaultRate!==null){
-    rateInput.value = type.defaultRate;
-    S.advanceClearanceForm.items[idx].whtRate = String(type.defaultRate);
+  // ยังไม่เลือกผู้รับเงิน (master data) เลย = ยังไม่รู้ taxpayer_type ให้เลือกอัตราไม่ได้เลยตอนนี้ — ไม่โชว์
+  // คำเตือน "ไม่มีอัตราคงที่" เพราะสาเหตุจริงคือยังไม่เลือกผู้รับเงิน ไม่ใช่ประเภทเงินได้นี้ไม่มีอัตรา
+  if(!payee){
     if(warnEl) warnEl.style.display = 'none';
-  } else if(type && type.defaultRate===null){
-    if(warnEl) warnEl.style.display = '';
-  } else if(warnEl) warnEl.style.display = 'none';
+  } else {
+    const rate = whtRateForTaxpayer(type, payee.taxpayerType);
+    if(type && rate!==null){
+      rateInput.value = rate;
+      it.whtRate = String(rate);
+      if(warnEl) warnEl.style.display = 'none';
+    } else if(type && rate===null){
+      if(warnEl) warnEl.style.display = '';
+    } else if(warnEl) warnEl.style.display = 'none';
+  }
   updateClearanceItemSummary();
 }
 function onClearanceItemPayeeChange(idx){
@@ -10607,7 +10639,8 @@ function renderClearanceItemRow(it, idx){
   const whtTypeOptions = (S.whtIncomeTypes||[]).map(t=>`<option value="${t.code}" ${it.whtIncomeTypeCode===t.code?'selected':''}>${t.code} ${esc(t.nameTh)}</option>`).join('');
   const isManualPayee = !it.payeeExternalId;
   const selectedType = (S.whtIncomeTypes||[]).find(t=>t.code===it.whtIncomeTypeCode);
-  const showNullWarning = selectedType && selectedType.defaultRate===null;
+  const selectedPayeeForWht = (S.externalPayees||[]).find(p=>String(p.id)===String(it.payeeExternalId));
+  const showNullWarning = !!selectedPayeeForWht && selectedType && whtRateForTaxpayer(selectedType, selectedPayeeForWht.taxpayerType)===null;
   return `
   <div class="card" style="padding:14px 16px; margin-bottom:10px; background:var(--surface,#fff); border:1px solid var(--border);">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
@@ -10644,6 +10677,7 @@ function renderClearanceItemRow(it, idx){
         <select id="ci-payeeselect-${idx}" onchange="onClearanceItemPayeeChange(${idx})">
           <option value="">— ${tr('clearance.item_payee_manual_option')} —</option>${payeeOptions}
         </select>
+        ${isManualPayee && Number(it.whtRate||0)>0 ? `<div class="hint" style="color:var(--red);">${tr('clearance.item_payee_required_for_wht_hint')}</div>` : ''}
       </div>
       <div id="ci-manual-${idx}" style="display:${isManualPayee?'grid':'none'}; grid-column:1/-1; grid-template-columns:1fr 1fr; gap:10px;">
         <div class="field"><label>${tr('clearance.item_field_payee_name')}</label>

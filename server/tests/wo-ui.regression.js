@@ -255,9 +255,11 @@ function idemKey(label) { return `${label}-${Date.now()}-${idemCounter++}`; }
     });
     assert(deactivateAfterTerminate.subcontractor.isActive === false, 'หลัง terminate สัญญาแล้ว ปิดใช้งานผู้รับเหมาช่วงสำเร็จจริง (guard ปล่อยผ่านถูกต้องเมื่อไม่มีสัญญาค้างแล้ว)');
 
-    // ================= 12) แสดงคำเตือนอัตรา WHT ที่เป็น NULL (40(1) ไม่มี default_rate ตาม CLAUDE.md ข้อ 17) =================
-    const wht40_1 = await pool.query(`SELECT default_rate FROM client_wht_income_types WHERE code='40_1'`);
-    assert(wht40_1.rowCount === 1 && wht40_1.rows[0].default_rate === null, 'baseline: ประเภทเงินได้ 40(1) มี default_rate เป็น NULL จริงใน DB (ยืนยันก่อนเทส UI)');
+    // ================= 12) แสดงคำเตือนอัตรา WHT ที่เป็น NULL (40(1) ไม่มีอัตราคงที่ ตาม CLAUDE.md ข้อ 17) =================
+    // subA เป็น taxpayerType='individual' -> เช็ค rate_individual (migration 0020 แยกคอลัมน์ตามประเภท
+    // ผู้เสียภาษี ไม่มี default_rate เดี่ยวอีกต่อไป)
+    const wht40_1 = await pool.query(`SELECT rate_individual FROM client_wht_income_types WHERE code='40_1'`);
+    assert(wht40_1.rowCount === 1 && wht40_1.rows[0].rate_individual === null, 'baseline: ประเภทเงินได้ 40(1) มี rate_individual เป็น NULL จริงใน DB (ยืนยันก่อนเทส UI)');
     const woNullWht = await call('fx_procurement', 'POST', '/api/customer/subcontract-terms', {
       subcontractorId: subA.subcontractor.id, projectId: proj.project.id, contractValue: 20000, whtIncomeTypeCode: '40_1',
     }, idemKey('wo-ui-nullwht-create'));

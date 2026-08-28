@@ -9997,7 +9997,11 @@ const CLIENT_WO_SELECT = `
     wo.contract_value, wo.advance_percent, wo.retention_percent,
     ROUND(wo.contract_value * wo.advance_percent / 100, 2) AS advance_amount,
     ROUND(wo.contract_value * wo.retention_percent / 100, 2) AS retention_amount,
-    wo.wht_income_type_code, wit.name_th AS wht_income_type_name, wo.wht_rate, wit.default_rate AS wht_default_rate,
+    wo.wht_income_type_code, wit.name_th AS wht_income_type_name, wo.wht_rate,
+    -- ค่าแสดงผล prefill เท่านั้น (ไม่ใช้คำนวณ/post journal จริง) ตาม taxpayer_type ของผู้รับเหมาช่วง —
+    -- migration 0020: ไม่มี COALESCE ข้ามคอลัมน์ NULL ถ้าไม่ตรงกับ 2 ค่านี้ (schema บังคับแค่ 2 ค่าอยู่แล้ว
+    -- ผ่าน CHECK บน client_subcontractors) การ validate/throw จริงเกิดที่ validateWoInput ตอนบันทึกจริง
+    CASE sc.taxpayer_type WHEN 'individual' THEN wit.rate_individual WHEN 'juristic' THEN wit.rate_juristic END AS wht_default_rate,
     wo.status, wo.contract_status,
     wo.submitted_by, wo.submitted_at, wo.approved_by, wo.approved_at, wo.rejected_reason,
     to_char(wo.start_date,'YYYY-MM-DD') AS start_date, to_char(wo.end_date,'YYYY-MM-DD') AS end_date,
@@ -10018,8 +10022,10 @@ async function generateClientWoNumber(client, companyId) {
   throw new Error('ไม่สามารถสร้างเลขที่สัญญา/หนังสือสั่งจ้างได้');
 }
 
-// ทั้ง POST/PUT ใช้ร่วมกัน — whtRate เป็น optional เสมอ (ไม่ส่งมา = NULL = ใช้ default_rate จาก master ตอน
-// แสดงผล) ห้าม fallback เป็น 0 เด็ดขาดตาม CLAUDE.md ข้อ 17 (โดยเฉพาะ 40(1) ที่ default_rate เป็น NULL เอง)
+// ทั้ง POST/PUT ใช้ร่วมกัน — whtRate เป็น optional เสมอ (ไม่ส่งมา = NULL = ใช้อัตราจาก master ตาม
+// taxpayer_type ของผู้รับเหมาช่วงตอนแสดงผล/ตอนเบิกเงินจริง — ดู CLIENT_WO_SELECT/
+// validateSubcontractBillingInput) ห้าม fallback เป็น 0 เด็ดขาดตาม CLAUDE.md ข้อ 17 (โดยเฉพาะ 40(1) ที่ไม่มี
+// อัตราคงที่ให้ทั้งสองประเภทผู้เสียภาษี)
 async function validateWoInput(dbClient = pool, companyId, { subcontractorId, projectId, contractValue, advancePercent, retentionPercent, whtIncomeTypeCode, whtRate, startDate, endDate }) {
   if (!subcontractorId) return { error: 'กรุณาเลือกผู้รับเหมาช่วง' };
   const sc = await dbClient.query('SELECT 1 FROM client_subcontractors WHERE id=$1 AND company_id=$2 AND is_active=true', [subcontractorId, companyId]);
@@ -10472,7 +10478,8 @@ async function validateSubcontractBillingInput(dbClient, companyId, {
   if (!subcontractTermId) return { error: 'กรุณาเลือกสัญญา/หนังสือสั่งจ้าง' };
   const termRes = await dbClient.query(
     `SELECT st.id, st.status, st.contract_value, st.advance_percent, st.retention_percent,
-       st.wht_income_type_code AS default_wht_type, st.wht_rate AS default_wht_rate, sc.tax_id AS subcontractor_tax_id
+       st.wht_income_type_code AS default_wht_type, st.wht_rate AS default_wht_rate, sc.tax_id AS subcontractor_tax_id,
+       sc.taxpayer_type AS subcontractor_taxpayer_type
      FROM client_subcontract_terms st JOIN client_subcontractors sc ON sc.id = st.subcontractor_id
      WHERE st.id=$1 AND st.company_id=$2`,
     [subcontractTermId, companyId]
@@ -10538,15 +10545,25 @@ async function validateSubcontractBillingInput(dbClient, companyId, {
   const whtRateProvided = whtRate !== undefined && whtRate !== null && whtRate !== '';
   if (!whtRateProvided && billingType === 'progress') {
     safeWhtIncomeTypeCode = term.default_wht_type;
-    // NULL = ยังไม่มี override ระดับสัญญา ใช้ default_rate จาก master แทน — ถ้า master ก็เป็น NULL ด้วย
-    // (เช่น 40(1) ที่คำนวณตามอัตราก้าวหน้า) ต้อง throw ไม่ fallback เป็น 0 (CLAUDE.md ข้อ 17)
-    const effRes = await dbClient.query(
-      `SELECT COALESCE($1::numeric, (SELECT default_rate FROM client_wht_income_types WHERE code=$2)) AS eff_rate`,
-      [term.default_wht_rate, term.default_wht_type]
-    );
-    safeWhtRate = effRes.rows[0].eff_rate;
+    if (term.default_wht_rate !== null) {
+      // มี override ระดับสัญญาอยู่แล้ว ใช้ตรงๆ ไม่ต้องอ่านจาก master (ไม่เกี่ยวกับ COALESCE ข้ามคอลัมน์
+      // rate_individual/rate_juristic ที่ห้าม — นี่คือ override↔master คนละชั้นกัน)
+      safeWhtRate = term.default_wht_rate;
+    } else {
+      // ยังไม่มี override ระดับสัญญา ใช้อัตราจาก master ตาม taxpayer_type ของผู้รับเหมาช่วงเท่านั้น
+      // (migration 0020 — ห้าม COALESCE(rate_individual, rate_juristic) ข้ามคอลัมน์เด็ดขาด)
+      const witRes = await dbClient.query(
+        'SELECT rate_individual, rate_juristic FROM client_wht_income_types WHERE code=$1',
+        [term.default_wht_type]
+      );
+      if (witRes.rowCount === 0) {
+        return { error: `ไม่พบประเภทเงินได้ ${term.default_wht_type} ในระบบ` };
+      }
+      safeWhtRate = resolveWhtRateForTaxpayer(witRes.rows[0], term.subcontractor_taxpayer_type);
+    }
     if (safeWhtRate === null) {
-      return { error: `ประเภทเงินได้ ${term.default_wht_type} ไม่มีอัตราหัก ณ ที่จ่ายเริ่มต้น (คำนวณตามอัตราก้าวหน้า) กรุณาระบุอัตราที่ใช้จริงในสัญญาหรือในใบเบิกนี้ก่อน` };
+      const taxpayerLabel = term.subcontractor_taxpayer_type === 'individual' ? 'บุคคลธรรมดา' : 'นิติบุคคล';
+      return { error: `ประเภทเงินได้ ${term.default_wht_type} ไม่มีอัตราหัก ณ ที่จ่ายเริ่มต้นสำหรับ${taxpayerLabel} (คำนวณตามอัตราก้าวหน้า หรือยังไม่ได้กำหนด) กรุณาระบุอัตราที่ใช้จริงในสัญญาหรือในใบเบิกนี้ก่อน` };
     }
   } else if (whtRateProvided) {
     const pct = parseNonNegativeNumericValue(whtRate);
@@ -10784,7 +10801,8 @@ app.post('/api/customer/subcontract-billings/:id/approve', requireCustomerAuth, 
     if (!result.allowed) return { status: 403, body: { error: result.message, code: result.code } };
 
     const termRow = await client.query(
-      `SELECT st.id, st.project_id, st.contract_value, sc.name AS subcontractor_name, sc.tax_id AS subcontractor_tax_id
+      `SELECT st.id, st.project_id, st.contract_value, sc.name AS subcontractor_name, sc.tax_id AS subcontractor_tax_id,
+         sc.taxpayer_type AS subcontractor_taxpayer_type
        FROM client_subcontract_terms st JOIN client_subcontractors sc ON sc.id = st.subcontractor_id
        WHERE st.id=$1`,
       [billing.subcontract_term_id]
@@ -10880,15 +10898,16 @@ app.post('/api/customer/subcontract-billings/:id/approve', requireCustomerAuth, 
     let issuedCertNo = null;
     if (billing.billing_type !== 'retention_release' && Number(billing.wht_amount) > 0) {
       const certNo = await generateWhtCertNo(client, companyId);
+      const whtForm = resolveWhtForm(term.subcontractor_taxpayer_type);
       const typeNameRes = await client.query('SELECT name_th FROM client_wht_income_types WHERE code=$1', [billing.wht_income_type_code]);
       await client.query(
         `INSERT INTO client_wht_certificates
            (company_id, cert_no, source_type, source_id, payee_name, payee_tax_id, payment_date, income_type_desc,
-            gross_amount, wht_rate, wht_amount, wht_income_type_code, wht_income_type_name_snapshot, issued_by, issued_at)
-         VALUES ($1,$2,'subcontractor_payment',$3,$4,$5,$6,$7,$8::numeric,$9::numeric,$10::numeric,$11,$12,$13,now())`,
+            gross_amount, wht_rate, wht_amount, wht_income_type_code, wht_income_type_name_snapshot, wht_form, issued_by, issued_at)
+         VALUES ($1,$2,'subcontractor_payment',$3,$4,$5,$6,$7,$8::numeric,$9::numeric,$10::numeric,$11,$12,$13,$14,now())`,
         [companyId, certNo, id, term.subcontractor_name, term.subcontractor_tax_id, today,
          `ใบเบิกเงิน ${billing.billing_no}`, billing.gross_amount, billing.wht_rate, billing.wht_amount,
-         billing.wht_income_type_code, typeNameRes.rows[0]?.name_th || '', req.customer.id]
+         billing.wht_income_type_code, typeNameRes.rows[0]?.name_th || '', whtForm, req.customer.id]
       );
       issuedCertNo = certNo;
     }
@@ -11987,12 +12006,19 @@ app.put('/api/customer/external-payees/:id', requireCustomerAuth, async (req, re
 
 // รายชื่อประเภทเงินได้ตามมาตรา 40 — สำหรับ dropdown ตอนกรอก WHT rate ในฟอร์มใบจ่ายเจ้าหนี้ภายนอก
 // (voucher_type='other') อ่านอย่างเดียว ไม่ gate สิทธิ์เพิ่มเติมนอกจาก login (ไม่ใช่ company-scoped —
-// ตารางนี้เป็น master ร่วมทั้งระบบ ไม่มี company_id) default_rate เป็น NULL ได้ตามที่ตั้งใจ (เช่น 40(1)
-// เงินเดือน คำนวณตามอัตราก้าวหน้า) — ส่ง null ตรงๆ ให้ frontend ปฏิเสธ/บังคับกรอกเอง ห้าม fallback เป็น 0
-// ที่นี่ (CLAUDE.md ข้อ 17)
+// ตารางนี้เป็น master ร่วมทั้งระบบ ไม่มี company_id) rate_individual/rate_juristic เป็น NULL ได้ตามที่
+// ตั้งใจ (เช่น 40(1) เงินเดือน คำนวณตามอัตราก้าวหน้า) — ส่ง null ตรงๆ ให้ frontend ปฏิเสธ/บังคับกรอกเอง
+// ห้าม fallback เป็น 0 ที่นี่ (CLAUDE.md ข้อ 17) — คืนทั้ง 2 คอลัมน์แยกกัน (migration 0020) ไม่ยุบเป็นค่า
+// เดียวที่นี่ ให้ frontend เลือกแสดงตาม taxpayer_type ของผู้รับเงินที่กำลังกรอกอยู่เอง
 app.get('/api/customer/wht-income-types', requireCustomerAuth, async (req, res) => {
-  const r = await pool.query('SELECT code, name_th, default_rate, is_active FROM client_wht_income_types WHERE is_active=true ORDER BY code');
-  res.json({ incomeTypes: r.rows.map(row => ({ code: row.code, nameTh: row.name_th, defaultRate: row.default_rate !== null ? Number(row.default_rate) : null })) });
+  const r = await pool.query('SELECT code, name_th, rate_individual, rate_juristic, is_active FROM client_wht_income_types WHERE is_active=true ORDER BY code');
+  res.json({
+    incomeTypes: r.rows.map(row => ({
+      code: row.code, nameTh: row.name_th,
+      rateIndividual: row.rate_individual !== null ? Number(row.rate_individual) : null,
+      rateJuristic: row.rate_juristic !== null ? Number(row.rate_juristic) : null,
+    })),
+  });
 });
 
 // ---------------- ใบเบิกเงิน (payment vouchers) — เฉพาะ voucher_type='petty_cash' เฟสนี้ ----------------
@@ -12422,7 +12448,7 @@ app.post('/api/customer/payment-vouchers/:id/approve', requireCustomerAuth, asyn
       const detailRes = await client.query(
         `SELECT vat_amount, wht_amount, wht_income_type_code, net_amount,
                 (has_tax_invoice AND vat_amount > 0) AS has_vat_claimable, (wht_amount > 0) AS has_wht,
-                p.tax_id AS payee_tax_id, p.name AS payee_name_live
+                p.tax_id AS payee_tax_id, p.name AS payee_name_live, p.taxpayer_type AS payee_taxpayer_type
          FROM client_payment_vouchers v LEFT JOIN client_external_payees p ON p.id = v.payee_external_id
          WHERE v.id=$1`,
         [id]
@@ -12443,15 +12469,16 @@ app.post('/api/customer/payment-vouchers/:id/approve', requireCustomerAuth, asyn
       });
       if (d.has_wht) {
         const certNo = await generateWhtCertNo(client, companyId);
+        const whtForm = resolveWhtForm(d.payee_taxpayer_type);
         const typeNameRes = await client.query('SELECT name_th FROM client_wht_income_types WHERE code=$1', [d.wht_income_type_code]);
         const typeName = typeNameRes.rows[0]?.name_th || '';
         await client.query(
           `INSERT INTO client_wht_certificates
              (company_id, cert_no, source_type, source_id, payee_name, payee_tax_id, payment_date, income_type_desc,
-              gross_amount, wht_rate, wht_amount, wht_income_type_code, wht_income_type_name_snapshot, issued_by, issued_at)
-           VALUES ($1,$2,'payment_voucher',$3,$4,$5,$6,$7,$8::numeric,$9::numeric,$10::numeric,$11,$12,$13,now())`,
+              gross_amount, wht_rate, wht_amount, wht_income_type_code, wht_income_type_name_snapshot, wht_form, issued_by, issued_at)
+           VALUES ($1,$2,'payment_voucher',$3,$4,$5,$6,$7,$8::numeric,$9::numeric,$10::numeric,$11,$12,$13,$14,now())`,
           [companyId, certNo, id, d.payee_name_live, d.payee_tax_id, getBangkokDateStr(), v.purpose,
-           v.amount, v.wht_rate, d.wht_amount, d.wht_income_type_code, typeName, req.customer.id]
+           v.amount, v.wht_rate, d.wht_amount, d.wht_income_type_code, typeName, whtForm, req.customer.id]
         );
         issuedCertNos.push(certNo);
       }
@@ -12702,6 +12729,13 @@ async function validateAdvanceClearanceItemsInput(dbClient, companyId, items) {
       if (typeRes.rowCount === 0) return { error: `รายการ "${description}" ระบุประเภทเงินได้ไม่ถูกต้อง หรือประเภทนี้ถูกปิดใช้งานแล้ว` };
     }
 
+    // มี WHT ต้องผูก master data (client_external_payees) เสมอ ห้ามใช้ชื่อ/เลขผู้เสียภาษีแบบพิมพ์เองอีก
+    // ต่อไป (migration 0020) — เหตุผล: ต้องรู้ taxpayer_type (บุคคลธรรมดา/นิติบุคคล) เพื่อคำนวณ wht_form
+    // (ภ.ง.ด.3/53) ตอนออก 50 ทวิ ซึ่งฟรีเทกซ์ล้วนๆ ไม่มีข้อมูลนี้ให้อ้างอิงเลย (ยืนยันจากฝ่ายบัญชี 2026-08-28)
+    if (Number(whtRate) > 0 && !it.payeeExternalId) {
+      return { error: `รายการ "${description}" มีอัตราหัก ณ ที่จ่าย ต้องเลือกผู้รับเงินจาก "ผู้รับเงินภายนอก" (master data) ก่อน เพราะต้องใช้ประเภทผู้เสียภาษี (บุคคลธรรมดา/นิติบุคคล) ในการออกหนังสือรับรอง 50 ทวิ ไม่สามารถกรอกชื่อ/เลขผู้เสียภาษีเองแบบฟรีเทกซ์ได้อีกต่อไป` };
+    }
+
     let payeeName = String(it.payeeName || '').trim();
     let payeeTaxId = String(it.payeeTaxId || '').trim();
     let payeeExternalId = it.payeeExternalId || null;
@@ -12758,6 +12792,25 @@ async function generateClearanceNo(client, companyId) {
   throw new Error('ไม่สามารถสร้างเลขที่ใบเคลียร์เงินทดรองจ่ายได้');
 }
 
+// sub-ledger ภ.ง.ด.3/53 (migration 0020) — คำนวณฝั่ง server เสมอจาก taxpayer_type ของผู้รับเงิน ห้ามรับ
+// ค่าจาก client โดยตรง (CLAUDE.md ข้อ 4) ค่าอื่นใดที่ไม่ใช่ individual/juristic (เช่นเผื่ออนาคตเพิ่ม
+// 'government') ต้อง throw ทันที ห้าม fallback ไปเป็นค่าใดค่าหนึ่งเงียบๆ (ตามที่ฝ่ายบัญชียืนยัน)
+function resolveWhtForm(taxpayerType) {
+  if (taxpayerType === 'individual') return 'pnd3';
+  if (taxpayerType === 'juristic') return 'pnd53';
+  throw new Error(`ไม่รองรับ taxpayer_type="${taxpayerType}" สำหรับคำนวณแบบฟอร์มภาษีหัก ณ ที่จ่าย (รองรับเฉพาะ individual/juristic)`);
+}
+
+// อ่านอัตรา WHT จาก client_wht_income_types ตาม taxpayer_type ของผู้รับเงิน — ห้าม
+// COALESCE(rate_individual, rate_juristic) ข้ามคอลัมน์เด็ดขาด (migration 0020) อ่าน "เฉพาะ" คอลัมน์ที่ตรง
+// กับประเภทผู้เสียภาษีเท่านั้น คืนค่า NULL ถ้าประเภทเงินได้นี้ไม่มีอัตราสำหรับผู้เสียภาษีประเภทนั้น (เช่น
+// 40(1) เงินเดือนที่เป็น NULL ทั้งคู่เสมอ) — ผู้เรียกต้อง throw/reject เอง ห้าม fallback เป็น 0
+function resolveWhtRateForTaxpayer(incomeTypeRow, taxpayerType) {
+  if (taxpayerType === 'individual') return incomeTypeRow.rate_individual;
+  if (taxpayerType === 'juristic') return incomeTypeRow.rate_juristic;
+  throw new Error(`ไม่รองรับ taxpayer_type="${taxpayerType}" สำหรับคำนวณอัตราหัก ณ ที่จ่าย (รองรับเฉพาะ individual/juristic)`);
+}
+
 async function generateWhtCertNo(client, companyId) {
   const year = getBangkokYear() + 543;
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -12776,6 +12829,7 @@ function serializeWhtCertificate(row) {
     incomeTypeDesc: row.income_type_desc,
     whtIncomeTypeCode: row.wht_income_type_code, whtIncomeTypeNameSnapshot: row.wht_income_type_name_snapshot,
     grossAmount: Number(row.gross_amount), whtRate: Number(row.wht_rate), whtAmount: Number(row.wht_amount),
+    whtForm: row.wht_form,
     issuedBy: row.issued_by, issuedAt: row.issued_at,
   };
 }
@@ -13079,10 +13133,13 @@ app.post('/api/customer/advance-clearances/:id/approve', requireCustomerAuth, as
     // ออก 50 ทวิ 1 ใบต่อ 1 บรรทัดที่มี wht_amount>0 (WHERE ใน SQL ตรงๆ ไม่ใช่ filter ด้วย Number() ใน JS)
     // — wht_income_type_name_snapshot freeze ชื่อ ณ ตอนออกจริง ไม่ join สดกับ client_wht_income_types
     // (เหตุผลเดียวกับ payee_name/payee_tax_id ที่ freeze อยู่แล้วในตารางนี้)
+    // payee_taxpayer_type: ต้องไม่เป็น NULL เสมอ เพราะ validateAdvanceClearanceInput บังคับผูก
+    // payee_external_id ทุกบรรทัดที่ wht_amount>0 แล้ว (migration 0020) — ไม่มี fallback ไปฟรีเทกซ์อีก
     const whtItemsRes = await client.query(
-      `SELECT i.id, i.description, i.wht_income_type_code, i.amount, i.wht_rate, i.wht_amount, i.payee_name, i.payee_tax_id, t.name_th AS type_name
+      `SELECT i.id, i.description, i.wht_income_type_code, i.amount, i.wht_rate, i.wht_amount, i.payee_name, i.payee_tax_id, t.name_th AS type_name, p.taxpayer_type AS payee_taxpayer_type
        FROM client_advance_clearance_items i
        LEFT JOIN client_wht_income_types t ON t.code = i.wht_income_type_code
+       LEFT JOIN client_external_payees p ON p.id = i.payee_external_id
        WHERE i.clearance_id=$1 AND i.company_id=$2 AND i.wht_amount > 0
        ORDER BY i.idx`,
       [id, companyId]
@@ -13090,6 +13147,7 @@ app.post('/api/customer/advance-clearances/:id/approve', requireCustomerAuth, as
     const issuedCertNos = [];
     for (const item of whtItemsRes.rows) {
       const certNo = await generateWhtCertNo(client, companyId);
+      const whtForm = resolveWhtForm(item.payee_taxpayer_type);
       // income_type_desc = คำอธิบายรายการที่ผู้ใช้กรอกเอง (item.description) — คนละความหมายกับ
       // wht_income_type_name_snapshot ที่เป็นชื่อประเภทเงินได้ตามกฎหมาย (จาก client_wht_income_types)
       // เดิมสองคอลัมน์นี้ดันเก็บค่าเดียวกัน (item.type_name) ทำให้ข้อมูลซ้ำที่เสี่ยงหลุดจากกันได้ในอนาคต
@@ -13097,10 +13155,10 @@ app.post('/api/customer/advance-clearances/:id/approve', requireCustomerAuth, as
       await client.query(
         `INSERT INTO client_wht_certificates
            (company_id, cert_no, source_type, source_id, payee_name, payee_tax_id, payment_date, income_type_desc,
-            gross_amount, wht_rate, wht_amount, wht_income_type_code, wht_income_type_name_snapshot, issued_by, issued_at)
-         VALUES ($1,$2,'advance_clearance_item',$3,$4,$5,$6,$7,$8::numeric,$9::numeric,$10::numeric,$11,$12,$13,now())`,
+            gross_amount, wht_rate, wht_amount, wht_income_type_code, wht_income_type_name_snapshot, wht_form, issued_by, issued_at)
+         VALUES ($1,$2,'advance_clearance_item',$3,$4,$5,$6,$7,$8::numeric,$9::numeric,$10::numeric,$11,$12,$13,$14,now())`,
         [companyId, certNo, item.id, item.payee_name, item.payee_tax_id, getBangkokDateStr(), item.description,
-         item.amount, item.wht_rate, item.wht_amount, item.wht_income_type_code, item.type_name || '', req.customer.id]
+         item.amount, item.wht_rate, item.wht_amount, item.wht_income_type_code, item.type_name || '', whtForm, req.customer.id]
       );
       issuedCertNos.push(certNo);
     }

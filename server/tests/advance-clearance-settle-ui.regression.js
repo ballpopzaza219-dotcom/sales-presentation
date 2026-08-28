@@ -78,6 +78,15 @@ async function net1150Balance(voucherId, clearanceId){
 
     await httpLogin('fx_maker', companyCode);
     await httpLogin('fx_approver_mid', companyCode);
+    await httpLogin('fx_super', companyCode);
+
+    // มี WHT>0 ต้องผูก payeeExternalId (master data) เสมอตั้งแต่ migration 0020 — สร้างไว้ก่อนเปิด
+    // browser เลย (ก่อน loadExternalPayees() ครั้งแรกของ session นี้จะ cache รายชื่อไว้)
+    console.log('Creating prerequisite external payee via HTTP...');
+    const consultantPayeeCreate = await call('fx_super', 'POST', '/api/customer/external-payees', {
+      name: `ที่ปรึกษาทดสอบ Round B ${Date.now()}`, taxpayerType: 'individual', taxId: '2' + String(Date.now()).padStart(12, '0').slice(0, 12),
+    });
+    const consultantPayeeId = consultantPayeeCreate.externalPayee.id;
 
     console.log('Creating prerequisite approved advance vouchers via HTTP...');
     const v1 = await makeApprovedAdvanceVoucher(employeeId, 8000);    // 1.3.1 exact
@@ -248,8 +257,8 @@ async function net1150Balance(voucherId, clearanceId){
     await page.fill('#ci-desc-0', 'ทดสอบ 1.3.4 พอดี+ภาษี');
     await page.selectOption('#ci-account-0', '5300');
     await page.fill('#ci-amount-0', '10000');
-    await page.fill('#ci-payeename-0', 'ที่ปรึกษาทดสอบ 1.3.4');
-    await page.fill('#ci-payeetaxid-0', '9876543210123');
+    // มี WHT>0 ต้องผูกผู้รับเงินจาก master data เท่านั้น (migration 0020) — ระบุฟรีเทกซ์ไม่ได้อีกต่อไป
+    await page.selectOption('#ci-payeeselect-0', String(consultantPayeeId));
     await page.check('#ci-hastax-0');
     await page.fill('#ci-vatrate-0', '7');
     await page.selectOption('#ci-whttype-0', '40_2');
@@ -317,8 +326,8 @@ async function net1150Balance(voucherId, clearanceId){
     await page.fill('#ci-desc-1', 'ค่าบริการวิชาชีพ 1.3.5');
     await page.selectOption('#ci-account-1', '5300');
     await page.fill('#ci-amount-1', '5000');
-    await page.fill('#ci-payeename-1', 'ที่ปรึกษา 1.3.5');
-    await page.fill('#ci-payeetaxid-1', '1112223334445');
+    // มี WHT>0 ต้องผูกผู้รับเงินจาก master data เท่านั้น (migration 0020) — ระบุฟรีเทกซ์ไม่ได้อีกต่อไป
+    await page.selectOption('#ci-payeeselect-1', String(consultantPayeeId));
     await page.check('#ci-hastax-1');
     await page.fill('#ci-vatrate-1', '7');
     await page.selectOption('#ci-whttype-1', '40_2');
