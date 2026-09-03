@@ -2691,7 +2691,7 @@ async function seedDefaultClientChartOfAccounts(companyId) {
 // Callers (see each module's own auto-post helper) are responsible for having already verified that
 // `companyId` matches `req.customer.company_id` for the currently-logged-in session — this function
 // only guarantees internal consistency of the entry it writes, not who's allowed to call it.
-async function createClientJournalEntry(client, { companyId, entryDate, description, sourceType, sourceId, projectId, createdBy, lines }) {
+async function createClientJournalEntry(client, { companyId, entryDate, description, sourceType, sourceId, projectId, createdBy, lines, reversesEntryId }) {
   if (!companyId) throw new Error('ต้องระบุบริษัทเสมอ');
   if (!Array.isArray(lines) || lines.length < 2) throw new Error('รายการบันทึกบัญชีต้องมีอย่างน้อย 2 บรรทัด');
   let totalDebit = 0, totalCredit = 0;
@@ -2716,9 +2716,9 @@ async function createClientJournalEntry(client, { companyId, entryDate, descript
   if (missing.length) throw new Error(`ไม่พบบัญชีที่ใช้งานอยู่สำหรับบริษัทนี้: ${missing.join(', ')}`);
 
   const entry = await client.query(
-    `INSERT INTO client_journal_entries (company_id, entry_date, description, source_type, source_id, project_id, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-    [companyId, entryDate, description || '', sourceType, sourceId || null, projectId || null, createdBy || null]
+    `INSERT INTO client_journal_entries (company_id, entry_date, description, source_type, source_id, project_id, created_by, reverses_entry_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+    [companyId, entryDate, description || '', sourceType, sourceId || null, projectId || null, createdBy || null, reversesEntryId || null]
   );
   const journalEntryId = entry.rows[0].id;
   for (const l of lines) {
@@ -4886,10 +4886,12 @@ async function validateProgressClaimInput(dbClient, companyId, {
     if (!installmentId) return { error: 'กรุณาเลือกงวดงาน' };
     const inst = await dbClient.query('SELECT id FROM client_project_installments WHERE id=$1 AND company_id=$2 AND project_id=$3', [installmentId, companyId, projectId]);
     if (inst.rowCount === 0) return { error: 'ไม่พบงวดงานนี้ในโครงการที่เลือก' };
-    // กันงวดงานเดียวกันถูกขอเบิกซ้อนกันหลายใบพร้อมกัน (นับเฉพาะใบที่ "ยังไม่จบ" — ไม่ใช่ rejected/cancelled —
-    // ตาม pattern NOT IN กับสถานะจบแบบล้มเหลว, CLAUDE.md ข้อ 23)
+    // กันงวดงานเดียวกันถูกขอเบิกซ้อนกันหลายใบพร้อมกัน (นับเฉพาะใบที่ "ยังไม่จบ" — ไม่ใช่ rejected/cancelled/
+    // voided — ตาม pattern NOT IN กับสถานะจบแบบล้มเหลว, CLAUDE.md ข้อ 23) 'voided' เพิ่มเข้ามาพร้อม migration
+    // 0021 — ใบที่ถูก void แล้วถือว่า "จบแล้ว" เช่นกัน (ผลทางบัญชีถูก reverse ไปหมดแล้ว) งวดงานนี้ต้องกลับมา
+    // เบิกซ้ำได้ (พบจริงจากการเขียนเทส /void — ลืมจุดนี้ตอนแรกเป็นตัวอย่างที่ตรงกับคำเตือนในกฎข้อ 23 เป๊ะ)
     const dupParams = [companyId, installmentId];
-    let dupQuery = `SELECT COUNT(*)::int AS n FROM client_progress_claims WHERE company_id=$1 AND installment_id=$2 AND status NOT IN ('rejected','cancelled')`;
+    let dupQuery = `SELECT COUNT(*)::int AS n FROM client_progress_claims WHERE company_id=$1 AND installment_id=$2 AND status NOT IN ('rejected','cancelled','voided')`;
     if (excludeClaimId) { dupParams.push(excludeClaimId); dupQuery += ` AND id <> $${dupParams.length}`; }
     const dup = await dbClient.query(dupQuery, dupParams);
     if (dup.rows[0].n > 0) return { error: 'งวดงานนี้มีใบขอเบิกที่ยังไม่จบ (ไม่ถูกปฏิเสธ/ยกเลิก) อยู่แล้ว' };
@@ -5451,6 +5453,105 @@ app.post('/api/customer/progress-claims/:id/cancel', requireCustomerAuth, async 
   } finally {
     client.release();
   }
+});
+
+// ---------------- /void: ยกเลิกใบขอเบิกความคืบหน้าที่อนุมัติแล้ว + reversing journal entry ----------------
+// (migration 0021) — ซับซ้อนที่สุดในบรรดา 4 เอกสาร เพราะ 1 การอนุมัติสร้างได้ถึง 2+N journal entries
+// (revenue เสมอ, retention ถ้ามี, N รายการหักล้างเงินล่วงหน้า) และมี relative update จริง 2 จุดที่ต้อง
+// คืนกลับ (client_revenue.applied_amount, client_budget_items.claimed_percent) — ต่างจากอีก 3 เอกสารที่
+// ยอดสะสมทั้งหมดคำนวณสดจึงไม่ต้องคืนอะไรเลย
+//
+// บล็อก void ถ้า client_revenue ที่ claim นี้สร้างไว้ (claim.revenue_id) ถูกใบอื่นเบิกไปแล้ว
+// (applied_amount>0 — เฉพาะ type='deposit' ที่ถูกเบิกได้) หรือมีลูกค้าชำระเงินจริงมาแล้ว
+// (client_revenue_payments) — ยืนยันจากฝ่ายบัญชี 2026-08-28: ทั้งสองกรณีนี้ไม่มีทาง reverse ได้อย่างถูกต้อง
+// ในรอบนี้ ต้องจัดการใบที่เบิก/รับเงินไปแล้วก่อนถึงจะกลับมา void ใบนี้ได้
+app.post('/api/customer/progress-claims/:id/void', requireCustomerAuth, async (req, res) => {
+  await withIdempotency(req, res, `progress-claims-void:${req.params.id}`, async (client) => {
+    const id = parseInt(req.params.id, 10);
+    const companyId = req.customer.company_id;
+    const reason = req.body?.reason ? String(req.body.reason).trim() : '';
+    if (!reason) return { status: 400, body: { error: 'กรุณาระบุเหตุผลการยกเลิก' } };
+    if (!hasVoidPermission(req.customer)) {
+      return { status: 403, body: { error: 'ไม่มีสิทธิ์ยกเลิกเอกสารที่อนุมัติแล้ว (ต้องเป็น super_user หรือมีสิทธิ์บันทึกรายรับ-จ่ายเงินสด)' } };
+    }
+
+    const r = await client.query('SELECT * FROM client_progress_claims WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) return { status: 404, body: { error: 'ไม่พบใบขอเบิกความคืบหน้า' } };
+    const claim = r.rows[0];
+    if (claim.status !== 'approved') {
+      return { status: 409, body: { error: 'ยกเลิกได้เฉพาะใบที่อนุมัติแล้วเท่านั้น (สถานะอื่นใช้ /cancel)' } };
+    }
+    // self-void ครอบคลุมถึงคนที่ certify ไปแล้วด้วย เหมือน canApprove ของเอกสารนี้
+    if (isSelfVoidBlocked(req.customer.id, [claim.created_by, claim.submitted_by, claim.certified_by, claim.approved_by])) {
+      return { status: 403, body: { error: 'ไม่สามารถยกเลิกเอกสารที่ตัวเองสร้าง/ยื่น/รับรอง/อนุมัติได้ แม้เป็นผู้ดูแลระบบก็ตาม' } };
+    }
+    if (!claim.revenue_id) {
+      return { status: 409, body: { error: 'เอกสารนี้ไม่มีรายรับผูกอยู่ (ข้อมูลผิดปกติ) ไม่สามารถยกเลิกได้' } };
+    }
+
+    const revRes = await client.query('SELECT * FROM client_revenue WHERE id=$1 AND company_id=$2 FOR UPDATE', [claim.revenue_id, companyId]);
+    if (revRes.rowCount === 0) return { status: 409, body: { error: 'ไม่พบรายรับที่ผูกกับเอกสารนี้ (ข้อมูลผิดปกติ)' } };
+    const revenue = revRes.rows[0];
+    if (Number(revenue.applied_amount) > 0) {
+      return { status: 409, body: { error: 'ยกเลิกไม่ได้ — เงินล่วงหน้าที่งวดนี้สร้างไว้ถูกใบขอเบิกงวดอื่นนำไปหักล้างแล้ว ต้องจัดการใบที่หักล้างไปก่อน' } };
+    }
+    const paymentRes = await client.query('SELECT 1 FROM client_revenue_payments WHERE revenue_id=$1 AND company_id=$2 LIMIT 1', [claim.revenue_id, companyId]);
+    if (paymentRes.rowCount > 0) {
+      return { status: 409, body: { error: 'ยกเลิกไม่ได้ — ลูกค้าชำระเงินสำหรับงวดนี้เข้ามาจริงแล้ว ต้องจัดการรายการรับชำระเงินก่อน' } };
+    }
+
+    const periodError = await getVoidPeriodLockError(client, companyId, ['revenue', 'retention'], claim.revenue_id);
+    if (periodError) return { status: 409, body: { error: periodError } };
+
+    // คืน claimed_percent ของ budget_items (เฉพาะโหมด BOQ) — ล็อกก่อนเสมอ ตามลำดับเดียวกับตอนอนุมัติ
+    if (claim.claim_mode === 'boq') {
+      const claimItems = await client.query('SELECT budget_item_id, certified_percent FROM client_progress_claim_items WHERE progress_claim_id=$1', [id]);
+      const budgetItemIds = [...new Set(claimItems.rows.map(it => it.budget_item_id))].sort((a, b) => a - b);
+      if (budgetItemIds.length > 0) {
+        await client.query('SELECT id FROM client_budget_items WHERE id = ANY($1::int[]) FOR UPDATE', [budgetItemIds]);
+      }
+      for (const it of claimItems.rows) {
+        await client.query('UPDATE client_budget_items SET claimed_percent = claimed_percent - $1::numeric WHERE id=$2', [it.certified_percent, it.budget_item_id]);
+      }
+    }
+
+    // คืน applied_amount ของทุก advance (client_revenue type='deposit') ที่ claim นี้เคยหักล้างไป แล้วลบ
+    // แถวบันทึกการหักล้างทิ้ง (สอดคล้องกับ reversing entry ที่ทำให้ผลทางบัญชีเป็นศูนย์แล้ว)
+    const applicationsRes = await client.query(
+      'SELECT id, advance_revenue_id, amount FROM client_revenue_advance_applications WHERE progress_claim_id=$1 ORDER BY advance_revenue_id',
+      [id]
+    );
+    if (applicationsRes.rows.length > 0) {
+      const advanceIds = [...new Set(applicationsRes.rows.map(a => a.advance_revenue_id))].sort((a, b) => a - b);
+      await client.query('SELECT id FROM client_revenue WHERE id = ANY($1::int[]) FOR UPDATE', [advanceIds]);
+      for (const a of applicationsRes.rows) {
+        await client.query('UPDATE client_revenue SET applied_amount = applied_amount - $1::numeric WHERE id=$2', [a.amount, a.advance_revenue_id]);
+      }
+      await client.query('DELETE FROM client_revenue_advance_applications WHERE progress_claim_id=$1', [id]);
+    }
+
+    const entries = await findReversibleJournalEntries(client, companyId, ['revenue', 'retention'], claim.revenue_id);
+    if (entries.length === 0) return { status: 409, body: { error: 'ไม่พบรายการบัญชีของเอกสารนี้ (อาจถูกยกเลิกไปแล้ว)' } };
+    for (const entry of entries) {
+      await reverseJournalEntry(client, companyId, entry, req.customer.id);
+    }
+
+    await client.query(
+      `UPDATE client_revenue SET status='voided', voided_by=$1, voided_reason=$2, voided_at=now() WHERE id=$3`,
+      [req.customer.id, reason, claim.revenue_id]
+    );
+    await client.query(
+      `UPDATE client_progress_claims SET status='voided', voided_by=$1, voided_reason=$2, voided_at=now() WHERE id=$3`,
+      [req.customer.id, reason, id]
+    );
+    await writeAuditLog(client, {
+      companyId, docType: 'progress_claim', docId: id, action: 'void',
+      fromStatus: 'approved', toStatus: 'voided', performedBy: req.customer.id, reason,
+    });
+
+    const full = await fetchFullProgressClaim(client, id, companyId);
+    return { status: 200, body: { progressClaim: full } };
+  });
 });
 
 // ---------------- Customer: client ledger — ค่าแรงพนักงาน (labor costs) ----------------
@@ -10994,6 +11095,57 @@ app.post('/api/customer/subcontract-billings/:id/cancel', requireCustomerAuth, a
   });
 });
 
+// ---------------- /void: ยกเลิกใบเบิกผู้รับเหมาช่วงที่อนุมัติแล้ว + reversing journal entry ----------------
+// (migration 0021) — ไม่ต้องคืนยอด advance_recovered/retention_held ของสัญญาเอง เพราะคำนวณสดจาก
+// SUM(...) WHERE status='approved' อยู่แล้ว (ตรวจสอบแล้วผ่าน computeSubcontractTermBalances())
+app.post('/api/customer/subcontract-billings/:id/void', requireCustomerAuth, async (req, res) => {
+  await withIdempotency(req, res, `subcontract-billings-void:${req.params.id}`, async (client) => {
+    const id = parseInt(req.params.id, 10);
+    const companyId = req.customer.company_id;
+    const reason = req.body?.reason ? String(req.body.reason).trim() : '';
+    if (!reason) return { status: 400, body: { error: 'กรุณาระบุเหตุผลการยกเลิก' } };
+    if (!hasVoidPermission(req.customer)) {
+      return { status: 403, body: { error: 'ไม่มีสิทธิ์ยกเลิกเอกสารที่อนุมัติแล้ว (ต้องเป็น super_user หรือมีสิทธิ์บันทึกรายรับ-จ่ายเงินสด)' } };
+    }
+
+    const r = await client.query('SELECT * FROM client_subcontract_billings WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) return { status: 404, body: { error: 'ไม่พบใบเบิกเงิน' } };
+    const billing = r.rows[0];
+    if (billing.status !== 'approved') {
+      return { status: 409, body: { error: 'ยกเลิกได้เฉพาะใบที่อนุมัติแล้วเท่านั้น (สถานะอื่นใช้ /cancel)' } };
+    }
+    if (isSelfVoidBlocked(req.customer.id, [billing.created_by, billing.submitted_by, billing.approved_by])) {
+      return { status: 403, body: { error: 'ไม่สามารถยกเลิกเอกสารที่ตัวเองสร้าง/ยื่น/อนุมัติได้ แม้เป็นผู้ดูแลระบบก็ตาม' } };
+    }
+    if (billing.has_tax_invoice) {
+      return { status: 400, body: { error: 'เอกสารนี้มีใบกำกับภาษีเต็มรูป ยังไม่รองรับการยกเลิกในตอนนี้ (ต้องใช้ใบลดหนี้แทน — ดู known-limitations)' } };
+    }
+    const periodError = await getVoidPeriodLockError(client, companyId, 'subcontract_billing', id);
+    if (periodError) return { status: 409, body: { error: periodError } };
+
+    const entries = await findReversibleJournalEntries(client, companyId, 'subcontract_billing', id);
+    if (entries.length === 0) return { status: 409, body: { error: 'ไม่พบรายการบัญชีของเอกสารนี้ (อาจถูกยกเลิกไปแล้ว)' } };
+    for (const entry of entries) {
+      await reverseJournalEntry(client, companyId, entry, req.customer.id);
+    }
+
+    const voidedCerts = await voidWhtCertificatesForSources(client, companyId, 'subcontractor_payment', [id], { voidedBy: req.customer.id, reason });
+
+    await client.query(
+      `UPDATE client_subcontract_billings SET status='voided', voided_by=$1, voided_reason=$2, voided_at=now() WHERE id=$3`,
+      [req.customer.id, reason, id]
+    );
+    await writeAuditLog(client, {
+      companyId, docType: 'subcontractor_payment', docId: id, action: 'void',
+      fromStatus: billing.status, toStatus: 'voided', performedBy: req.customer.id,
+      reason: reason + (voidedCerts.length ? ` (ยกเลิก 50 ทวิ ${voidedCerts.length} ใบ: ${voidedCerts.join(', ')})` : ''),
+    });
+
+    const full = await fetchFullSubcontractBilling(client, id, companyId);
+    return { status: 200, body: { subcontractBilling: full } };
+  });
+});
+
 app.get('/api/customer/subcontract-billings/:id/wht-certificates', requireCustomerAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const companyId = req.customer.company_id;
@@ -12580,6 +12732,55 @@ app.post('/api/customer/payment-vouchers/:id/cancel', requireCustomerAuth, async
   }
 });
 
+// ---------------- /void: ยกเลิกใบเบิกเงินที่อนุมัติแล้ว + reversing journal entry (migration 0021) ----------------
+// ไม่ต้องคืนยอดกองทุนเงินสดย่อยเอง — คำนวณสดจาก SUM(...) WHERE status='approved' อยู่แล้ว (ตรวจสอบแล้ว)
+app.post('/api/customer/payment-vouchers/:id/void', requireCustomerAuth, async (req, res) => {
+  await withIdempotency(req, res, `payment-vouchers-void:${req.params.id}`, async (client) => {
+    const id = parseInt(req.params.id, 10);
+    const companyId = req.customer.company_id;
+    const reason = req.body?.reason ? String(req.body.reason).trim() : '';
+    if (!reason) return { status: 400, body: { error: 'กรุณาระบุเหตุผลการยกเลิก' } };
+    if (!hasVoidPermission(req.customer)) {
+      return { status: 403, body: { error: 'ไม่มีสิทธิ์ยกเลิกเอกสารที่อนุมัติแล้ว (ต้องเป็น super_user หรือมีสิทธิ์บันทึกรายรับ-จ่ายเงินสด)' } };
+    }
+
+    const r = await client.query('SELECT * FROM client_payment_vouchers WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) return { status: 404, body: { error: 'ไม่พบใบเบิกเงิน' } };
+    const v = r.rows[0];
+    if (v.status !== 'approved') {
+      return { status: 409, body: { error: 'ยกเลิกได้เฉพาะใบที่อนุมัติแล้วเท่านั้น (สถานะอื่นใช้ /cancel)' } };
+    }
+    if (isSelfVoidBlocked(req.customer.id, [v.created_by, v.submitted_by, v.approved_by])) {
+      return { status: 403, body: { error: 'ไม่สามารถยกเลิกเอกสารที่ตัวเองสร้าง/ยื่น/อนุมัติได้ แม้เป็นผู้ดูแลระบบก็ตาม' } };
+    }
+    if (v.has_tax_invoice) {
+      return { status: 400, body: { error: 'เอกสารนี้มีใบกำกับภาษีเต็มรูป ยังไม่รองรับการยกเลิกในตอนนี้ (ต้องใช้ใบลดหนี้แทน — ดู known-limitations)' } };
+    }
+    const periodError = await getVoidPeriodLockError(client, companyId, 'payment_voucher', id);
+    if (periodError) return { status: 409, body: { error: periodError } };
+
+    const entries = await findReversibleJournalEntries(client, companyId, 'payment_voucher', id);
+    if (entries.length === 0) return { status: 409, body: { error: 'ไม่พบรายการบัญชีของเอกสารนี้ (อาจถูกยกเลิกไปแล้ว)' } };
+    for (const entry of entries) {
+      await reverseJournalEntry(client, companyId, entry, req.customer.id);
+    }
+
+    const voidedCerts = await voidWhtCertificatesForSources(client, companyId, 'payment_voucher', [id], { voidedBy: req.customer.id, reason });
+
+    await client.query(
+      `UPDATE client_payment_vouchers SET status='voided', voided_by=$1, voided_reason=$2, voided_at=now() WHERE id=$3`,
+      [req.customer.id, reason, id]
+    );
+    await writeAuditLog(client, {
+      companyId, docType: 'payment_voucher', docId: id, action: 'void',
+      fromStatus: 'approved', toStatus: 'voided', performedBy: req.customer.id,
+      reason: reason + (voidedCerts.length ? ` (ยกเลิก 50 ทวิ ${voidedCerts.length} ใบ: ${voidedCerts.join(', ')})` : ''),
+    });
+
+    return { status: 200, body: { voucher: await fetchPaymentVoucher(client, id, companyId) } };
+  });
+});
+
 // ---------------- ยอดเงินทดรองจ่ายคงค้างรายพนักงาน (ข้อ 1.2) ----------------
 // "คงค้าง" = ใบเบิกเงินทดรองจ่ายที่ approved แล้ว แต่ยังไม่มีใบเคลียร์ (client_advance_clearances) สถานะ
 // 'approved' หรือ 'settled' ผูกกับมัน — ใบเดียวเคลียร์ได้ครั้งเดียวเสมอ (unique index
@@ -12822,6 +13023,103 @@ async function generateWhtCertNo(client, companyId) {
   throw new Error('ไม่สามารถสร้างเลขที่หนังสือรับรองหัก ณ ที่จ่ายได้');
 }
 
+// ==================== /void: ยกเลิกเอกสารที่อนุมัติ+ลงบัญชีแล้ว + reversing journal entry ====================
+// (migration 0021, ตามข้อสรุปฝ่ายบัญชี 2026-08-28) — ครอบคลุม client_payment_vouchers/
+// client_advance_clearances/client_subcontract_billings/client_progress_claims — ไม่รวม
+// client_petty_cash_replenishments (ยอดกองทุนคำนวณสด ไม่ต้อง void แยก ดู known-limitations ข.10)
+
+// ใช้ can_settle_cash + super_user ไปก่อน (เหมือน hasSiteExpenseProcessPermission) — ควรแยกเป็น flag
+// can_void_document ของตัวเองในอนาคตถ้าจำนวน flag ที่มีอยู่ยังจัดการได้ (ยืนยันจากฝ่ายบัญชี 2026-08-28)
+function hasVoidPermission(customer) {
+  return customer.role === 'super_user' || customer.can_settle_cash === true;
+}
+
+// self-void แบบเข้ม: ห้ามทั้งคนสร้าง/ยื่น/อนุมัติ/รับรอง void เอกสารที่ตัวเองเกี่ยวข้อง แม้เป็น super_user
+// ก็ตาม (ยืนยันจากฝ่ายบัญชี 2026-08-28 — เหตุผล: void คือการลบล้างผลของการอนุมัติ ถ้าคนอนุมัติลบเองได้
+// การอนุมัติก็ไม่มีความหมาย) originators กรองค่า null/undefined ทิ้งก่อนเทียบเสมอ (ผู้ใช้ระบบเก่าบางคนอาจไม่มี
+// certified_by เพราะไม่ใช่ progress_claim)
+function isSelfVoidBlocked(voidedByCustomerId, originators) {
+  return originators.filter(id => id !== null && id !== undefined).includes(voidedByCustomerId);
+}
+
+// จำกัด void เฉพาะเดือนปฏิทินปัจจุบัน (Asia/Bangkok) ที่ entry_date ของ journal entry ต้นทางตรงกับเดือนนี้
+// เท่านั้น — ระบบยังไม่มีแนวคิด "ปิดงวดบัญชี" จริง (ตรวจสอบแล้วตอนวางแผน 0021 — greenfield) กฎง่ายนี้เป็น
+// mvp ที่เข้มไว้ก่อน (ปลอดภัยกว่าผ่อน) จนกว่าจะได้ข้อมูลจากฝ่ายบัญชีว่าปิดงวดจริงวันไหน แล้วค่อยสร้าง
+// accounting_periods จริง (ดู known-limitations ข.11) — คืน null ถ้า void ได้ หรือข้อความ error ถ้าไม่ได้
+async function getVoidPeriodLockError(client, companyId, sourceType, sourceId) {
+  const sourceTypes = Array.isArray(sourceType) ? sourceType : [sourceType];
+  const r = await client.query(
+    `SELECT to_char(entry_date,'MM') AS entry_month, to_char(entry_date,'YYYY') AS entry_year_ad
+     FROM client_journal_entries
+     WHERE company_id=$1 AND source_type = ANY($2::text[]) AND source_id=$3 AND reverses_entry_id IS NULL
+       AND NOT EXISTS (SELECT 1 FROM client_journal_entries r WHERE r.reverses_entry_id = client_journal_entries.id)
+     ORDER BY entry_date ASC LIMIT 1`,
+    [companyId, sourceTypes, sourceId]
+  );
+  if (r.rowCount === 0) return null; // ไม่มี journal entry ให้ล็อกงวดเลย (ไม่ควรเกิด แต่ปล่อยผ่านให้ชั้นอื่นจัดการ)
+  const todayStr = getBangkokDateStr(); // 'YYYY-MM-DD'
+  const currentMonth = todayStr.slice(5, 7);
+  const currentYearAd = todayStr.slice(0, 4);
+  const { entry_month: entryMonth, entry_year_ad: entryYearAd } = r.rows[0];
+  if (entryMonth === currentMonth && entryYearAd === currentYearAd) return null;
+  const entryYearBe = parseInt(entryYearAd, 10) + 543;
+  const currentYearBe = parseInt(currentYearAd, 10) + 543;
+  return `ไม่สามารถ void ได้ — เอกสารนี้ลงบัญชีเดือน ${parseInt(entryMonth, 10)}/${entryYearBe} แต่ตอนนี้เป็นเดือน ${parseInt(currentMonth, 10)}/${currentYearBe} (void ได้เฉพาะเดือนปัจจุบันที่ยังไม่ปิด)`;
+}
+
+// หา journal entries ต้นฉบับ (ไม่ใช่ตัว reversal เอง) ของเอกสารนี้ที่ยังไม่เคยถูก reverse — รองรับทั้งเอกสาร
+// ที่มี 1 entry (ส่วนใหญ่) และ progress_claim ที่มีได้ถึง 2+N entries โดยไม่ต้องแยกโค้ดเป็นเคสๆ เอง
+async function findReversibleJournalEntries(client, companyId, sourceType, sourceId) {
+  const sourceTypes = Array.isArray(sourceType) ? sourceType : [sourceType];
+  const r = await client.query(
+    `SELECT je.id, je.entry_date, je.description, je.project_id, je.created_by, je.source_type, je.source_id
+     FROM client_journal_entries je
+     WHERE je.company_id=$1 AND je.source_type = ANY($2::text[]) AND je.source_id=$3 AND je.reverses_entry_id IS NULL
+       AND NOT EXISTS (SELECT 1 FROM client_journal_entries r WHERE r.reverses_entry_id = je.id)
+     ORDER BY je.id`,
+    [companyId, sourceTypes, sourceId]
+  );
+  return r.rows;
+}
+
+// สร้าง reversing entry ของ entry เดิม 1 ตัว — entry_date = วันนี้ (วันที่ void จริง) ไม่ใช่วันเดียวกับ
+// entry เดิม (ยืนยันจากฝ่ายบัญชี 2026-08-28 — entry เดิมคือข้อเท็จจริงว่าเกิดขึ้นวันไหน ห้ามแก้ย้อนหลัง)
+async function reverseJournalEntry(client, companyId, originalEntry, createdBy) {
+  const linesRes = await client.query(
+    'SELECT account_code, debit_amount, credit_amount, description FROM client_journal_entry_lines WHERE journal_entry_id=$1',
+    [originalEntry.id]
+  );
+  await createClientJournalEntry(client, {
+    companyId,
+    entryDate: getBangkokDateStr(),
+    description: `กลับรายการ: ${originalEntry.description}`,
+    sourceType: originalEntry.source_type,
+    sourceId: originalEntry.source_id,
+    projectId: originalEntry.project_id,
+    createdBy,
+    reversesEntryId: originalEntry.id,
+    lines: linesRes.rows.map(l => ({
+      accountCode: l.account_code,
+      debitAmount: l.credit_amount, // สลับ Dr/Cr
+      creditAmount: l.debit_amount,
+      description: `กลับรายการ: ${l.description}`,
+    })),
+  });
+}
+
+// ยกเลิก 50-ทวิทั้งหมดที่ผูกกับ sourceIds (source_type+source_id ต้องตรงตัวกับที่ INSERT ไว้ตอนออกจริง —
+// advance_clearance_item ต้อง resolve เป็น item id ก่อนเรียกฟังก์ชันนี้ ไม่ใช่ clearance id)
+async function voidWhtCertificatesForSources(client, companyId, sourceType, sourceIds, { voidedBy, reason }) {
+  if (sourceIds.length === 0) return [];
+  const r = await client.query(
+    `UPDATE client_wht_certificates SET status='voided', voided_by=$1, voided_reason=$2, voided_at=now()
+     WHERE company_id=$3 AND source_type=$4 AND source_id = ANY($5::int[]) AND status='active'
+     RETURNING cert_no`,
+    [voidedBy, reason, companyId, sourceType, sourceIds]
+  );
+  return r.rows.map(row => row.cert_no);
+}
+
 function serializeWhtCertificate(row) {
   return {
     id: row.id, certNo: row.cert_no, sourceType: row.source_type, sourceId: row.source_id,
@@ -12900,7 +13198,9 @@ app.get('/api/customer/advance-clearances/:id/wht-certificates', requireCustomer
 app.get('/api/customer/wht-payable-summary', requireCustomerAuth, async (req, res) => {
   const companyId = req.customer.company_id;
   const { year, month } = req.query;
-  const conditions = ['company_id=$1'];
+  // status='active' เท่านั้น ห้ามรวมใบที่ voided (migration 0021) — ใบที่ยกเลิกแล้วมี reversing journal
+  // entry กลับยอด 2120 ให้แล้ว นับซ้ำจะทำให้ยอดที่ต้องนำส่งจริงเพี้ยนสูงเกินจริง (ยืนยันจากฝ่ายบัญชี 2026-08-28)
+  const conditions = ['company_id=$1', "status = 'active'"];
   const params = [companyId];
   if (year && month) {
     const startStr = `${year}-${String(month).padStart(2, '0')}-01`;
@@ -13324,6 +13624,63 @@ app.post('/api/customer/advance-clearances/:id/cancel', requireCustomerAuth, asy
   } finally {
     client.release();
   }
+});
+
+// ---------------- /void: ยกเลิกใบเคลียร์เงินทดรองจ่ายที่อนุมัติแล้ว + reversing journal entry ----------------
+// (migration 0021) — บล็อก status='settled' เสมอ (มี journal entry ส่วนต่างแยกต่างหากจากตอน settle ยุ่งยาก
+// กว่าจะ reverse ให้ถูกต้องในรอบนี้ — ยืนยันจากฝ่ายบัญชี 2026-08-28: void ได้เฉพาะ 'approved' เท่านั้น)
+app.post('/api/customer/advance-clearances/:id/void', requireCustomerAuth, async (req, res) => {
+  await withIdempotency(req, res, `advance-clearances-void:${req.params.id}`, async (client) => {
+    const id = parseInt(req.params.id, 10);
+    const companyId = req.customer.company_id;
+    const reason = req.body?.reason ? String(req.body.reason).trim() : '';
+    if (!reason) return { status: 400, body: { error: 'กรุณาระบุเหตุผลการยกเลิก' } };
+    if (!hasVoidPermission(req.customer)) {
+      return { status: 403, body: { error: 'ไม่มีสิทธิ์ยกเลิกเอกสารที่อนุมัติแล้ว (ต้องเป็น super_user หรือมีสิทธิ์บันทึกรายรับ-จ่ายเงินสด)' } };
+    }
+
+    const r = await client.query('SELECT * FROM client_advance_clearances WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) return { status: 404, body: { error: 'ไม่พบใบเคลียร์เงินทดรองจ่าย' } };
+    const c = r.rows[0];
+    if (c.status === 'settled') {
+      return { status: 409, body: { error: 'ใบเคลียร์นี้ปิดยอดส่วนต่าง (settled) แล้ว ยังไม่รองรับการยกเลิกในตอนนี้' } };
+    }
+    if (c.status !== 'approved') {
+      return { status: 409, body: { error: 'ยกเลิกได้เฉพาะใบที่อนุมัติแล้วเท่านั้น (สถานะอื่นใช้ /cancel)' } };
+    }
+    if (isSelfVoidBlocked(req.customer.id, [c.created_by, c.submitted_by, c.approved_by])) {
+      return { status: 403, body: { error: 'ไม่สามารถยกเลิกเอกสารที่ตัวเองสร้าง/ยื่น/อนุมัติได้ แม้เป็นผู้ดูแลระบบก็ตาม' } };
+    }
+    const itemsRes = await client.query('SELECT id, has_tax_invoice FROM client_advance_clearance_items WHERE clearance_id=$1 AND company_id=$2', [id, companyId]);
+    if (itemsRes.rows.some(it => it.has_tax_invoice)) {
+      return { status: 400, body: { error: 'เอกสารนี้มีรายการที่มีใบกำกับภาษีเต็มรูป ยังไม่รองรับการยกเลิกในตอนนี้ (ต้องใช้ใบลดหนี้แทน — ดู known-limitations)' } };
+    }
+    const periodError = await getVoidPeriodLockError(client, companyId, 'advance_clearance', id);
+    if (periodError) return { status: 409, body: { error: periodError } };
+
+    const entries = await findReversibleJournalEntries(client, companyId, 'advance_clearance', id);
+    if (entries.length === 0) return { status: 409, body: { error: 'ไม่พบรายการบัญชีของเอกสารนี้ (อาจถูกยกเลิกไปแล้ว)' } };
+    for (const entry of entries) {
+      await reverseJournalEntry(client, companyId, entry, req.customer.id);
+    }
+
+    // 50 ทวิของใบเคลียร์เงินทดรองจ่าย ผูกกับ "item id" ไม่ใช่ "clearance id" (ต่างจาก payment_voucher/
+    // subcontractor_payment ที่ผูกตรงกับ id ของเอกสารเอง) — ต้องรวบรวม item ids ก่อนเสมอ
+    const itemIds = itemsRes.rows.map(it => it.id);
+    const voidedCerts = await voidWhtCertificatesForSources(client, companyId, 'advance_clearance_item', itemIds, { voidedBy: req.customer.id, reason });
+
+    await client.query(
+      `UPDATE client_advance_clearances SET status='voided', voided_by=$1, voided_reason=$2, voided_at=now() WHERE id=$3`,
+      [req.customer.id, reason, id]
+    );
+    await writeAuditLog(client, {
+      companyId, docType: 'advance_clearance', docId: id, action: 'void',
+      fromStatus: c.status, toStatus: 'voided', performedBy: req.customer.id,
+      reason: reason + (voidedCerts.length ? ` (ยกเลิก 50 ทวิ ${voidedCerts.length} ใบ: ${voidedCerts.join(', ')})` : ''),
+    });
+
+    return { status: 200, body: { clearance: await fetchFullAdvanceClearance(client, id, companyId) } };
+  });
 });
 
 // ---------------- ใบเติมเงินกองทุนเงินสดย่อย (petty cash replenishments) ----------------
