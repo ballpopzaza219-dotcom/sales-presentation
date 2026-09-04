@@ -11120,6 +11120,8 @@ app.post('/api/customer/subcontract-billings/:id/void', requireCustomerAuth, asy
     if (billing.has_tax_invoice) {
       return { status: 400, body: { error: 'เอกสารนี้มีใบกำกับภาษีเต็มรูป ยังไม่รองรับการยกเลิกในตอนนี้ (ต้องใช้ใบลดหนี้แทน — ดู known-limitations)' } };
     }
+    const remittedError = await checkCertsNotRemitted(client, companyId, 'subcontractor_payment', [id]);
+    if (remittedError) return { status: 400, body: { error: remittedError } };
     const periodError = await getVoidPeriodLockError(client, companyId, 'subcontract_billing', id);
     if (periodError) return { status: 409, body: { error: periodError } };
 
@@ -12756,6 +12758,8 @@ app.post('/api/customer/payment-vouchers/:id/void', requireCustomerAuth, async (
     if (v.has_tax_invoice) {
       return { status: 400, body: { error: 'เอกสารนี้มีใบกำกับภาษีเต็มรูป ยังไม่รองรับการยกเลิกในตอนนี้ (ต้องใช้ใบลดหนี้แทน — ดู known-limitations)' } };
     }
+    const remittedError = await checkCertsNotRemitted(client, companyId, 'payment_voucher', [id]);
+    if (remittedError) return { status: 400, body: { error: remittedError } };
     const periodError = await getVoidPeriodLockError(client, companyId, 'payment_voucher', id);
     if (periodError) return { status: 409, body: { error: periodError } };
 
@@ -13107,6 +13111,23 @@ async function reverseJournalEntry(client, companyId, originalEntry, createdBy) 
   });
 }
 
+// กันยกเลิกเอกสารที่ 50-ทวิของมันถูกนำส่งกรมสรรพากรไปแล้วจริง (migration 0022, ยืนยันจากฝ่ายบัญชี 2026-08-28)
+// — เงินได้ถูกจ่ายให้กรมสรรพากรไปแล้ว ไม่มีทาง "เอาคืน" ผ่าน endpoint นี้ได้ ต้องจัดการเรื่องขอคืนภาษีแยก
+// ต่างหาก (นอกขอบเขตระบบนี้) คืนข้อความ error ถ้าพบ หรือ null ถ้า void ต่อได้
+async function checkCertsNotRemitted(client, companyId, sourceType, sourceIds) {
+  if (sourceIds.length === 0) return null;
+  const r = await client.query(
+    `SELECT COUNT(c.id)::int AS n, MIN(rm.receipt_no) AS receipt_no, MIN(to_char(rm.paid_date,'YYYY-MM-DD')) AS paid_date
+     FROM client_wht_certificates c JOIN client_wht_remittances rm ON rm.id = c.remittance_id
+     WHERE c.company_id=$1 AND c.source_type=$2 AND c.source_id = ANY($3::int[])`,
+    [companyId, sourceType, sourceIds]
+  );
+  if (r.rows[0].n > 0) {
+    return `เอกสารนี้มีใบ 50-ทวิ ${r.rows[0].n} ใบ ที่นำส่งกรมสรรพากรไปแล้วจริงเมื่อวันที่ ${r.rows[0].paid_date} (เลขที่ใบเสร็จ ${r.rows[0].receipt_no}) ไม่สามารถยกเลิกได้ในตอนนี้`;
+  }
+  return null;
+}
+
 // ยกเลิก 50-ทวิทั้งหมดที่ผูกกับ sourceIds (source_type+source_id ต้องตรงตัวกับที่ INSERT ไว้ตอนออกจริง —
 // advance_clearance_item ต้อง resolve เป็น item id ก่อนเรียกฟังก์ชันนี้ ไม่ใช่ clearance id)
 async function voidWhtCertificatesForSources(client, companyId, sourceType, sourceIds, { voidedBy, reason }) {
@@ -13223,6 +13244,197 @@ app.get('/api/customer/wht-payable-summary', requireCustomerAuth, async (req, re
       totalGross: Number(row.total_gross), totalWht: Number(row.total_wht), certCount: row.cert_count,
     })),
   });
+});
+
+// ==================== ระบบนำส่งภาษีหัก ณ ที่จ่าย (migration 0022) ====================
+// ใช้ can_settle_cash + super_user เหมือน /void (การนำส่งภาษีคือการบันทึกจ่ายเงินจริงให้กรมสรรพากร งานสาย
+// เดียวกับ "บันทึกรายรับ-จ่ายเงินสด") — ยื่นเป็น "ชุด" ต่อ 1 งวด+1 ประเภทฟอร์ม ตรงกับวิธีทำงานจริงที่ยื่น
+// รวมทุกใบของเดือนนั้นในครั้งเดียว ไม่ใช่แยกยื่นทีละใบ 50-ทวิ
+function hasWhtRemittancePermission(customer) {
+  return customer.role === 'super_user' || customer.can_settle_cash === true;
+}
+
+// กำหนดยื่น: วันที่ 7 (กระดาษ) / วันที่ 15 (ออนไลน์) ของเดือนถัดจากงวดที่หัก — คำนวณฝั่ง SQL ด้วย
+// make_date/INTERVAL เสมอ ไม่ใช้ JS Date คำนวณปฏิทินเอง (กันพลาดเรื่อง timezone/จำนวนวันในเดือน)
+async function computeWhtRemittanceDeadlines(dbClient, periodYearAd, periodMonth) {
+  const r = await dbClient.query(
+    `SELECT
+       to_char(d + INTERVAL '6 days', 'YYYY-MM-DD') AS paper_deadline,
+       to_char(d + INTERVAL '14 days', 'YYYY-MM-DD') AS online_deadline,
+       (d + INTERVAL '14 days')::date - CURRENT_DATE AS days_until_online_deadline
+     FROM (SELECT make_date($1::int, $2::int, 1) + INTERVAL '1 month' AS d) t`,
+    [periodYearAd, periodMonth]
+  );
+  return {
+    paperDeadline: r.rows[0].paper_deadline,
+    onlineDeadline: r.rows[0].online_deadline,
+    daysUntilOnlineDeadline: r.rows[0].days_until_online_deadline,
+  };
+}
+
+// สรุปยอดที่ยังไม่ได้นำส่ง แยกตาม (wht_form, งวด) — status='active' เท่านั้น (บทเรียนจากบั๊ก
+// wht-payable-summary) + remittance_id IS NULL (ยังไม่ถูกผูกเข้าชุดไหนเลย)
+app.get('/api/customer/wht-remittances/pending', requireCustomerAuth, async (req, res) => {
+  const companyId = req.customer.company_id;
+  const r = await pool.query(
+    `SELECT wht_form, to_char(payment_date,'YYYY') AS period_year, to_char(payment_date,'MM') AS period_month,
+       SUM(wht_amount) AS total_wht, COUNT(*)::int AS cert_count
+     FROM client_wht_certificates
+     WHERE company_id=$1 AND status='active' AND remittance_id IS NULL
+     GROUP BY wht_form, period_year, period_month ORDER BY period_year, period_month, wht_form`,
+    [companyId]
+  );
+  const pending = [];
+  for (const row of r.rows) {
+    const deadlines = await computeWhtRemittanceDeadlines(pool, parseInt(row.period_year, 10), parseInt(row.period_month, 10));
+    pending.push({
+      whtForm: row.wht_form, periodYear: parseInt(row.period_year, 10), periodMonth: parseInt(row.period_month, 10),
+      totalWht: Number(row.total_wht), certCount: row.cert_count, ...deadlines,
+    });
+  }
+  res.json({ pending });
+});
+
+// สร้างชุดนำส่งจริง — ผูกทุกใบ 50-ทวิ (status='active', remittance_id IS NULL) ของงวด+ฟอร์มนี้เข้าชุดเดียว
+// พร้อมโพสต์ journal entry ล้างยอด 2120 (Dr 2120 / Cr เงินสด-ธนาคาร) ในทรานแซกชันเดียวกัน
+app.post('/api/customer/wht-remittances', requireCustomerAuth, async (req, res) => {
+  await withIdempotency(req, res, 'wht-remittances-create', async (client) => {
+    const companyId = req.customer.company_id;
+    if (!hasWhtRemittancePermission(req.customer)) {
+      return { status: 403, body: { error: 'ไม่มีสิทธิ์บันทึกการนำส่งภาษีหัก ณ ที่จ่าย (ต้องเป็น super_user หรือมีสิทธิ์บันทึกรายรับ-จ่ายเงินสด)' } };
+    }
+    const { whtForm, periodYear, periodMonth, receiptNo, paidDate } = req.body || {};
+    if (!['pnd3', 'pnd53'].includes(whtForm)) return { status: 400, body: { error: 'ระบุประเภทแบบฟอร์มไม่ถูกต้อง (รองรับ pnd3/pnd53 เท่านั้น)' } };
+    const yearInt = parseInt(periodYear, 10);
+    const monthInt = parseInt(periodMonth, 10);
+    if (!Number.isInteger(yearInt) || !Number.isInteger(monthInt) || monthInt < 1 || monthInt > 12) return { status: 400, body: { error: 'ระบุงวด (ปี/เดือน) ไม่ถูกต้อง' } };
+    if (!receiptNo || !String(receiptNo).trim()) return { status: 400, body: { error: 'กรุณาระบุเลขที่ใบเสร็จ' } };
+    if (!paidDate) return { status: 400, body: { error: 'กรุณาระบุวันที่ชำระ' } };
+
+    // ล็อกทุกใบ 50-ทวิ ที่เข้าข่ายก่อนเสมอ (กันแข่งกันนำส่งงวดเดียวกันพร้อมกัน)
+    const certsRes = await client.query(
+      `SELECT id, wht_amount FROM client_wht_certificates
+       WHERE company_id=$1 AND status='active' AND remittance_id IS NULL AND wht_form=$2
+         AND to_char(payment_date,'YYYY')=$3 AND to_char(payment_date,'MM')=$4
+       FOR UPDATE`,
+      [companyId, whtForm, String(yearInt), String(monthInt).padStart(2, '0')]
+    );
+    if (certsRes.rowCount === 0) return { status: 409, body: { error: 'ไม่พบใบ 50-ทวิ ที่ยังไม่นำส่งของงวดนี้ (อาจถูกนำส่งไปแล้ว หรือไม่มีรายการจริง)' } };
+    const certIds = certsRes.rows.map(c => c.id);
+    const totalWht = certsRes.rows.reduce((s, c) => s + Number(c.wht_amount), 0);
+
+    let remittanceId;
+    try {
+      const ins = await client.query(
+        `INSERT INTO client_wht_remittances (company_id, wht_form, period_year_ad, period_month, receipt_no, paid_date, total_wht_amount, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6::date,$7::numeric,$8) RETURNING id`,
+        [companyId, whtForm, yearInt, monthInt, String(receiptNo).trim(), paidDate, totalWht, req.customer.id]
+      );
+      remittanceId = ins.rows[0].id;
+    } catch (err) {
+      if (err.constraint === 'client_wht_remittances_period_unique') {
+        return { status: 409, body: { error: 'งวดและประเภทฟอร์มนี้ถูกบันทึกการนำส่งไปแล้ว' } };
+      }
+      throw err;
+    }
+    await client.query(`UPDATE client_wht_certificates SET remittance_id=$1 WHERE id = ANY($2::int[])`, [remittanceId, certIds]);
+
+    const whtFormLabel = whtForm === 'pnd3' ? 'ภ.ง.ด.3' : 'ภ.ง.ด.53';
+    await createClientJournalEntry(client, {
+      companyId, entryDate: getBangkokDateStr(), description: `นำส่ง ${whtFormLabel} งวด ${monthInt}/${yearInt} (ใบเสร็จ ${receiptNo})`,
+      sourceType: 'manual', sourceId: remittanceId, createdBy: req.customer.id,
+      lines: [
+        { accountCode: ACCOUNT_CODE_WHT_PAYABLE, debitAmount: totalWht, creditAmount: 0, description: `นำส่ง ${whtFormLabel} ${certIds.length} ใบ` },
+        { accountCode: ACCOUNT_CODE_CASH, debitAmount: 0, creditAmount: totalWht, description: `จ่ายกรมสรรพากร ใบเสร็จ ${receiptNo}` },
+      ],
+    });
+
+    await writeAuditLog(client, {
+      companyId, docType: 'wht_remittance', docId: remittanceId, action: 'create',
+      toStatus: 'recorded', performedBy: req.customer.id,
+      reason: `นำส่ง ${whtFormLabel} งวด ${monthInt}/${yearInt} จำนวน ${certIds.length} ใบ ยอดรวม ${totalWht} บาท (ใบเสร็จ ${receiptNo})`,
+    });
+
+    return { status: 200, body: { remittanceId, whtForm, periodYear: yearInt, periodMonth: monthInt, receiptNo: String(receiptNo).trim(), paidDate, totalWht, certCount: certIds.length } };
+  });
+});
+
+app.get('/api/customer/wht-remittances', requireCustomerAuth, async (req, res) => {
+  const companyId = req.customer.company_id;
+  const r = await pool.query(
+    `SELECT id, wht_form, period_year_ad, period_month, receipt_no, to_char(paid_date,'YYYY-MM-DD') AS paid_date, total_wht_amount, created_at
+     FROM client_wht_remittances WHERE company_id=$1 ORDER BY period_year_ad DESC, period_month DESC, id DESC`,
+    [companyId]
+  );
+  res.json({
+    remittances: r.rows.map(row => ({
+      id: row.id, whtForm: row.wht_form, periodYear: row.period_year_ad, periodMonth: row.period_month,
+      receiptNo: row.receipt_no, paidDate: row.paid_date, totalWhtAmount: Number(row.total_wht_amount), createdAt: row.created_at,
+    })),
+  });
+});
+
+// แก้ไขได้เฉพาะ receiptNo/paidDate (ข้อมูลบรรยาย ไม่กระทบยอด/journal ที่โพสต์ไปแล้ว) — สำหรับกรณีกรอกเลขที่
+// ใบเสร็จผิดเท่านั้น ตามที่ยืนยันจากฝ่ายบัญชี (2026-08-28) ไม่รองรับการยกเลิกทั้งชุด/แก้ยอด/แก้ใบที่ผูกไว้
+// ในรอบนี้ (ต้องแก้ยอด/reverse journal ด้วย ซับซ้อนกว่าการแก้ typo ธรรมดา — ดู known-limitations)
+app.put('/api/customer/wht-remittances/:id', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  if (!hasWhtRemittancePermission(req.customer)) {
+    return res.status(403).json({ error: 'ไม่มีสิทธิ์แก้ไขข้อมูลการนำส่งภาษีหัก ณ ที่จ่าย' });
+  }
+  const { receiptNo, paidDate } = req.body || {};
+  if (!receiptNo || !String(receiptNo).trim()) return res.status(400).json({ error: 'กรุณาระบุเลขที่ใบเสร็จ' });
+  if (!paidDate) return res.status(400).json({ error: 'กรุณาระบุวันที่ชำระ' });
+  const r = await pool.query(
+    `UPDATE client_wht_remittances SET receipt_no=$1, paid_date=$2::date WHERE id=$3 AND company_id=$4 RETURNING id`,
+    [String(receiptNo).trim(), paidDate, id, companyId]
+  );
+  if (r.rowCount === 0) return res.status(404).json({ error: 'ไม่พบรายการนำส่งนี้' });
+  res.json({ ok: true });
+});
+
+// export Excel รายชื่อใบ 50-ทวิของงวด+ฟอร์มที่ระบุ — ใช้ได้ทั้งก่อนนำส่งจริง (ตรวจทานก่อนยื่น) และหลังนำส่ง
+// แล้ว (ประกอบการยื่น/เก็บเอกสาร) — เริ่มจาก Excel ทั่วไปก่อน ยังไม่ทำ RD Prep text-file format (ยังไม่มี spec)
+app.get('/api/customer/wht-remittances/export', requireCustomerAuth, async (req, res) => {
+  const companyId = req.customer.company_id;
+  const { whtForm, year, month } = req.query;
+  if (!['pnd3', 'pnd53'].includes(whtForm)) return res.status(400).json({ error: 'ระบุประเภทแบบฟอร์มไม่ถูกต้อง' });
+  const yearInt = parseInt(year, 10);
+  const monthInt = parseInt(month, 10);
+  if (!Number.isInteger(yearInt) || !Number.isInteger(monthInt)) return res.status(400).json({ error: 'ระบุงวดไม่ถูกต้อง' });
+  const r = await pool.query(
+    `SELECT cert_no, to_char(payment_date,'DD/MM/YYYY') AS payment_date, payee_name, payee_tax_id,
+       wht_income_type_name_snapshot, gross_amount, wht_rate, wht_amount, status
+     FROM client_wht_certificates
+     WHERE company_id=$1 AND wht_form=$2 AND to_char(payment_date,'YYYY')=$3 AND to_char(payment_date,'MM')=$4
+     ORDER BY id`,
+    [companyId, whtForm, String(yearInt), String(monthInt).padStart(2, '0')]
+  );
+  const whtFormLabel = whtForm === 'pnd3' ? 'ภ.ง.ด.3' : 'ภ.ง.ด.53';
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet(whtFormLabel);
+  sheet.addRow([`${whtFormLabel} งวด ${monthInt}/${yearInt + 543}`]);
+  sheet.addRow([]);
+  const headerRow = sheet.addRow(['เลขที่ใบ 50 ทวิ', 'วันที่จ่าย', 'ชื่อผู้รับเงิน', 'เลขผู้เสียภาษี', 'ประเภทเงินได้', 'ยอดเงินได้', 'อัตรา (%)', 'ภาษีหัก ณ ที่จ่าย', 'สถานะ']);
+  headerRow.font = { bold: true };
+  let total = 0;
+  for (const row of r.rows) {
+    sheet.addRow([row.cert_no, row.payment_date, row.payee_name, row.payee_tax_id, row.wht_income_type_name_snapshot,
+      Number(row.gross_amount), Number(row.wht_rate), Number(row.wht_amount), row.status === 'voided' ? 'ยกเลิกแล้ว' : 'ใช้งานอยู่']);
+    if (row.status !== 'voided') total += Number(row.wht_amount);
+  }
+  sheet.addRow([]);
+  sheet.addRow(['', '', '', '', '', '', 'รวม (เฉพาะใบที่ยังใช้งานอยู่)', total]);
+  sheet.columns.forEach(col => { col.width = 20; });
+  // ชื่อไฟล์ต้องเป็น ASCII ล้วนเท่านั้น — Content-Disposition เป็น HTTP header (จำกัดแค่ ASCII/Latin-1)
+  // ใส่ภาษาไทยตรงๆ ทำให้ Node โยน ERR_INVALID_CHAR ทันที (500 แบบไม่มีร่องรอยในฝั่ง client เลย นอกจาก
+  // "เกิดข้อผิดพลาดที่เซิร์ฟเวอร์") — ป้ายชื่อภาษาไทยยังอยู่ในเนื้อหาไฟล์ (sheet name/หัวตาราง) ตามปกติ
+  const asciiFormLabel = whtForm === 'pnd3' ? 'PND3' : 'PND53';
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${asciiFormLabel}_${yearInt}-${String(monthInt).padStart(2, '0')}.xlsx"`);
+  await workbook.xlsx.write(res);
+  res.end();
 });
 
 // ต้องมี Idempotency-Key เสมอ — กันกดสร้างซ้ำ (double-click) ได้ใบเคลียร์ซ้ำสองใบจากคำขอเดียวกัน
@@ -13655,6 +13867,8 @@ app.post('/api/customer/advance-clearances/:id/void', requireCustomerAuth, async
     if (itemsRes.rows.some(it => it.has_tax_invoice)) {
       return { status: 400, body: { error: 'เอกสารนี้มีรายการที่มีใบกำกับภาษีเต็มรูป ยังไม่รองรับการยกเลิกในตอนนี้ (ต้องใช้ใบลดหนี้แทน — ดู known-limitations)' } };
     }
+    const remittedError = await checkCertsNotRemitted(client, companyId, 'advance_clearance_item', itemsRes.rows.map(it => it.id));
+    if (remittedError) return { status: 400, body: { error: remittedError } };
     const periodError = await getVoidPeriodLockError(client, companyId, 'advance_clearance', id);
     if (periodError) return { status: 409, body: { error: periodError } };
 
