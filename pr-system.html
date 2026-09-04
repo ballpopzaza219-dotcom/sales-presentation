@@ -7454,10 +7454,11 @@ function progressClaimStatusLabels(){
   return {
     draft: tr('pr.status_draft'), submitted: tr('pr.status_submitted'), certified: tr('fin_progress.status_certified'),
     approved: tr('pr.status_approved'), rejected: tr('pr.status_rejected'), cancelled: tr('pr.status_cancelled'),
+    voided: tr('fin_sbill.status_voided'),
   };
 }
 function progressClaimStatusBadgeClass(status){
-  return status==='approved' ? 'badge-approved' : status==='rejected' ? 'badge-suspended' : status==='cancelled' ? 'badge-suspended'
+  return status==='approved' ? 'badge-approved' : (status==='rejected'||status==='cancelled'||status==='voided') ? 'badge-suspended'
     : status==='certified' ? 'badge-pending' : status==='submitted' ? 'badge-pending' : 'badge-draft';
 }
 function pageFinProgressClaims(){
@@ -9851,7 +9852,8 @@ function voucherStatusLabels(){
 }
 function voucherStatusBadgeClass(status){
   return status==='approved' ? 'badge-approved' : status==='submitted' ? 'badge-pending'
-    : status==='rejected' ? 'badge-rejected' : status==='draft' ? 'badge-draft' : 'badge-suspended';
+    : status==='rejected' ? 'badge-rejected' : status==='draft' ? 'badge-draft'
+    : (status==='cancelled'||status==='voided') ? 'badge-suspended' : 'badge-suspended';
 }
 // ข้อความ/label เฉพาะแต่ละประเภท ตามที่กำหนดไว้ — "1.2 ใช้คำว่า 'ผู้ขอเบิก' ไม่ใช่ 'ผู้รับเงิน'" ฯลฯ
 function voucherTypeConfig(voucherType){
@@ -10380,7 +10382,10 @@ function pageFinAdvanceOutstanding(){
 function pageFinWhtCertificates(){
   const rows = S.whtCertificates || [];
   const filt = S.whtCertificatesFilter;
-  const grandTotal = rows.reduce((s,c)=>s+Number(c.whtAmount),0);
+  // ยอดรวมนับเฉพาะใบที่ status='active' เท่านั้น — ใบที่ voided แล้ว reversing entry กลับยอดให้แล้วจริง
+  // (migration 0021) นับซ้ำจะทำให้ยอดที่เห็นบนหน้าจอสูงเกินจริง (ปัญหาเดียวกับที่แก้ wht-payable-summary
+  // ฝั่ง backend ไปแล้ว จุดนี้เป็นอีกจุดที่ต้องแก้คู่กัน)
+  const grandTotal = rows.filter(c=>c.status!=='voided').reduce((s,c)=>s+Number(c.whtAmount),0);
   return `
   <div class="page-head"><div><h2>${tr('nav.fin_wht_certificates')}</h2><div class="sub">${tr('voucher.wht_cert_list_sub')}</div></div></div>
   <div class="card" style="padding:14px 16px; margin-bottom:16px;">
@@ -10400,7 +10405,7 @@ function pageFinWhtCertificates(){
         <th>${tr('voucher.wht_cert_col_no')}</th><th>${tr('voucher.col_date')}</th>
         <th>${tr('voucher.wht_cert_col_payee')}</th><th>${tr('voucher.oth_wht_income_type')}</th>
         <th class="num-cell">${tr('voucher.oth_summary_gross')}</th><th class="num-cell">${tr('voucher.wht_cert_col_rate')}</th>
-        <th class="num-cell">${tr('voucher.oth_summary_wht')}</th><th></th>
+        <th class="num-cell">${tr('voucher.oth_summary_wht')}</th><th>${tr('common.col_status')}</th><th></th>
       </tr></thead>
       <tbody>${rows.map(c=>`
         <tr>
@@ -10411,13 +10416,14 @@ function pageFinWhtCertificates(){
           <td class="mono num-cell">${fmtMoney(c.grossAmount)}</td>
           <td class="mono num-cell">${c.whtRate}%</td>
           <td class="mono num-cell">${fmtMoney(c.whtAmount)}</td>
+          <td><span class="badge ${c.status==='voided'?'badge-suspended':'badge-approved'}">${c.status==='voided'?tr('voucher.status_voided'):tr('voucher.wht_cert_status_active')}</span></td>
           <td><button class="btn btn-ghost btn-sm" data-act="print-wht-certificate" data-id="${c.id}">${tr('voucher.wht_cert_print_button')}</button></td>
         </tr>`).join('')}
       </tbody>
       <tfoot><tr>
         <td colspan="6" style="text-align:right; font-weight:700;">${tr('voucher.outstanding_grand_total')}</td>
         <td class="mono num-cell" style="font-weight:700;">${fmtMoney(grandTotal)}</td>
-        <td></td>
+        <td></td><td></td>
       </tr></tfoot>
     </table></div>`}
   </div>`;
@@ -10487,13 +10493,14 @@ function clearanceStatusLabels(){
     draft: tr('voucher.status_draft'), submitted: tr('voucher.status_submitted'),
     approved: tr('voucher.status_approved'), rejected: tr('voucher.status_rejected'),
     cancelled: tr('voucher.status_cancelled'), settled: tr('clearance.status_settled'),
+    voided: tr('voucher.status_voided'),
   };
 }
 function clearanceStatusBadgeClass(status){
   // 'approved' ตั้งใจใช้ badge-pending (ไม่ใช่ badge-approved) — ยังไม่จบงานจริงถ้ามีส่วนต่างค้าง รอ /settle
   // อยู่ ต่างจาก voucher ทั่วไปที่ approved = จบแล้ว ('settled' คือสถานะจบจริงของใบเคลียร์)
   return status==='settled' ? 'badge-approved' : status==='approved' ? 'badge-pending' : status==='submitted' ? 'badge-pending'
-    : status==='rejected' ? 'badge-rejected' : status==='draft' ? 'badge-draft' : 'badge-suspended';
+    : status==='rejected' ? 'badge-rejected' : status==='draft' ? 'badge-draft' : status==='voided' ? 'badge-suspended' : 'badge-suspended';
 }
 // ข้อความสรุปส่วนต่างเป็นภาษาคนอ่านง่าย — สูตรตรงกับ difference_amount = total_expense_amount -
 // advance_amount ที่ DB คำนวณเป็น GENERATED COLUMN เป๊ะ (migration 0001:214): บวก = เบิกไปใช้มากกว่าที่

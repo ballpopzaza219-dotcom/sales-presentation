@@ -1282,6 +1282,7 @@
   "voucher.status_rejected": "ถูกปฏิเสธ",
   "voucher.status_cancelled": "ยกเลิกแล้ว",
   "voucher.status_voided": "ยกเลิก (หลังอนุมัติ)",
+  "voucher.wht_cert_status_active": "ใช้งานอยู่",
 
   "voucher.detail_title": "รายละเอียดใบเบิกเงิน",
   "voucher.detail_load_error": "โหลดข้อมูลไม่สำเร็จ",

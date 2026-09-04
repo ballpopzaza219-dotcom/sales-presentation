@@ -1282,6 +1282,7 @@
   "voucher.status_rejected": "Rejected",
   "voucher.status_cancelled": "Cancelled",
   "voucher.status_voided": "Voided (post-approval)",
+  "voucher.wht_cert_status_active": "Active",
 
   "voucher.detail_title": "Voucher Detail",
   "voucher.detail_load_error": "Failed to load",
