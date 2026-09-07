@@ -71,6 +71,25 @@ try {
   Write-Output "  ERROR: เช็คพื้นที่ดิสก์ไม่ได้: $($_.Exception.Message)"
 }
 
+Write-Output "`n=== Backup ฐานข้อมูล (D:\SiteReqBackups) ==="
+$backupMaxAgeHours = 26
+$backupDir = 'D:\SiteReqBackups'
+if (Test-Path $backupDir) {
+  $latestBackup = Get-ChildItem -Path $backupDir -Filter 'sitereq_db_*.dump' -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  if ($latestBackup) {
+    $ageHours = [math]::Round(((Get-Date) - $latestBackup.LastWriteTime).TotalHours, 1)
+    Write-Output "  ไฟล์ล่าสุด: $($latestBackup.Name) (อายุ $ageHours ชม.)"
+    if ($ageHours -gt $backupMaxAgeHours) { $problems += "backup ล่าสุดเก่าเกิน $backupMaxAgeHours ชม. (อายุจริง $ageHours ชม.) — เช็ค Scheduled Task 'SiteReqDatabaseBackup' ว่ายังรันอยู่ไหม" }
+  } else {
+    Write-Output "  ไม่พบไฟล์ backup เลยในโฟลเดอร์นี้"
+    $problems += "ไม่พบไฟล์ backup ฐานข้อมูลเลยที่ $backupDir"
+  }
+} else {
+  Write-Output "  ไม่พบโฟลเดอร์ $backupDir"
+  $problems += "ไม่พบโฟลเดอร์ backup ($backupDir) — ยังไม่เคยรัน server\scripts\backup-database.ps1 เลยหรือไม่"
+}
+
 Write-Output "`n================================"
 if ($problems.Count -eq 0) {
   Write-Output "ทุกอย่างปกติ — ไม่พบปัญหา"
