@@ -42,6 +42,16 @@ async function login(username, companyCode) {
 }
 let idemCounter = 0;
 function idemKey(label) { return `${label}-${Date.now()}-${idemCounter++}`; }
+async function uploadVoucherAttachment(username, voucherId) {
+  const form = new FormData();
+  form.append('photos', new Blob([Buffer.from('fake-tax-invoice-photo-for-test')], { type: 'image/png' }), 'tax-invoice.png');
+  const res = await fetch(`${BASE}/api/customer/payment-vouchers/${voucherId}/attachments`, {
+    method: 'POST', headers: { Cookie: cookies[username] || '' }, body: form,
+  });
+  const json = await res.json();
+  if (!res.ok) { const e = new Error(json.error); e.status = res.status; throw e; }
+  return json;
+}
 
 (async () => {
   const createdVoucherIds = [];
@@ -107,6 +117,8 @@ function idemKey(label) { return `${label}-${Date.now()}-${idemCounter++}`; }
     // ================= 4) VAT + WHT: ตรวจยอดบัญชี + ออก 50 ทวิ =================
     let vTax = await makeVoucher('fx_maker', 10000, { hasTaxInvoice: true, vatRate: 7, whtRate: 3, whtIncomeTypeCode: '40_7' });
     createdVoucherIds.push(vTax.id);
+    // hasTaxInvoice:true ต้องแนบรูปใบกำกับภาษีก่อนยื่นเสมอ (บังคับตั้งแต่รอบเพิ่มระบบแนบไฟล์ให้เอกสารกลุ่มนี้)
+    await uploadVoucherAttachment('fx_maker', vTax.id);
     await submitVoucher('fx_maker', vTax.id);
     const approveTax = await call('fx_approver_mid', 'POST', `/api/customer/payment-vouchers/${vTax.id}/approve`, {}, idemKey('ext-approve'));
     assert(approveTax.voucher.status === 'approved', 'อนุมัติใบที่มี VAT+WHT สำเร็จ');

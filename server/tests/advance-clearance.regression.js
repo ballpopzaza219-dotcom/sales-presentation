@@ -42,6 +42,16 @@ async function login(username, companyCode) {
 }
 let idemCounter = 0;
 function idemKey(label) { return `${label}-${Date.now()}-${idemCounter++}`; }
+async function uploadClearanceItemAttachment(username, clearanceId, itemId) {
+  const form = new FormData();
+  form.append('photos', new Blob([Buffer.from('fake-tax-invoice-photo-for-test')], { type: 'image/png' }), 'tax-invoice.png');
+  const res = await fetch(`${BASE}/api/customer/advance-clearances/${clearanceId}/items/${itemId}/attachments`, {
+    method: 'POST', headers: { Cookie: cookies[username] || '' }, body: form,
+  });
+  const json = await res.json();
+  if (!res.ok) { const e = new Error(json.error); e.status = res.status; throw e; }
+  return json;
+}
 
 async function makeApprovedAdvanceVoucher(amount, approverUsername = 'fx_approver_mid') {
   const created = await call('fx_maker', 'POST', '/api/customer/payment-vouchers', {
@@ -157,6 +167,13 @@ async function makeApprovedAdvanceVoucher(amount, approverUsername = 'fx_approve
     }, idemKey('advcl-create'));
     const clearance3 = clearance3Create.clearance;
     createdClearanceIds.push(clearance3.id);
+    // รายการที่มี hasTaxInvoice:true ต้องแนบรูปใบกำกับภาษีก่อนยื่นเสมอ (บังคับตั้งแต่รอบเพิ่มระบบแนบไฟล์
+    // ให้เอกสารกลุ่มนี้ — ดู server.js validateSubmitAdvanceClearance) หา item id ของบรรทัดนั้นจาก DB ตรงๆ
+    const taxInvoiceItemId = (await pool.query(
+      `SELECT id FROM client_advance_clearance_items WHERE clearance_id=$1 AND has_tax_invoice=true LIMIT 1`,
+      [clearance3.id]
+    )).rows[0].id;
+    await uploadClearanceItemAttachment('fx_maker', clearance3.id, taxInvoiceItemId);
     await call('fx_maker', 'POST', `/api/customer/advance-clearances/${clearance3.id}/submit`, {}, idemKey('advcl-submit'));
     const approve3 = await call('fx_approver_mid', 'POST', `/api/customer/advance-clearances/${clearance3.id}/approve`, {}, idemKey('advcl-approve'));
     // net_amount ต่อบรรทัด: item1 = 3000+210(vat)-90(wht)=3120, item2=2500 -> total_expense_amount=5620
@@ -207,6 +224,8 @@ async function makeApprovedAdvanceVoucher(amount, approverUsername = 'fx_approve
       }
       if (createdClearanceIds.length) {
         await pool.query('DELETE FROM client_wht_certificates WHERE source_type=\'advance_clearance_item\' AND source_id IN (SELECT id FROM client_advance_clearance_items WHERE clearance_id = ANY($1))', [createdClearanceIds]);
+        // item_id ไม่มี ON DELETE CASCADE (ต่างจาก clearance_id ที่มี) — ต้องลบไฟล์แนบก่อนลบ items เสมอ
+        await pool.query('DELETE FROM client_advance_clearance_attachments WHERE clearance_id = ANY($1)', [createdClearanceIds]);
         await pool.query(`DELETE FROM client_journal_entry_lines WHERE journal_entry_id IN (SELECT id FROM client_journal_entries WHERE source_type='advance_clearance' AND source_id = ANY($1))`, [createdClearanceIds]);
         await pool.query(`DELETE FROM client_journal_entries WHERE source_type='advance_clearance' AND source_id = ANY($1)`, [createdClearanceIds]);
         await pool.query('DELETE FROM client_document_audit_log WHERE doc_type=\'advance_clearance\' AND doc_id = ANY($1)', [createdClearanceIds]);

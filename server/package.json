@@ -40,7 +40,8 @@
     "test:site-work-ui": "node tests/site-work-ui.regression.js",
     "test:void-reversing-entry": "node tests/void-reversing-entry.regression.js",
     "test:wht-remittances": "node tests/wht-remittances.regression.js",
-    "test:regression-all": "npm run test:client-ledger && npm run test:petty-cash-vouchers-ui && npm run test:advance-vouchers-ui && npm run test:external-payment-ui && npm run test:advance-clearance-ui && npm run test:advance-clearance-settle-ui && npm run test:pr-ui && npm run test:po-ui && npm run test:wo-ui && npm run test:progress-claims-ui && npm run test:subcontract-billings-ui && npm run test:dual-module-nav && npm run test:site-work-ui && npm run test:void-reversing-entry && npm run test:wht-remittances"
+    "test:attachments-void-cancel": "node tests/attachments-void-cancel.regression.js",
+    "test:regression-all": "npm run test:client-ledger && npm run test:petty-cash-vouchers-ui && npm run test:advance-vouchers-ui && npm run test:external-payment-ui && npm run test:advance-clearance-ui && npm run test:advance-clearance-settle-ui && npm run test:pr-ui && npm run test:po-ui && npm run test:wo-ui && npm run test:progress-claims-ui && npm run test:subcontract-billings-ui && npm run test:dual-module-nav && npm run test:site-work-ui && npm run test:void-reversing-entry && npm run test:wht-remittances && npm run test:attachments-void-cancel"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

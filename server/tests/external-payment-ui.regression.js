@@ -19,6 +19,7 @@ async function shot(page, name){ shotN++; await page.screenshot({ path: path.joi
 
 let passed = 0;
 function assert(cond, msg){ if(!cond) throw new Error('ASSERTION FAILED: '+msg); passed++; console.log('  OK:', msg); }
+const testFile = (name) => ({ name, mimeType: 'image/jpeg', buffer: Buffer.from([0xFF, 0xD8, 0xFF, 0xD9]) });
 
 (async () => {
   let browser;
@@ -125,6 +126,12 @@ function assert(cond, msg){ if(!cond) throw new Error('ASSERTION FAILED: '+msg);
 
     await page.click(`tr[data-id="${voucher41Id}"]`);
     await page.waitForTimeout(500);
+    // hasTaxInvoice:true บังคับแนบไฟล์ใบกำกับภาษีก่อนยื่นเสมอ (บังคับตั้งแต่รอบเพิ่มระบบแนบไฟล์ให้เอกสาร
+    // กลุ่มนี้) — แนบผ่าน UI จริงก่อน submit
+    await page.setInputFiles('#voucher-tax-photos', [testFile('tax-invoice-41.jpg')]);
+    await page.click('[data-act="upload-voucher-attachment"]');
+    await page.waitForTimeout(600);
+    await shot(page, 'voucher-41-tax-invoice-attached');
     await page.click('[data-act="submit-voucher"]');
     await page.waitForTimeout(700);
 
@@ -196,6 +203,9 @@ function assert(cond, msg){ if(!cond) throw new Error('ASSERTION FAILED: '+msg);
 
     await page.click(`tr[data-id="${voucher42Id}"]`);
     await page.waitForTimeout(500);
+    await page.setInputFiles('#voucher-tax-photos', [testFile('tax-invoice-42.jpg')]);
+    await page.click('[data-act="upload-voucher-attachment"]');
+    await page.waitForTimeout(600);
     await page.click('[data-act="submit-voucher"]');
     await page.waitForTimeout(700);
 

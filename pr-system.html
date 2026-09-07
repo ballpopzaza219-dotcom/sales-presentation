@@ -980,19 +980,22 @@ async function loadVoucherDetail(id){
   S.selectedVoucherDetail = null;
   render();
   try {
-    const [voucherRes, auditRes, journalRes] = await Promise.all([
+    const [voucherRes, auditRes, journalRes, attachRes] = await Promise.all([
       fetch(`/api/customer/payment-vouchers/${id}`),
       fetch(`/api/customer/audit-log?docType=payment_voucher&docId=${id}`),
       fetch(`/api/customer/journal-entries?sourceType=payment_voucher&sourceId=${id}`),
+      fetch(`/api/customer/payment-vouchers/${id}/attachments`),
     ]);
     const voucherData = await voucherRes.json().catch(()=>({}));
     if(!voucherRes.ok) throw new Error(voucherData.error || 'โหลดข้อมูลใบเบิกเงินไม่สำเร็จ');
     const auditData = await auditRes.json().catch(()=>({}));
     const journalData = await journalRes.json().catch(()=>({}));
+    const attachData = await attachRes.json().catch(()=>({}));
     S.selectedVoucherDetail = {
       voucher: voucherData.voucher,
       auditLog: (auditRes.ok && auditData.logs) ? auditData.logs : [],
       journalEntries: (journalRes.ok && journalData.entries) ? journalData.entries : [],
+      attachments: (attachRes.ok && attachData.attachments) ? attachData.attachments : [],
     };
   } catch(e){
     toast(e.message || 'โหลดข้อมูลใบเบิกเงินไม่สำเร็จ', 'err');
@@ -1094,22 +1097,25 @@ async function loadAdvanceClearanceDetail(id){
   S.selectedAdvanceClearanceDetail = null;
   render();
   try {
-    const [clearanceRes, auditRes, journalRes, certRes] = await Promise.all([
+    const [clearanceRes, auditRes, journalRes, certRes, attachRes] = await Promise.all([
       fetch(`/api/customer/advance-clearances/${id}`),
       fetch(`/api/customer/audit-log?docType=advance_clearance&docId=${id}`),
       fetch(`/api/customer/journal-entries?sourceType=advance_clearance&sourceId=${id}`),
       fetch(`/api/customer/advance-clearances/${id}/wht-certificates`),
+      fetch(`/api/customer/advance-clearances/${id}/attachments`),
     ]);
     const clearanceData = await clearanceRes.json().catch(()=>({}));
     if(!clearanceRes.ok) throw new Error(clearanceData.error || 'โหลดข้อมูลใบเคลียร์เงินทดรองจ่ายไม่สำเร็จ');
     const auditData = await auditRes.json().catch(()=>({}));
     const journalData = await journalRes.json().catch(()=>({}));
     const certData = await certRes.json().catch(()=>({}));
+    const attachData = await attachRes.json().catch(()=>({}));
     S.selectedAdvanceClearanceDetail = {
       clearance: clearanceData.clearance,
       auditLog: (auditRes.ok && auditData.logs) ? auditData.logs : [],
       journalEntries: (journalRes.ok && journalData.entries) ? journalData.entries : [],
       whtCertificates: (certRes.ok && certData.whtCertificates) ? certData.whtCertificates : [],
+      attachments: (attachRes.ok && attachData.attachments) ? attachData.attachments : [],
     };
   } catch(e){
     toast(e.message || 'โหลดข้อมูลใบเคลียร์เงินทดรองจ่ายไม่สำเร็จ', 'err');
@@ -10277,6 +10283,16 @@ function pageFinPaymentVoucherDetail(){
       <div><div class="hint" style="font-weight:600;">${tr('voucher.oth_summary_net')}</div><div class="mono" style="font-weight:700;">${fmtMoney(v.netAmount)}</div></div>
       ${v.whtIncomeTypeCode ? `<div><div class="hint">${tr('voucher.oth_wht_income_type')}</div><div>${esc((()=>{ const t=(S.whtIncomeTypes||[]).find(x=>x.code===v.whtIncomeTypeCode); return t ? `${t.code} ${t.nameTh}` : v.whtIncomeTypeCode; })())}</div></div>` : ''}
     </div>` : ''}
+    ${v.hasTaxInvoice ? `
+    <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border);">
+      <div class="section-title" style="margin-top:0;">${tr('voucher.tax_invoice_attachment_section')}</div>
+      ${attachmentGalleryCard(d.attachments||[], attId=>`/api/customer/payment-vouchers/${v.id}/attachments/${attId}/file`)}
+      ${isDraft && isCreator ? `
+      <div style="margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <input type="file" id="voucher-tax-photos" accept="image/jpeg,image/png,image/webp,application/pdf" multiple>
+        <button class="btn btn-ghost btn-sm" data-act="upload-voucher-attachment" data-id="${v.id}" ${S.voucherAttachmentUploading?'disabled':''}>${tr('voucher.tax_invoice_attach_button')}</button>
+      </div>` : ''}
+    </div>` : ''}
   </div>`}
   <div class="card" style="padding:20px 22px; margin-bottom:16px;">
     <div class="small-btn-row" style="justify-content:flex-end;">
@@ -10890,7 +10906,18 @@ function pageFinAdvanceClearanceDetail(){
           <td class="mono num-cell">${it.whtAmount>0?fmtMoney(it.whtAmount):'-'}</td>
           <td class="mono num-cell" style="font-weight:600;">${fmtMoney(it.netAmount)}</td>
           <td>${esc(it.payeeName)}</td>
-        </tr>`).join('')}
+        </tr>${it.hasTaxInvoice ? `
+        <tr><td colspan="7" style="padding-top:0;">
+          <div style="padding:10px 0 10px 14px; border-left:2px solid var(--border);">
+            <div class="hint" style="margin-bottom:6px;">${tr('voucher.tax_invoice_attachment_section')}</div>
+            ${attachmentGalleryCard((d.attachments||[]).filter(a=>a.item_id===it.id), attId=>`/api/customer/advance-clearances/${c.id}/attachments/${attId}/file`)}
+            ${isDraft && isCreator ? `
+            <div style="margin-top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+              <input type="file" id="clearance-item-photos-${it.id}" accept="image/jpeg,image/png,image/webp,application/pdf" multiple>
+              <button class="btn btn-ghost btn-sm" data-act="upload-clearance-item-attachment" data-clearance-id="${c.id}" data-item-id="${it.id}" ${S.voucherAttachmentUploading?'disabled':''}>${tr('voucher.tax_invoice_attach_button')}</button>
+            </div>` : ''}
+          </div>
+        </td></tr>` : ''}`).join('')}
       </tbody>
     </table></div>
   </div>`}
@@ -14854,6 +14881,46 @@ async function handleAction(act, el){
       S.goodsReceiptSaving = false;
       await goToPage('fin_po_detail', { selectedPurchaseOrderId: poId });
     } catch(e){ S.goodsReceiptSaving = false; toast(e.message,'err'); render(); }
+    return;
+  }
+
+  if(act==='upload-voucher-attachment'){
+    const id = parseInt(el.dataset.id,10);
+    // อ่าน fileInput.files ก่อน render() เสมอ (เหตุผลเดียวกับ submit-goods-receipt — render() ล้าง input เดิมทิ้ง)
+    const fileInput = document.getElementById('voucher-tax-photos');
+    if(!fileInput || fileInput.files.length===0){ toast(tr('voucher.tax_invoice_attach_empty_err'),'err'); return; }
+    const fd = new FormData();
+    for(const file of fileInput.files) fd.append('photos', file);
+    if(S.voucherAttachmentUploading) return;
+    S.voucherAttachmentUploading = true; render();
+    try{
+      const res = await fetch(`/api/customer/payment-vouchers/${id}/attachments`, { method:'POST', body: fd });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.error || tr('users.save_failed_err'));
+      toast(tr('voucher.tax_invoice_attach_success'));
+      S.voucherAttachmentUploading = false;
+      await loadVoucherDetail(id);
+    } catch(e){ S.voucherAttachmentUploading = false; toast(e.message,'err'); render(); }
+    return;
+  }
+
+  if(act==='upload-clearance-item-attachment'){
+    const clearanceId = parseInt(el.dataset.clearanceId,10);
+    const itemId = parseInt(el.dataset.itemId,10);
+    const fileInput = document.getElementById(`clearance-item-photos-${itemId}`);
+    if(!fileInput || fileInput.files.length===0){ toast(tr('voucher.tax_invoice_attach_empty_err'),'err'); return; }
+    const fd = new FormData();
+    for(const file of fileInput.files) fd.append('photos', file);
+    if(S.voucherAttachmentUploading) return;
+    S.voucherAttachmentUploading = true; render();
+    try{
+      const res = await fetch(`/api/customer/advance-clearances/${clearanceId}/items/${itemId}/attachments`, { method:'POST', body: fd });
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.error || tr('users.save_failed_err'));
+      toast(tr('voucher.tax_invoice_attach_success'));
+      S.voucherAttachmentUploading = false;
+      await loadAdvanceClearanceDetail(clearanceId);
+    } catch(e){ S.voucherAttachmentUploading = false; toast(e.message,'err'); render(); }
     return;
   }
 

@@ -1283,6 +1283,10 @@
   "voucher.status_cancelled": "Cancelled",
   "voucher.status_voided": "Voided (post-approval)",
   "voucher.wht_cert_status_active": "Active",
+  "voucher.tax_invoice_attachment_section": "Tax Invoice Attachments",
+  "voucher.tax_invoice_attach_button": "Attach File",
+  "voucher.tax_invoice_attach_empty_err": "Please select at least 1 file (jpg, png, webp, pdf, max 5MB each)",
+  "voucher.tax_invoice_attach_success": "Tax invoice attached successfully",
 
   "voucher.detail_title": "Voucher Detail",
   "voucher.detail_load_error": "Failed to load",

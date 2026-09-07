@@ -11225,6 +11225,168 @@ async function insertSiteExpenseAttachments(client, { submissionId, companyId, f
   }
 }
 
+// ---------------- ไฟล์แนบใบกำกับภาษี — payment_voucher (voucher_type='other') / advance_clearance_item ----------------
+// ต่อ endpoint จริงให้ 2 ตารางที่มี schema มาตั้งแต่ migration 0001 (client_payment_voucher_attachments/
+// client_advance_clearance_attachments) แต่ไม่เคยถูกเชื่อมเลย (ค้างจากข้อ 4 ของแผนก่อน /void) — ใช้กลไก
+// multer เดียวกับงานหน้างานทุกจุด (makeSiteAttachmentUpload/cleanupUploadedFiles/siteAttachmentErrorMessage
+// ที่นิยามไว้ด้านบนแล้ว) client_subcontract_billings ไม่มีตารางไฟล์แนบ (ไม่เคยออกแบบไว้ ไม่อยู่ในขอบเขตนี้)
+const PAYMENT_VOUCHER_ATTACHMENTS_DIR = path.join(__dirname, 'uploads', 'payment-voucher-attachments');
+fs.mkdirSync(PAYMENT_VOUCHER_ATTACHMENTS_DIR, { recursive: true });
+const ADVANCE_CLEARANCE_ATTACHMENTS_DIR = path.join(__dirname, 'uploads', 'advance-clearance-attachments');
+fs.mkdirSync(ADVANCE_CLEARANCE_ATTACHMENTS_DIR, { recursive: true });
+const paymentVoucherAttachmentUpload = makeSiteAttachmentUpload(PAYMENT_VOUCHER_ATTACHMENTS_DIR);
+function uploadPaymentVoucherAttachmentsMiddleware(req, res, next) {
+  paymentVoucherAttachmentUpload.array('photos', MAX_SITE_ATTACHMENTS_PER_UPLOAD)(req, res, (err) => {
+    if (err) return res.status(400).json({ error: siteAttachmentErrorMessage(err) });
+    next();
+  });
+}
+const advanceClearanceAttachmentUpload = makeSiteAttachmentUpload(ADVANCE_CLEARANCE_ATTACHMENTS_DIR);
+function uploadAdvanceClearanceAttachmentsMiddleware(req, res, next) {
+  advanceClearanceAttachmentUpload.array('photos', MAX_SITE_ATTACHMENTS_PER_UPLOAD)(req, res, (err) => {
+    if (err) return res.status(400).json({ error: siteAttachmentErrorMessage(err) });
+    next();
+  });
+}
+async function insertPaymentVoucherAttachments(client, { voucherId, companyId, files, uploadedBy }) {
+  for (const f of files || []) {
+    const checksum = crypto.createHash('sha256').update(fs.readFileSync(f.path)).digest('hex');
+    await client.query(
+      `INSERT INTO client_payment_voucher_attachments (company_id, voucher_id, file_name, storage_path, mime_type, file_size, checksum, uploaded_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [companyId, voucherId, f.originalname, f.filename, f.mimetype, f.size, checksum, uploadedBy]
+    );
+  }
+}
+async function insertAdvanceClearanceAttachments(client, { clearanceId, itemId, companyId, files, uploadedBy }) {
+  for (const f of files || []) {
+    const checksum = crypto.createHash('sha256').update(fs.readFileSync(f.path)).digest('hex');
+    await client.query(
+      `INSERT INTO client_advance_clearance_attachments (company_id, clearance_id, item_id, file_name, storage_path, mime_type, file_size, checksum, uploaded_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [companyId, clearanceId, itemId, f.originalname, f.filename, f.mimetype, f.size, checksum, uploadedBy]
+    );
+  }
+}
+// ลบแถว DB ของไฟล์แนบทั้งหมดของเอกสารหนึ่งใบ ภายในทรานแซกชันของ /void หรือ /cancel — คืนรายชื่อ
+// storage_path ที่ถูกลบไป "เฉยๆ" ยังไม่แตะไฟล์จริงบนดิสก์เลย ณ จุดนี้โดยเจตนา (ดู unlinkAttachmentFiles
+// ด้านล่าง) — เหตุผล: ถ้า fs.unlink() ยิงตรงนี้เลยแล้วมีขั้นตอนถัดไปในทรานแซกชันเดียวกันพังทีหลัง (เช่น
+// writeAuditLog throw) ROLLBACK จะคืนแถว DB กลับมาได้ แต่ไฟล์ที่ถูกลบไปแล้วจริงบนดิสก์เอากลับมาไม่ได้เด็ดขาด
+// (พบจริงจากรีวิว — fs.unlink ไม่ใช่ operation ที่ transactional ร่วมกับ Postgres ได้) ผู้เรียกต้องเก็บค่าที่
+// คืนมา แล้วเรียก unlinkAttachmentFiles ทีหลัง "หลัง commit สำเร็จแล้วเท่านั้น" เสมอ
+async function deletePaymentVoucherAttachmentRows(client, voucherId) {
+  const r = await client.query('DELETE FROM client_payment_voucher_attachments WHERE voucher_id=$1 RETURNING storage_path', [voucherId]);
+  return r.rows.map(row => row.storage_path);
+}
+async function deleteAdvanceClearanceAttachmentRows(client, clearanceId) {
+  const r = await client.query('DELETE FROM client_advance_clearance_attachments WHERE clearance_id=$1 RETURNING storage_path', [clearanceId]);
+  return r.rows.map(row => row.storage_path);
+}
+// เรียกได้ก็ต่อเมื่อทรานแซกชันที่ลบแถว DB ไปแล้ว commit สำเร็จจริงเท่านั้น (ผู้เรียกต้องเช็ค
+// res.statusCode เป็น 2xx ก่อนเสมอ) — fire-and-forget แต่ log เตือนไว้ถ้าลบไม่สำเร็จ โดยแยกกรณีไฟล์หายไป
+// ก่อนแล้ว (ENOENT — เช่นถูกลบมือ ไม่ใช่ปัญหา ไม่ต้อง alarm) ออกจากกรณีอื่น (permission/disk error จริง
+// ที่ควรเห็นใน log) — ไม่ว่ากรณีไหนก็ไม่ทำให้ request ที่ตอบไปแล้วพังหรือช้าลง เพราะแถว DB ถูกลบสำเร็จแล้ว
+// จริง (ผลลัพธ์ที่ผู้ใช้เห็นถูกต้องเสมอ ไม่ว่าไฟล์จริงจะลบสำเร็จหรือไม่)
+function unlinkAttachmentFiles(storagePaths, dir) {
+  for (const storagePath of storagePaths || []) {
+    fs.unlink(path.join(dir, storagePath), (err) => {
+      if (!err) return;
+      if (err.code === 'ENOENT') console.warn(`[attachment cleanup] ไฟล์หายไปจากดิสก์ก่อนแล้ว (อาจถูกลบมือ) ไม่ใช่ปัญหา: ${storagePath}`);
+      else console.error(`[attachment cleanup] ลบไฟล์บนดิสก์ไม่สำเร็จ (แถว DB ถูกลบไปแล้วจริง): ${storagePath}`, err.message);
+    });
+  }
+}
+
+app.post('/api/customer/payment-vouchers/:id/attachments', requireCustomerAuth, uploadPaymentVoucherAttachmentsMiddleware, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT status FROM client_payment_vouchers WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) { cleanupUploadedFiles(req.files, PAYMENT_VOUCHER_ATTACHMENTS_DIR); await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบใบเบิกเงิน' }); }
+    if (r.rows[0].status !== 'draft') { cleanupUploadedFiles(req.files, PAYMENT_VOUCHER_ATTACHMENTS_DIR); await client.query('ROLLBACK'); return res.status(409).json({ error: 'แนบไฟล์ได้เฉพาะตอนยังเป็นร่างเท่านั้น' }); }
+    if (!req.files || req.files.length === 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'กรุณาแนบไฟล์อย่างน้อย 1 ไฟล์ (รองรับ jpg, png, webp, pdf ไม่เกิน 5MB/ไฟล์)' }); }
+    await insertPaymentVoucherAttachments(client, { voucherId: id, companyId, files: req.files, uploadedBy: req.customer.id });
+    await client.query('COMMIT');
+    const list = await pool.query('SELECT id, file_name, mime_type, file_size, created_at FROM client_payment_voucher_attachments WHERE voucher_id=$1 ORDER BY id', [id]);
+    res.json({ attachments: list.rows });
+  } catch (err) {
+    cleanupUploadedFiles(req.files, PAYMENT_VOUCHER_ATTACHMENTS_DIR);
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'แนบไฟล์ไม่สำเร็จ' });
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/customer/payment-vouchers/:id/attachments', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const check = await pool.query('SELECT 1 FROM client_payment_vouchers WHERE id=$1 AND company_id=$2', [id, companyId]);
+  if (check.rowCount === 0) return res.status(404).json({ error: 'ไม่พบใบเบิกเงิน' });
+  const r = await pool.query('SELECT id, file_name, mime_type, file_size, created_at FROM client_payment_voucher_attachments WHERE voucher_id=$1 ORDER BY id', [id]);
+  res.json({ attachments: r.rows });
+});
+
+app.get('/api/customer/payment-vouchers/:id/attachments/:attachmentId/file', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const attachmentId = parseInt(req.params.attachmentId, 10);
+  const companyId = req.customer.company_id;
+  const r = await pool.query('SELECT storage_path FROM client_payment_voucher_attachments WHERE id=$1 AND voucher_id=$2 AND company_id=$3', [attachmentId, id, companyId]);
+  if (r.rowCount === 0) return res.status(404).json({ error: 'ไม่พบไฟล์แนบ' });
+  res.sendFile(path.join(PAYMENT_VOUCHER_ATTACHMENTS_DIR, r.rows[0].storage_path));
+});
+
+// แนบต่อ "รายการ" (item) เสมอ ไม่ใช่ต่อใบเคลียร์ทั้งใบ — has_tax_invoice เป็นคุณสมบัติของแต่ละบรรทัด แม้
+// schema เดิม (migration 0001) จะออกแบบให้ item_id เป็น nullable ไว้ก็ตาม (เผื่อกรณีแนบทั่วไปไม่ผูกรายการ)
+// แต่ในทางปฏิบัติจริงของฟีเจอร์นี้ (พิสูจน์ใบกำกับภาษีของบรรทัดที่มี VAT) ต้องรู้ว่าเป็นของรายการไหนเสมอ
+app.post('/api/customer/advance-clearances/:id/items/:itemId/attachments', requireCustomerAuth, uploadAdvanceClearanceAttachmentsMiddleware, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const itemId = parseInt(req.params.itemId, 10);
+  const companyId = req.customer.company_id;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query('SELECT status FROM client_advance_clearances WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (r.rowCount === 0) { cleanupUploadedFiles(req.files, ADVANCE_CLEARANCE_ATTACHMENTS_DIR); await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบใบเคลียร์เงินทดรองจ่าย' }); }
+    if (r.rows[0].status !== 'draft') { cleanupUploadedFiles(req.files, ADVANCE_CLEARANCE_ATTACHMENTS_DIR); await client.query('ROLLBACK'); return res.status(409).json({ error: 'แนบไฟล์ได้เฉพาะตอนยังเป็นร่างเท่านั้น' }); }
+    const item = await client.query('SELECT id FROM client_advance_clearance_items WHERE id=$1 AND clearance_id=$2 AND company_id=$3', [itemId, id, companyId]);
+    if (item.rowCount === 0) { cleanupUploadedFiles(req.files, ADVANCE_CLEARANCE_ATTACHMENTS_DIR); await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบรายการนี้ในใบเคลียร์' }); }
+    if (!req.files || req.files.length === 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'กรุณาแนบไฟล์อย่างน้อย 1 ไฟล์ (รองรับ jpg, png, webp, pdf ไม่เกิน 5MB/ไฟล์)' }); }
+    await insertAdvanceClearanceAttachments(client, { clearanceId: id, itemId, companyId, files: req.files, uploadedBy: req.customer.id });
+    await client.query('COMMIT');
+    const list = await pool.query('SELECT id, item_id, file_name, mime_type, file_size, created_at FROM client_advance_clearance_attachments WHERE clearance_id=$1 ORDER BY id', [id]);
+    res.json({ attachments: list.rows });
+  } catch (err) {
+    cleanupUploadedFiles(req.files, ADVANCE_CLEARANCE_ATTACHMENTS_DIR);
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'แนบไฟล์ไม่สำเร็จ' });
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/api/customer/advance-clearances/:id/attachments', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const check = await pool.query('SELECT 1 FROM client_advance_clearances WHERE id=$1 AND company_id=$2', [id, companyId]);
+  if (check.rowCount === 0) return res.status(404).json({ error: 'ไม่พบใบเคลียร์เงินทดรองจ่าย' });
+  const r = await pool.query('SELECT id, item_id, file_name, mime_type, file_size, created_at FROM client_advance_clearance_attachments WHERE clearance_id=$1 ORDER BY id', [id]);
+  res.json({ attachments: r.rows });
+});
+
+app.get('/api/customer/advance-clearances/:id/attachments/:attachmentId/file', requireCustomerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const attachmentId = parseInt(req.params.attachmentId, 10);
+  const companyId = req.customer.company_id;
+  const r = await pool.query('SELECT storage_path FROM client_advance_clearance_attachments WHERE id=$1 AND clearance_id=$2 AND company_id=$3', [attachmentId, id, companyId]);
+  if (r.rowCount === 0) return res.status(404).json({ error: 'ไม่พบไฟล์แนบ' });
+  res.sendFile(path.join(ADVANCE_CLEARANCE_ATTACHMENTS_DIR, r.rows[0].storage_path));
+});
+
 // ---------------- งานหน้างาน (งานที่ 1) — ตรวจรับของตาม PO (goods receipt, migration 0017) ----------------
 // ไม่มี submit/approve — สร้างคือขั้นสุดท้ายในตัวเอง (แค่ log ว่าของมาถึงจริงกี่ชิ้น) ทยอยรับหลายครั้งต่อ
 // PO ใบเดียวได้ (partial receipt) ยอดรับสะสมต่อบรรทัดคำนวณสดจาก SUM เสมอ (ดูคอมเมนต์เต็มใน migration 0017)
@@ -12502,6 +12664,14 @@ app.post('/api/customer/payment-vouchers/:id/submit', requireCustomerAuth, async
     if (v.voucher_type === 'other' && (!v.payee_external_id || !v.expense_account_code)) {
       return { status: 400, body: { error: 'ใบจ่ายเจ้าหนี้ภายนอกต้องระบุผู้รับเงินและรหัสบัญชีค่าใช้จ่ายให้ครบก่อนยื่น' } };
     }
+    // has_tax_invoice=true ต้องมีไฟล์แนบใบกำกับภาษีจริงอย่างน้อย 1 ไฟล์ก่อนยื่น (เกราะชั้นแอปเสริมจาก UI —
+    // ไม่พึ่ง client-side อย่างเดียว)
+    if (v.voucher_type === 'other' && v.has_tax_invoice) {
+      const attCheck = await client.query('SELECT COUNT(*)::int AS n FROM client_payment_voucher_attachments WHERE voucher_id=$1', [id]);
+      if (attCheck.rows[0].n === 0) {
+        return { status: 400, body: { error: 'ระบุว่ามีใบกำกับภาษีเต็มรูป ต้องแนบรูปใบกำกับภาษีอย่างน้อย 1 ไฟล์ก่อนยื่น' } };
+      }
+    }
 
     const voucherNo = await generateVoucherNo(client, companyId);
     await client.query(
@@ -12718,12 +12888,16 @@ app.post('/api/customer/payment-vouchers/:id/cancel', requireCustomerAuth, async
       }
       cancelIsOverride = permCheck.isOverride;
     }
+    const deletedAttachmentPaths = await deletePaymentVoucherAttachmentRows(client, id);
     await client.query(`UPDATE client_payment_vouchers SET status='cancelled' WHERE id=$1`, [id]);
     await writeAuditLog(client, {
       companyId, docType: 'payment_voucher', docId: id, action: 'cancel',
       fromStatus: v.status, toStatus: 'cancelled', performedBy: req.customer.id, isOverride: cancelIsOverride,
     });
     await client.query('COMMIT');
+    // ลบไฟล์จริงบนดิสก์ได้ก็ต่อเมื่อ COMMIT ผ่านบรรทัดข้างบนสำเร็จแล้วเท่านั้น (ห้ามยิงก่อน COMMIT เด็ดขาด
+    // — ถ้าทำก่อนแล้วมีอะไรพังทีหลังจน ROLLBACK ไฟล์ที่หายไปแล้วจริงจะเอากลับมาไม่ได้อีก)
+    unlinkAttachmentFiles(deletedAttachmentPaths, PAYMENT_VOUCHER_ATTACHMENTS_DIR);
     res.json({ voucher: await fetchPaymentVoucher(pool, id, companyId) });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -12737,6 +12911,7 @@ app.post('/api/customer/payment-vouchers/:id/cancel', requireCustomerAuth, async
 // ---------------- /void: ยกเลิกใบเบิกเงินที่อนุมัติแล้ว + reversing journal entry (migration 0021) ----------------
 // ไม่ต้องคืนยอดกองทุนเงินสดย่อยเอง — คำนวณสดจาก SUM(...) WHERE status='approved' อยู่แล้ว (ตรวจสอบแล้ว)
 app.post('/api/customer/payment-vouchers/:id/void', requireCustomerAuth, async (req, res) => {
+  let deletedAttachmentPaths = null;
   await withIdempotency(req, res, `payment-vouchers-void:${req.params.id}`, async (client) => {
     const id = parseInt(req.params.id, 10);
     const companyId = req.customer.company_id;
@@ -12770,6 +12945,7 @@ app.post('/api/customer/payment-vouchers/:id/void', requireCustomerAuth, async (
     }
 
     const voidedCerts = await voidWhtCertificatesForSources(client, companyId, 'payment_voucher', [id], { voidedBy: req.customer.id, reason });
+    deletedAttachmentPaths = await deletePaymentVoucherAttachmentRows(client, id);
 
     await client.query(
       `UPDATE client_payment_vouchers SET status='voided', voided_by=$1, voided_reason=$2, voided_at=now() WHERE id=$3`,
@@ -12783,6 +12959,10 @@ app.post('/api/customer/payment-vouchers/:id/void', requireCustomerAuth, async (
 
     return { status: 200, body: { voucher: await fetchPaymentVoucher(client, id, companyId) } };
   });
+  // withIdempotency resolve ได้ 2 แบบ: commit สำเร็จ (2xx, res.statusCode ถูกตั้งจริง) หรือ rollback (4xx/5xx/
+  // exception) — เช็ค res.statusCode หลัง await เท่านั้น ไม่เดาจาก try/catch เพราะ withIdempotency ดักทุก
+  // error ไว้เองแล้วไม่ throw ออกมาให้จับที่นี่อีกที (ดูคอมเมนต์ยาวในตัวมันเอง)
+  if (res.statusCode >= 200 && res.statusCode < 300) unlinkAttachmentFiles(deletedAttachmentPaths, PAYMENT_VOUCHER_ATTACHMENTS_DIR);
 });
 
 // ---------------- ยอดเงินทดรองจ่ายคงค้างรายพนักงาน (ข้อ 1.2) ----------------
@@ -13427,12 +13607,14 @@ app.get('/api/customer/wht-remittances/export', requireCustomerAuth, async (req,
   sheet.addRow([]);
   sheet.addRow(['', '', '', '', '', '', 'รวม (เฉพาะใบที่ยังใช้งานอยู่)', total]);
   sheet.columns.forEach(col => { col.width = 20; });
-  // ชื่อไฟล์ต้องเป็น ASCII ล้วนเท่านั้น — Content-Disposition เป็น HTTP header (จำกัดแค่ ASCII/Latin-1)
-  // ใส่ภาษาไทยตรงๆ ทำให้ Node โยน ERR_INVALID_CHAR ทันที (500 แบบไม่มีร่องรอยในฝั่ง client เลย นอกจาก
-  // "เกิดข้อผิดพลาดที่เซิร์ฟเวอร์") — ป้ายชื่อภาษาไทยยังอยู่ในเนื้อหาไฟล์ (sheet name/หัวตาราง) ตามปกติ
+  // ชื่อไฟล์ในตัว header เองต้องเป็น ASCII ล้วนเท่านั้น (RFC 6266/2616 — ใส่ภาษาไทยตรงๆ ใน filename="..."
+  // ทำให้ Node โยน ERR_INVALID_CHAR ทันที เจอบั๊กจริงจากตรงนี้มาแล้ว) แต่ใส่ชื่อไฟล์ภาษาไทยที่ผู้ใช้เห็นตอน
+  // เซฟได้จริงด้วย filename* แบบ RFC 5987 (percent-encode UTF-8 bytes) ควบคู่กัน — เบราว์เซอร์ที่รองรับ
+  // (ทุกตัวปัจจุบัน) จะใช้ filename* ก่อนเสมอ ตัว filename= ธรรมดาเป็นแค่ fallback สำหรับ client เก่ามากๆ
   const asciiFormLabel = whtForm === 'pnd3' ? 'PND3' : 'PND53';
+  const thaiFileName = `${whtFormLabel}_${yearInt}-${String(monthInt).padStart(2, '0')}.xlsx`;
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename="${asciiFormLabel}_${yearInt}-${String(monthInt).padStart(2, '0')}.xlsx"`);
+  res.setHeader('Content-Disposition', `attachment; filename="${asciiFormLabel}_${yearInt}-${String(monthInt).padStart(2, '0')}.xlsx"; filename*=UTF-8''${encodeURIComponent(thaiFileName)}`);
   await workbook.xlsx.write(res);
   res.end();
 });
@@ -13551,6 +13733,20 @@ app.post('/api/customer/advance-clearances/:id/submit', requireCustomerAuth, asy
 
     const itemCount = await client.query('SELECT COUNT(*)::int AS n FROM client_advance_clearance_items WHERE clearance_id=$1', [id]);
     if (itemCount.rows[0].n === 0) return { status: 400, body: { error: 'ใบเคลียร์ต้องมีรายการอย่างน้อย 1 รายการ' } };
+
+    // ทุกรายการที่ has_tax_invoice=true ต้องมีไฟล์แนบใบกำกับภาษีจริงอย่างน้อย 1 ไฟล์ต่อรายการก่อนยื่น
+    // (เกราะชั้นแอปเสริมจาก UI — ไม่พึ่ง client-side อย่างเดียว)
+    const missingAttachments = await client.query(
+      `SELECT i.idx, i.description FROM client_advance_clearance_items i
+       WHERE i.clearance_id=$1 AND i.has_tax_invoice=true
+         AND NOT EXISTS (SELECT 1 FROM client_advance_clearance_attachments a WHERE a.item_id = i.id)
+       ORDER BY i.idx`,
+      [id]
+    );
+    if (missingAttachments.rowCount > 0) {
+      const names = missingAttachments.rows.map(r => `"${r.description}"`).join(', ');
+      return { status: 400, body: { error: `รายการที่มีใบกำกับภาษีเต็มรูปต้องแนบรูปใบกำกับภาษีอย่างน้อย 1 ไฟล์ต่อรายการก่อนยื่น (ยังไม่ได้แนบ: ${names})` } };
+    }
 
     const clearanceNo = await generateClearanceNo(client, companyId);
     await client.query(
@@ -13798,8 +13994,7 @@ app.post('/api/customer/advance-clearances/:id/reject', requireCustomerAuth, asy
   }
 });
 
-// ยกเลิกได้เฉพาะ draft/submitted (ก่อนมีเงินเคลื่อนไหวจริง) — approved/settled แล้วยังไม่มี /void ในรอบนี้
-// (ดู known-limitations — รอคำตอบเรื่องการยกเลิก 50 ทวิ ที่ออกไปแล้วจากผู้ใช้ก่อน)
+// ยกเลิกได้เฉพาะ draft/submitted (ก่อนมีเงินเคลื่อนไหวจริง) — approved แล้วใช้ /void แทน (migration 0021)
 app.post('/api/customer/advance-clearances/:id/cancel', requireCustomerAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const companyId = req.customer.company_id;
@@ -13822,12 +14017,14 @@ app.post('/api/customer/advance-clearances/:id/cancel', requireCustomerAuth, asy
       }
       cancelIsOverride = permCheck.isOverride;
     }
+    const deletedAttachmentPaths = await deleteAdvanceClearanceAttachmentRows(client, id);
     await client.query(`UPDATE client_advance_clearances SET status='cancelled' WHERE id=$1`, [id]);
     await writeAuditLog(client, {
       companyId, docType: 'advance_clearance', docId: id, action: 'cancel',
       fromStatus: c.status, toStatus: 'cancelled', performedBy: req.customer.id, isOverride: cancelIsOverride,
     });
     await client.query('COMMIT');
+    unlinkAttachmentFiles(deletedAttachmentPaths, ADVANCE_CLEARANCE_ATTACHMENTS_DIR);
     res.json({ clearance: await fetchFullAdvanceClearance(pool, id, companyId) });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -13842,6 +14039,7 @@ app.post('/api/customer/advance-clearances/:id/cancel', requireCustomerAuth, asy
 // (migration 0021) — บล็อก status='settled' เสมอ (มี journal entry ส่วนต่างแยกต่างหากจากตอน settle ยุ่งยาก
 // กว่าจะ reverse ให้ถูกต้องในรอบนี้ — ยืนยันจากฝ่ายบัญชี 2026-08-28: void ได้เฉพาะ 'approved' เท่านั้น)
 app.post('/api/customer/advance-clearances/:id/void', requireCustomerAuth, async (req, res) => {
+  let deletedAttachmentPaths = null;
   await withIdempotency(req, res, `advance-clearances-void:${req.params.id}`, async (client) => {
     const id = parseInt(req.params.id, 10);
     const companyId = req.customer.company_id;
@@ -13882,6 +14080,7 @@ app.post('/api/customer/advance-clearances/:id/void', requireCustomerAuth, async
     // subcontractor_payment ที่ผูกตรงกับ id ของเอกสารเอง) — ต้องรวบรวม item ids ก่อนเสมอ
     const itemIds = itemsRes.rows.map(it => it.id);
     const voidedCerts = await voidWhtCertificatesForSources(client, companyId, 'advance_clearance_item', itemIds, { voidedBy: req.customer.id, reason });
+    deletedAttachmentPaths = await deleteAdvanceClearanceAttachmentRows(client, id);
 
     await client.query(
       `UPDATE client_advance_clearances SET status='voided', voided_by=$1, voided_reason=$2, voided_at=now() WHERE id=$3`,
@@ -13895,6 +14094,7 @@ app.post('/api/customer/advance-clearances/:id/void', requireCustomerAuth, async
 
     return { status: 200, body: { clearance: await fetchFullAdvanceClearance(client, id, companyId) } };
   });
+  if (res.statusCode >= 200 && res.statusCode < 300) unlinkAttachmentFiles(deletedAttachmentPaths, ADVANCE_CLEARANCE_ATTACHMENTS_DIR);
 });
 
 // ---------------- ใบเติมเงินกองทุนเงินสดย่อย (petty cash replenishments) ----------------

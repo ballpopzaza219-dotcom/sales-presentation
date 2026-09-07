@@ -1283,6 +1283,10 @@
   "voucher.status_cancelled": "ยกเลิกแล้ว",
   "voucher.status_voided": "ยกเลิก (หลังอนุมัติ)",
   "voucher.wht_cert_status_active": "ใช้งานอยู่",
+  "voucher.tax_invoice_attachment_section": "ไฟล์แนบใบกำกับภาษี",
+  "voucher.tax_invoice_attach_button": "แนบไฟล์",
+  "voucher.tax_invoice_attach_empty_err": "กรุณาเลือกไฟล์อย่างน้อย 1 ไฟล์ (รองรับ jpg, png, webp, pdf ไม่เกิน 5MB/ไฟล์)",
+  "voucher.tax_invoice_attach_success": "แนบไฟล์ใบกำกับภาษีสำเร็จ",
 
   "voucher.detail_title": "รายละเอียดใบเบิกเงิน",
   "voucher.detail_load_error": "โหลดข้อมูลไม่สำเร็จ",

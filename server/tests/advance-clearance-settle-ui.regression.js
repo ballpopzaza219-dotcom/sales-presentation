@@ -23,6 +23,16 @@ async function shot(page, name){ shotN++; await page.screenshot({ path: path.joi
 
 let passed = 0;
 function assert(cond, msg){ if(!cond) throw new Error('ASSERTION FAILED: '+msg); passed++; console.log('  OK:', msg); }
+const testFile = (name) => ({ name, mimeType: 'image/jpeg', buffer: Buffer.from([0xFF, 0xD8, 0xFF, 0xD9]) });
+// รายการที่ hasTaxInvoice=true บังคับแนบไฟล์ใบกำกับภาษีก่อนยื่นเสมอ (บังคับตั้งแต่รอบเพิ่มระบบแนบไฟล์ให้
+// เอกสารกลุ่มนี้) — หา item id จาก description (unique ต่อเคสในไฟล์นี้) แล้วแนบผ่าน UI จริงบนหน้า detail
+async function attachTaxInvoiceToClearanceItem(page, pool, clearanceId, itemDescription){
+  const itemRow = await pool.query('SELECT id FROM client_advance_clearance_items WHERE clearance_id=$1 AND description=$2', [clearanceId, itemDescription]);
+  const itemId = itemRow.rows[0].id;
+  await page.setInputFiles(`#clearance-item-photos-${itemId}`, [testFile(`tax-invoice-${itemId}.jpg`)]);
+  await page.click(`[data-act="upload-clearance-item-attachment"][data-item-id="${itemId}"]`);
+  await page.waitForTimeout(600);
+}
 
 // ---- plain HTTP helpers for prerequisite setup (not the thing under test) ----
 const cookies = {};
@@ -272,6 +282,7 @@ async function net1150Balance(voucherId, clearanceId){
     createdClearanceIds.push(clearance4Id);
     await page.click(`tr[data-id="${clearance4Id}"]`);
     await page.waitForTimeout(500);
+    await attachTaxInvoiceToClearanceItem(page, pool, clearance4Id, 'ทดสอบ 1.3.4 พอดี+ภาษี');
     await page.click('[data-act="submit-clearance"]');
     await page.waitForTimeout(700);
 
@@ -342,6 +353,7 @@ async function net1150Balance(voucherId, clearanceId){
     createdClearanceIds.push(clearance5Id);
     await page.click(`tr[data-id="${clearance5Id}"]`);
     await page.waitForTimeout(500);
+    await attachTaxInvoiceToClearanceItem(page, pool, clearance5Id, 'ค่าบริการวิชาชีพ 1.3.5');
     await page.click('[data-act="submit-clearance"]');
     await page.waitForTimeout(700);
 

@@ -51,6 +51,16 @@ async function login(username, companyCode) {
 }
 let idemCounter = 0;
 function idemKey(label) { return `${label}-${Date.now()}-${idemCounter++}`; }
+async function uploadClearanceItemAttachment(username, clearanceId, itemId) {
+  const form = new FormData();
+  form.append('photos', new Blob([Buffer.from('fake-tax-invoice-photo-for-test')], { type: 'image/png' }), 'tax-invoice.png');
+  const res = await fetch(`${BASE}/api/customer/advance-clearances/${clearanceId}/items/${itemId}/attachments`, {
+    method: 'POST', headers: { Cookie: cookies[username] || '' }, body: form,
+  });
+  const json = await res.json();
+  if (!res.ok) { const e = new Error(json.error); e.status = res.status; throw e; }
+  return json;
+}
 
 function assertJournalBalanced(lines, label) {
   const totalDebit = lines.reduce((s, l) => s + Number(l.debit_amount), 0);
@@ -290,6 +300,9 @@ async function backdateToLastMonth(sourceTypes, sourceId) {
       items: [{ description: 'ค่าบริการที่ปรึกษา มีใบกำกับภาษี', expenseAccountCode: '5300', amount: 3000, hasTaxInvoice: true, vatRate: 7, whtRate: 3, whtIncomeTypeCode: '40_2', payeeExternalId: payee.externalPayee.id }],
     }, idemKey('void-advcl-create2'));
     cleanup.clearanceIds.push(clearance2Create.clearance.id);
+    // hasTaxInvoice:true บังคับแนบไฟล์ใบกำกับภาษีก่อนยื่นเสมอ (บังคับตั้งแต่รอบเพิ่มระบบแนบไฟล์ให้เอกสาร
+    // กลุ่มนี้ — ใบนี้ยังต้อง submit/approve ผ่านให้ได้ก่อน แม้จุดประสงค์จริงคือทดสอบว่า void ไม่ได้เพราะมี VAT)
+    await uploadClearanceItemAttachment('fx_maker', clearance2Create.clearance.id, clearance2Create.clearance.items[0].id);
     await call('fx_maker', 'POST', `/api/customer/advance-clearances/${clearance2Create.clearance.id}/submit`, {}, idemKey('void-advcl-submit2'));
     const clearance2Approved = await call('fx_approver_mid', 'POST', `/api/customer/advance-clearances/${clearance2Create.clearance.id}/approve`, {}, idemKey('void-advcl-approve2'));
     const newCertNo = clearance2Approved.issuedWhtCertificates[0];
@@ -575,6 +588,8 @@ async function backdateToLastMonth(sourceTypes, sourceId) {
         await pool.query('DELETE FROM client_progress_claims WHERE id = ANY($1)', [cleanup.claimIds]);
       }
       if (cleanup.clearanceIds.length) {
+        // item_id ไม่มี ON DELETE CASCADE (ต่างจาก clearance_id ที่มี) — ต้องลบไฟล์แนบก่อนลบ items เสมอ
+        await pool.query('DELETE FROM client_advance_clearance_attachments WHERE clearance_id = ANY($1)', [cleanup.clearanceIds]);
         await pool.query('DELETE FROM client_advance_clearance_items WHERE clearance_id = ANY($1)', [cleanup.clearanceIds]);
         await pool.query('DELETE FROM client_advance_clearances WHERE id = ANY($1)', [cleanup.clearanceIds]);
       }

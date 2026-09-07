@@ -74,6 +74,18 @@ function assert(cond, msg){ if(!cond) throw new Error('ASSERTION FAILED: '+msg);
     const dbCheckFund = await pool.query('SELECT petty_cash_fund_id, payee_employee_id FROM client_payment_vouchers WHERE id=$1', [voucherAId]);
     assert(dbCheckFund.rows[0].petty_cash_fund_id===null, 'petty_cash_fund_id เป็น NULL จริงใน DB (บังคับโดย DB CHECK constraint ด้วย)');
     assert(!!dbCheckFund.rows[0].payee_employee_id, 'payee_employee_id ถูกตั้งค่าไว้จริง (ผู้ขอเบิกเป็นพนักงาน)');
+    // จับยอดคงค้างของพนักงานคนนี้ "ก่อน" อนุมัติใบ A ไว้เป็น baseline — พนักงานตัวเดียวกันนี้ถูกใช้ร่วมกัน
+    // (dropdown index 1) ข้ามไฟล์เทสอื่นๆ จำนวนมากในสวีทนี้ ยอดคงค้างจริงจึงไม่ใช่ 0 เสมอไปก่อนเริ่มเทสนี้
+    // (พบจริง — สมมติว่า isolation สมบูรณ์แล้วเทสพังตอนมีข้อมูลค้างจากรอบก่อนหน้า) เทียบ baseline+8500 แทนค่า
+    // สัมบูรณ์ตรงๆ ถึงจะทนต่อข้อมูลที่มีอยู่ก่อนได้จริง
+    const employeeIdForA = dbCheckFund.rows[0].payee_employee_id;
+    const outstandingBaseline = await pool.query(
+      `SELECT COALESCE(SUM(amount),0) AS total FROM client_payment_vouchers
+       WHERE voucher_type='advance' AND status='approved' AND payee_employee_id=$1
+       AND NOT EXISTS (SELECT 1 FROM client_advance_clearances c WHERE c.advance_voucher_id=client_payment_vouchers.id AND c.status='approved')`,
+      [employeeIdForA]
+    );
+    const outstandingBaselineTotal = Number(outstandingBaseline.rows[0].total);
 
     await page.click(`tr[data-id="${voucherAId}"]`);
     await page.waitForTimeout(500);
@@ -220,7 +232,7 @@ function assert(cond, msg){ if(!cond) throw new Error('ASSERTION FAILED: '+msg);
        AND NOT EXISTS (SELECT 1 FROM client_advance_clearances c WHERE c.advance_voucher_id=client_payment_vouchers.id AND c.status='approved')`,
       [voucherAId]
     );
-    assert(Number(outstandingApiCheck.rows[0].total)===8500, `ยอดคงค้างจริงใน DB ตรงกับที่อนุมัติ = 8,500 (ได้ ${outstandingApiCheck.rows[0].total})`);
+    assert(Number(outstandingApiCheck.rows[0].total)===outstandingBaselineTotal+8500, `ยอดคงค้างเพิ่มขึ้นตรงตามที่อนุมัติพอดี (+8,500 จาก baseline ${outstandingBaselineTotal} เป็น ${outstandingBaselineTotal+8500}) ไม่รวมใบ B (rejected) หรือใบ C (cancelled) (ได้ ${outstandingApiCheck.rows[0].total})`);
     // คลิกลิงก์ใบเบิกในรายงาน ต้องไปหน้า detail ของใบนั้นได้จริง
     await page.click(`text=${submitCheck.rows[0].voucher_no}`);
     await page.waitForTimeout(500);
