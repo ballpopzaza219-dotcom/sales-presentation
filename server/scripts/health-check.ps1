@@ -71,9 +71,10 @@ try {
   Write-Output "  ERROR: เช็คพื้นที่ดิสก์ไม่ได้: $($_.Exception.Message)"
 }
 
-Write-Output "`n=== Backup ฐานข้อมูล (D:\SiteReqBackups) ==="
+Write-Output "`n=== Backup ฐานข้อมูล (C:\SiteReqBackups) ==="
 $backupMaxAgeHours = 48
-$backupDir = 'D:\SiteReqBackups'
+$globalsMaxAgeDays = 35
+$backupDir = 'C:\SiteReqBackups'
 if (Test-Path $backupDir) {
   $latestBackup = Get-ChildItem -Path $backupDir -Filter 'sitereq_db_*.dump' -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -85,14 +86,16 @@ if (Test-Path $backupDir) {
     Write-Output "  ไม่พบไฟล์ backup เลยในโฟลเดอร์นี้"
     $problems += "ไม่พบไฟล์ backup ฐานข้อมูลเลยที่ $backupDir"
   }
+  # sitereq_globals_*.sql มาจาก backup-globals.ps1 ซึ่งตั้งใจให้รันมือทุกเดือน (ไม่ใช่รายวันอัตโนมัติ —
+  # ต้องใช้รหัสผ่าน superuser ที่ไม่เก็บไว้ที่ไหนเลย) เกณฑ์เตือนจึงกว้างกว่า backup ข้อมูลหลักมาก (35 วัน)
   $latestGlobals = Get-ChildItem -Path $backupDir -Filter 'sitereq_globals_*.sql' -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
   if ($latestGlobals) {
-    $globalsAgeHours = [math]::Round(((Get-Date) - $latestGlobals.LastWriteTime).TotalHours, 1)
-    Write-Output "  globals (role/password) ล่าสุด: $($latestGlobals.Name) (อายุ $globalsAgeHours ชม.)"
-    if ($globalsAgeHours -gt $backupMaxAgeHours) { $problems += "backup globals (role/password) ล่าสุดเก่าเกิน $backupMaxAgeHours ชม." }
+    $globalsAgeDays = [math]::Round(((Get-Date) - $latestGlobals.LastWriteTime).TotalDays, 1)
+    Write-Output "  globals (role/password) ล่าสุด: $($latestGlobals.Name) (อายุ $globalsAgeDays วัน)"
+    if ($globalsAgeDays -gt $globalsMaxAgeDays) { $problems += "backup globals (role/password) ล่าสุดเก่าเกิน $globalsMaxAgeDays วัน — ถึงเวลารัน server\scripts\backup-globals.ps1 มือแล้ว" }
   } else {
-    Write-Output "  ยังไม่เคยมี backup globals (role/password) สำเร็จเลย — ต้องตั้ง credential ที่มีสิทธิ์อ่าน pg_authid ก่อน (ดู backup-database.ps1 บรรทัดคอมเมนต์ pg_dumpall)"
+    Write-Output "  ยังไม่เคยมี backup globals (role/password) เลย — รันมือด้วย server\scripts\backup-globals.ps1 (ต้องใช้รหัสผ่าน superuser เช่น postgres)"
   }
 } else {
   Write-Output "  ไม่พบโฟลเดอร์ $backupDir"

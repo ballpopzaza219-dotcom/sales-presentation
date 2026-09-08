@@ -96,7 +96,7 @@ SiteReq คือระบบบริหารงานก่อสร้าง
 | [`module-status-overview.md`](./module-status-overview.md) | Endpoint ทั้งหมดที่มีจริง แยกตามหัวข้อ + migration 0001-0018 แต่ละไฟล์เพิ่มอะไร — เอกสารอ้างอิงเชิงเทคนิค |
 | [`nssm-service-setup.md`](./nssm-service-setup.md) | ตั้ง Node server เป็น Windows Service ด้วย NSSM — ค่าที่ตั้งจริง, start/stop/restart, log |
 | [`cloudflared-tunnel-setup.md`](./cloudflared-tunnel-setup.md) | เปิด `build-con.com` ให้เข้าจากภายนอกผ่าน Cloudflare Tunnel — tunnel ไหนใช้จริง, ติดตั้ง, debug |
-| [`database-backup-setup.md`](./database-backup-setup.md) | สำรองข้อมูล PostgreSQL อัตโนมัติรายวัน (Scheduled Task) — เก็บที่ D:\SiteReqBackups ย้อนหลัง 30 วัน, วิธีกู้คืน |
+| [`database-backup-setup.md`](./database-backup-setup.md) | สำรองข้อมูล PostgreSQL อัตโนมัติรายวัน (Scheduled Task) — เก็บที่ C:\SiteReqBackups (NTFS, ACL จำกัดสิทธิ์) ย้อนหลัง 30 วัน + role/password รายเดือนแบบรันมือ, วิธีกู้คืน |
 | `README.md` (ไฟล์นี้) | สารบัญ + สถานะรวม + สรุปว่าระบบทำอะไรได้บ้าง + setup เครื่องใหม่ |
 
 ---
