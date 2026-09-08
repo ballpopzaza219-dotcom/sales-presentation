@@ -72,7 +72,7 @@ try {
 }
 
 Write-Output "`n=== Backup ฐานข้อมูล (D:\SiteReqBackups) ==="
-$backupMaxAgeHours = 26
+$backupMaxAgeHours = 48
 $backupDir = 'D:\SiteReqBackups'
 if (Test-Path $backupDir) {
   $latestBackup = Get-ChildItem -Path $backupDir -Filter 'sitereq_db_*.dump' -ErrorAction SilentlyContinue |
@@ -84,6 +84,15 @@ if (Test-Path $backupDir) {
   } else {
     Write-Output "  ไม่พบไฟล์ backup เลยในโฟลเดอร์นี้"
     $problems += "ไม่พบไฟล์ backup ฐานข้อมูลเลยที่ $backupDir"
+  }
+  $latestGlobals = Get-ChildItem -Path $backupDir -Filter 'sitereq_globals_*.sql' -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  if ($latestGlobals) {
+    $globalsAgeHours = [math]::Round(((Get-Date) - $latestGlobals.LastWriteTime).TotalHours, 1)
+    Write-Output "  globals (role/password) ล่าสุด: $($latestGlobals.Name) (อายุ $globalsAgeHours ชม.)"
+    if ($globalsAgeHours -gt $backupMaxAgeHours) { $problems += "backup globals (role/password) ล่าสุดเก่าเกิน $backupMaxAgeHours ชม." }
+  } else {
+    Write-Output "  ยังไม่เคยมี backup globals (role/password) สำเร็จเลย — ต้องตั้ง credential ที่มีสิทธิ์อ่าน pg_authid ก่อน (ดู backup-database.ps1 บรรทัดคอมเมนต์ pg_dumpall)"
   }
 } else {
   Write-Output "  ไม่พบโฟลเดอร์ $backupDir"

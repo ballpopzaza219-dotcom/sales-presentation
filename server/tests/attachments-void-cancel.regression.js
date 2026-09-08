@@ -11,7 +11,10 @@
 // Postgres. Run: cd server && node tests/attachments-void-cancel.regression.js
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const pool = require('../db');
+
+function sha256(filePath) { return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex'); }
 const { setup, COMPANY_A_ID, PASSWORD } = require('./fixtures/setup-approval-fixtures');
 
 const BASE = process.env.BOQ_TEST_BASE_URL || 'http://localhost:3000';
@@ -148,6 +151,7 @@ async function uploadAttachment(username, voucherId) {
     const att4Row = (await pool.query('SELECT storage_path FROM client_payment_voucher_attachments WHERE id=$1', [att4.id])).rows[0];
     const realFilePath4 = path.join(PAYMENT_VOUCHER_ATTACHMENTS_DIR, att4Row.storage_path);
     assert(fs.existsSync(realFilePath4), 'fixture ที่ 4: ไฟล์ถูกเขียนลงดิสก์จริง');
+    const checksum4Before = sha256(realFilePath4);
 
     await call('fx_maker', 'POST', `/api/customer/payment-vouchers/${v4.id}/submit`, {}, idemKey('att-pcv4-submit'));
     await call('fx_approver_mid', 'POST', `/api/customer/payment-vouchers/${v4.id}/approve`, {}, idemKey('att-pcv4-approve'));
@@ -164,6 +168,7 @@ async function uploadAttachment(username, voucherId) {
       assert(voidError !== null, `การ void ที่ถูกบังคับให้พังกลางทางล้มเหลวจริง (ได้ status=${voidError && voidError.status})`);
 
       assert(fs.existsSync(realFilePath4), `ไฟล์บนดิสก์ยังอยู่ครบหลังพังกลางทาง (ไม่มีการ unlink เกิดขึ้นเลยเพราะ response ไม่ใช่ 2xx) (fs.existsSync=${fs.existsSync(realFilePath4)})`);
+      assert(sha256(realFilePath4) === checksum4Before, 'เนื้อหาไฟล์เหมือนเดิมเป๊ะหลังพังกลางทาง (เช็ค checksum ไม่ใช่แค่ว่าไฟล์ยังอยู่ — พิสูจน์ว่าไม่ถูกเขียนทับ/เสียหาย)');
       const dbRow4Mid = await pool.query('SELECT count(*)::int AS n FROM client_payment_voucher_attachments WHERE id=$1', [att4.id]);
       assert(dbRow4Mid.rows[0].n === 1, `แถว DB ของไฟล์แนบยังอยู่ครบหลังพังกลางทาง (ROLLBACK คืน DELETE กลับด้วย) (ได้ ${dbRow4Mid.rows[0].n} แถว)`);
       const voucher4Status = await pool.query('SELECT status FROM client_payment_vouchers WHERE id=$1', [v4.id]);
