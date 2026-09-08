@@ -1,9 +1,12 @@
 # สถานะรวมโมดูล client ledger / PR — เอกสารอ้างอิงเชิงเทคนิค
 
-อัปเดตล่าสุด: 2026-08-27 — **ทุกหัวข้อ (1, 2, 3.1, 4, 5) + งานหน้างาน (ตรวจรับของ/ส่งบิลค่าใช้จ่าย) +
+อัปเดตล่าสุด: 2026-09-08 — **ทุกหัวข้อ (1, 2, 3.1, 4, 5) + งานหน้างาน (ตรวจรับของ/ส่งบิลค่าใช้จ่าย) +
 โครงสร้าง PR⇄Finance เสร็จสมบูรณ์แล้ว** เหลือแค่ 3.2 (Project Complete, อสังหาริมทรัพย์) ที่ยังไม่มีนิยาม
-requirement — ดู [`README.md`](./README.md) สำหรับสรุปแบบภาษาคนไม่อ่านโค้ด และ
-[`pr-module-known-limitations.md`](./pr-module-known-limitations.md) สำหรับจุดที่ยังค้างจริง
+requirement — เพิ่มเติมจากรอบก่อน (migration 0019-0022): แยกผังบัญชี 2141 (ภาษีขาย), แยก sub-ledger
+ภ.ง.ด.3/53 บน 50 ทวิ + แยกอัตรา WHT ตามประเภทผู้เสียภาษี, `/void` (reversing journal entry) ครบ 4 โมดูล,
+ระบบนำส่งภาษีหัก ณ ที่จ่ายเป็นชุด (ดูหัวข้อ "6" ด้านล่าง) — ดู [`README.md`](./README.md) สำหรับสรุปแบบ
+ภาษาคนไม่อ่านโค้ด และ [`pr-module-known-limitations.md`](./pr-module-known-limitations.md) สำหรับจุดที่ยัง
+ค้างจริง
 
 ## Endpoint ทั้งหมดที่มีจริง แยกตามหัวข้อ
 
@@ -120,7 +123,37 @@ PO, WO, ผู้รับเหมาช่วง, เบิกเงินผ�
 
 เทสถาวร: `server/tests/dual-module-nav.regression.js` (62 checks)
 
-## Migration 0001-0018 แต่ละไฟล์เพิ่มอะไร
+### หัวข้อ 6 — `/void` (reversing journal entry) + นำส่งภาษีหัก ณ ที่จ่าย — ✅ เสร็จสมบูรณ์ (2026-09-07)
+
+**`/void`** — ยกเลิกเอกสารที่อนุมัติแล้ว (โพสต์ journal entry จริงแล้ว) โดยไม่ลบของเดิม สร้าง reversing
+entry ใหม่แทน (`reverses_entry_id` ชี้กลับไปตัวเดิม, กันยกเลิกซ้ำด้วย partial unique index):
+- `POST /api/customer/payment-vouchers/:id/void`
+- `POST /api/customer/advance-clearances/:id/void` (บล็อกถ้า `status='settled'` — เคลียร์จบแล้วยกเลิกไม่ได้)
+- `POST /api/customer/subcontract-billings/:id/void`
+- `POST /api/customer/progress-claims/:id/void` (ซับซ้อนสุด — reverse ได้ทั้ง revenue/retention/advance-offset entries, คืน `claimed_percent`/`applied_amount`, บล็อกถ้ามีการรับเงินจริงแล้วหรือถูก claim ถัดไปใช้ advance ไปแล้ว)
+
+สิทธิ์: `super_user || can_settle_cash` — บล็อกตัวเอง void เอกสารที่ตัวเองมีส่วน (created_by/submitted_by/
+approved_by/certified_by) แม้เป็น super_user — บล็อกยกเลิกข้ามเดือนปฏิทินปัจจุบัน (Bangkok) — บล็อกถ้า
+เอกสารมีบรรทัดที่ `has_tax_invoice=true` (รอใบลดหนี้ในอนาคต — ดู known-limitations ก.1) — บล็อกถ้า 50 ทวิ
+ที่ผูกอยู่ถูกนำส่งกรมสรรพากรไปแล้ว (ดูข้อ "นำส่งภาษี" ด้านล่าง) — ลบไฟล์แนบจริงคู่กับแถว DB (เฉพาะ payment
+voucher/advance clearance — หลัง commit ทรานแซกชันสำเร็จเท่านั้น ไม่งั้นไฟล์ยังอยู่)
+
+**นำส่งภาษีหัก ณ ที่จ่ายเป็นชุด** (`client_wht_remittances`, migration 0022) — ปิดยอดบัญชี 2120 จริงตอน
+นำส่งกรมสรรพากร (ก่อนหน้านี้มีแค่สรุปยอดให้ดู ไม่เคยปิดยอดให้เลย):
+- `GET /api/customer/wht-remittances/pending` (จัดกลุ่มใบ 50 ทวิที่ยัง pending ตาม wht_form+งวด พร้อมกำหนด
+  เส้นตาย 7/15 ของเดือนถัดไป)
+- `POST /api/customer/wht-remittances` (ล็อกใบที่ตรงเงื่อนไข, โพสต์ `Dr 2120 / Cr เงินสด` ยอดรวมจริง, กัน
+  นำส่งซ้ำงวดเดิมด้วย unique constraint ที่ตั้งชื่อไว้ชัดเจน)
+- `GET /api/customer/wht-remittances` (ประวัติ), `PUT /:id` (แก้เฉพาะเลขที่ใบเสร็จ/วันที่ชำระ)
+- `GET /api/customer/wht-remittances/export` (Excel รายชื่อ 50 ทวิของงวด — `Content-Disposition` ใช้ RFC
+  5987 `filename*=UTF-8''...` คู่กับ ASCII fallback เพื่อรองรับชื่อไฟล์ภาษาไทยตอนดาวน์โหลด)
+
+เทสถาวร: `server/tests/void-reversing-entry.regression.js` (77 checks รวม forced-failure atomicity test
+จริง — ปิดใช้งานรหัสบัญชีชั่วคราวเพื่อบังคับให้พังกลางทรานแซกชันจริง ไม่ใช่ mock), `server/tests/
+wht-remittances.regression.js` (30 checks รวมเทสดาวน์โหลดไฟล์จริงได้ชื่อไทยถูกต้อง), `server/tests/
+attachments-void-cancel.regression.js` (17 checks — ยืนยันไฟล์แนบไม่หายถ้าทรานแซกชัน rollback)
+
+## Migration 0001-0022 แต่ละไฟล์เพิ่มอะไร
 
 | # | ชื่อไฟล์ | เพิ่มอะไร |
 |---|---|---|
@@ -142,7 +175,11 @@ PO, WO, ผู้รับเหมาช่วง, เบิกเงินผ�
 | 0016 | journal_source_type_subcontract_billing | เพิ่ม `'subcontract_billing'` เข้า `client_journal_entries.source_type` CHECK (แก้จากที่เคยใช้ `'manual'` ผิดหลักการชั่วคราว) |
 | 0017 | goods_receipts_batch | `client_goods_receipts`+`items`+`attachments`, `can_submit_goods_receipt`, แก้ `/purchase-orders/:id/cancel` ให้บล็อกถ้ารับของไปแล้ว |
 | 0018 | site_expense_submissions_batch | `client_site_expense_submissions`+`attachments`, `can_submit_site_expense` |
+| 0019 | add_2141_output_vat | บัญชีใหม่ `2141 ภาษีขาย` เตรียมไว้ล่วงหน้า (ยังไม่มี endpoint ไหนอ้างถึงในรอบนี้) |
+| 0020 | wht_form_and_income_type_rates | `wht_form` (`pnd3`/`pnd53`, คำนวณฝั่ง server เท่านั้น) บน `client_wht_certificates` + index รายงานรายเดือน, แยก `client_wht_income_types.default_rate` เป็น `rate_individual`/`rate_juristic` (fail-closed ห้าม COALESCE ข้ามคอลัมน์), แยกรหัส `40_8` เป็น `40_8_service`/`40_8_transport` |
+| 0021 | void_reversing_entries | void lifecycle เต็มรูปแบบบน `client_wht_certificates`/`client_revenue`/`client_progress_claims` (status/voided_*/replaces_cert_id) — 3 ตารางที่เหลือ (payment_vouchers/advance_clearances/subcontract_billings) มีคอลัมน์ scaffold มาตั้งแต่ 0001/0003 อยู่แล้ว ไม่ต้องเพิ่ม |
+| 0022 | wht_remittances | `client_wht_remittances` (ชุดนำส่งภาษีหัก ณ ที่จ่าย), `client_wht_certificates.remittance_id`, ขยาย `client_document_audit_log.doc_type` รับ `'wht_remittance'` |
 
-รวม: บริษัททุกบริษัทมีบัญชีใหม่ **9 รหัส** จากทุกเซสชัน (1110, 1150, 1160, 1170, 2110, 2120, 2130, 2140,
-2160) — ไม่นับ 1260 ที่มีอยู่ก่อนแล้วจากฟีเจอร์ `client_revenue_payments` เดิม (0017/0018 ไม่เพิ่มบัญชีใหม่
-— เป็น log ปฏิบัติการ ไม่ใช่เอกสารการเงินที่โพสต์ journal เอง)
+รวม: บริษัททุกบริษัทมีบัญชีใหม่ **10 รหัส** จากทุกเซสชัน (1110, 1150, 1160, 1170, 2110, 2120, 2130, 2140,
+2141, 2160) — ไม่นับ 1260 ที่มีอยู่ก่อนแล้วจากฟีเจอร์ `client_revenue_payments` เดิม (0017/0018/0021/0022
+ไม่เพิ่มบัญชีใหม่ — เป็น log ปฏิบัติการ/สถานะเอกสาร ไม่ใช่บัญชีการเงินใหม่)
