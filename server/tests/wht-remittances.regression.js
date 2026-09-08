@@ -32,7 +32,7 @@ async function call(username, method, urlPath, body, idempotencyKey) {
   if (contentType.includes('spreadsheet')) {
     if (!res.ok) { const e = new Error('export failed'); e.status = res.status; throw e; }
     const buf = Buffer.from(await res.arrayBuffer());
-    return { status: res.status, contentType, buffer: buf };
+    return { status: res.status, contentType, buffer: buf, contentDisposition: res.headers.get('content-disposition') || '' };
   }
   const text = await res.text();
   let json; try { json = JSON.parse(text); } catch (e) { json = { raw: text }; }
@@ -204,6 +204,15 @@ async function makeApprovedClearanceWithWht(payeeExternalId, amount, whtRate) {
     assert(!!foundCert1Row, `พบแถวของ cert1 (${cert1.certNo}) อยู่จริงในไฟล์ export`);
     assert(Number(foundCert1Row.getCell(8).value) === Number(cert1Row.wht_amount), `ยอดภาษีหัก ณ ที่จ่ายในไฟล์ export ตรงกับ DB จริง (ได้ ${foundCert1Row.getCell(8).value} คาดหวัง ${cert1Row.wht_amount})`);
     assert(foundCert1Row.getCell(9).value === 'ใช้งานอยู่', 'คอลัมน์สถานะในไฟล์ export ระบุ "ใช้งานอยู่" ถูกต้อง (ไม่ใช่ยกเลิก)');
+
+    // ---- Content-Disposition: ต้องดาวน์โหลดได้จริงด้วยชื่อไฟล์ภาษาไทยที่ถูกต้อง (RFC 5987 filename*=) ----
+    const cd = exportResult.contentDisposition;
+    assert(/^attachment; filename="PND53_\d{4}-\d{2}\.xlsx"/.test(cd), `Content-Disposition มี filename= ASCII fallback ที่ถูกต้อง (ได้ "${cd}")`);
+    const starMatch = cd.match(/filename\*=UTF-8''([^;]+)/);
+    assert(!!starMatch, `Content-Disposition มีส่วน filename*=UTF-8'' แบบ RFC 5987 อยู่จริง (ได้ "${cd}")`);
+    const decodedThaiName = decodeURIComponent(starMatch[1]);
+    const expectedThaiName = `ภ.ง.ด.53_${periodYear}-${String(periodMonth).padStart(2, '0')}.xlsx`;
+    assert(decodedThaiName === expectedThaiName, `ชื่อไฟล์ภาษาไทยที่ถอดรหัสจาก filename* ตรงกับที่คาดหวังจริง (ได้ "${decodedThaiName}" คาดหวัง "${expectedThaiName}")`);
 
     // ---- /void เอกสารต้นทางที่ 50-ทวิถูกนำส่งไปแล้ว ต้องถูกปฏิเสธ พร้อมบอกวันที่+เลขที่ใบเสร็จ ----
     const eVoidBlocked = await callExpectError('fx_settler', 'POST', `/api/customer/advance-clearances/${cert1.clearanceId}/void`, { reason: 'ทดสอบ' }, idemKey('remit-void-blocked'));

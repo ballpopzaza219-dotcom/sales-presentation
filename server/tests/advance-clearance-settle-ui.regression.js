@@ -418,6 +418,7 @@ async function net1150Balance(voucherId, clearanceId){
         await pool.query(`DELETE FROM client_journal_entries WHERE source_type='advance_clearance' AND source_id = ANY($1)`, [createdClearanceIds]);
         await pool.query(`DELETE FROM client_document_audit_log WHERE doc_type='advance_clearance' AND doc_id = ANY($1)`, [createdClearanceIds]);
         await pool.query(`DELETE FROM client_idempotency_keys WHERE company_id=$1 AND endpoint = ANY($2)`, [COMPANY_A_ID, createdClearanceIds.flatMap(id => [`advance-clearances-submit:${id}`, `advance-clearances-approve:${id}`, `advance-clearances-settle:${id}`])]);
+        await pool.query(`DELETE FROM client_advance_clearance_attachments WHERE clearance_id = ANY($1)`, [createdClearanceIds]);
         await pool.query(`DELETE FROM client_advance_clearance_items WHERE clearance_id = ANY($1)`, [createdClearanceIds]);
         await pool.query('DELETE FROM client_advance_clearances WHERE id = ANY($1)', [createdClearanceIds]);
       }
