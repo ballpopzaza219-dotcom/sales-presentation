@@ -19,6 +19,9 @@ const { setup, COMPANY_A_ID, PASSWORD } = require('./fixtures/setup-approval-fix
 
 const BASE = process.env.BOQ_TEST_BASE_URL || 'http://localhost:3000';
 const PAYMENT_VOUCHER_ATTACHMENTS_DIR = path.join(__dirname, '..', 'uploads', 'payment-voucher-attachments');
+const SITE_EXPENSE_ATTACHMENTS_DIR = path.join(__dirname, '..', 'uploads', 'site-expense-attachments');
+const AUDIT_DOC_TYPES_FULL = "'payment_voucher','advance_clearance','subcontractor_payment','progress_claim','purchase_request','petty_cash_replenishment','user_permission','subcontractor','external_payee','purchase_order','subcontract_term','goods_receipt','site_expense_submission','wht_remittance'";
+const AUDIT_DOC_TYPES_WITHOUT_SITE_EXPENSE = "'payment_voucher','advance_clearance','subcontractor_payment','progress_claim','purchase_request','petty_cash_replenishment','user_permission','subcontractor','external_payee','purchase_order','subcontract_term','goods_receipt','wht_remittance'";
 
 let passed = 0;
 function assert(cond, msg) {
@@ -64,14 +67,31 @@ async function uploadAttachment(username, voucherId) {
   return json.attachments[0];
 }
 
+async function createSiteExpenseSubmission(username, projectId, vendorName) {
+  const form = new FormData();
+  form.append('photos', new Blob([Buffer.from('fake-receipt-bytes-for-test')], { type: 'image/png' }), 'receipt.png');
+  form.append('projectId', String(projectId));
+  form.append('expenseCase', 'payable');
+  form.append('vendorName', vendorName);
+  form.append('expenseDate', '2026-09-08');
+  form.append('amount', '500');
+  form.append('description', 'E2E attachment-cleanup site-expense test');
+  const res = await fetch(`${BASE}/api/customer/site-expense-submissions`, {
+    method: 'POST', headers: { Cookie: cookies[username] || '', 'Idempotency-Key': idemKey('se-create') }, body: form,
+  });
+  const json = await res.json();
+  if (!res.ok) { const e = new Error(json.error); e.status = res.status; throw e; }
+  return json.siteExpenseSubmission;
+}
+
 (async () => {
-  const cleanup = { voucherIds: [] };
+  const cleanup = { voucherIds: [], siteExpenseSubmissionIds: [], projectIds: [] };
   try {
     console.log('Ensuring fixtures...');
     await setup();
     const companyARes = await pool.query('SELECT code FROM customer_companies WHERE id=$1', [COMPANY_A_ID]);
     const codeA = companyARes.rows[0].code;
-    for (const u of ['fx_maker', 'fx_approver_mid', 'fx_settler', 'fx_super']) await login(u, codeA);
+    for (const u of ['fx_maker', 'fx_approver_mid', 'fx_settler', 'fx_super', 'fx_sitework']) await login(u, codeA);
 
     const fund = await call('fx_super', 'POST', '/api/customer/petty-cash-funds', { name: 'E2E attachment-cleanup fund ' + Date.now(), fundLimit: 60000 });
 
@@ -183,6 +203,90 @@ async function uploadAttachment(username, voucherId) {
     await new Promise(r => setTimeout(r, 300));
     assert(!fs.existsSync(realFilePath4), 'รอบนี้ void สำเร็จจริง ไฟล์จึงถูกลบไปจริงแล้ว (ยืนยันว่าไฟล์ไม่ได้หายไปเองระหว่างทาง)');
 
+    // ============================================================================================
+    // (5) site-expense-submissions: /reject ลบไฟล์แนบจริง เหมือน void/cancel — /close ต้องไม่แตะไฟล์เลย
+    // (ปิดเรื่องแล้วแปลว่ามีเอกสารการเงินจริงอ้างอิงรูปนี้อยู่ ต้องเก็บไว้เป็นหลักฐาน ไม่ใช่ทิ้งเอกสาร)
+    // ============================================================================================
+    console.log('\n=== (5) site-expense-submissions /reject ลบไฟล์แนบจริง ===');
+    const proj5 = await call('fx_maker', 'POST', '/api/customer/projects', { name: 'E2E attachment-cleanup site-expense project ' + Date.now(), sectorType: 'private', status: 'in_progress' });
+    cleanup.projectIds.push(proj5.project.id);
+
+    const se1 = await createSiteExpenseSubmission('fx_sitework', proj5.project.id, 'ร้าน E2E เทสลบไฟล์แนบ 1');
+    cleanup.siteExpenseSubmissionIds.push(se1.id);
+    const se1AttRow = (await pool.query('SELECT id, storage_path FROM client_site_expense_attachments WHERE submission_id=$1', [se1.id])).rows[0];
+    const se1FilePath = path.join(SITE_EXPENSE_ATTACHMENTS_DIR, se1AttRow.storage_path);
+    assert(fs.existsSync(se1FilePath), 'ไฟล์แนบใบส่งบิลถูกเขียนลงดิสก์จริงตอนสร้าง (multipart create)');
+
+    await call('fx_settler', 'POST', `/api/customer/site-expense-submissions/${se1.id}/reject`, { reason: 'ทดสอบลบไฟล์แนบตอนตีกลับ' });
+    await new Promise(r => setTimeout(r, 300));
+    assert(!fs.existsSync(se1FilePath), `ไฟล์บนดิสก์หายไปจริงหลัง reject (fs.existsSync=${fs.existsSync(se1FilePath)})`);
+    const se1DbAfter = await pool.query('SELECT count(*)::int AS n FROM client_site_expense_attachments WHERE submission_id=$1', [se1.id]);
+    assert(se1DbAfter.rows[0].n === 0, 'แถว DB ของไฟล์แนบหายไปจริงหลัง reject');
+    const se1FileStatus = await callRawStatus('fx_sitework', 'GET', `/api/customer/site-expense-submissions/${se1.id}/attachments/${se1AttRow.id}/file`);
+    assert(se1FileStatus === 404, `เปิด URL ไฟล์เดิมของใบที่ถูกตีกลับแล้วได้ 404 จริง (ได้ ${se1FileStatus})`);
+
+    // (5b) ไฟล์หายไปก่อนแล้ว (ลบมือ) — reject ต้องไม่พัง ลบแถว DB ต่อได้
+    const se2 = await createSiteExpenseSubmission('fx_sitework', proj5.project.id, 'ร้าน E2E เทสลบไฟล์แนบ 2');
+    cleanup.siteExpenseSubmissionIds.push(se2.id);
+    const se2AttRow = (await pool.query('SELECT storage_path FROM client_site_expense_attachments WHERE submission_id=$1', [se2.id])).rows[0];
+    const se2FilePath = path.join(SITE_EXPENSE_ATTACHMENTS_DIR, se2AttRow.storage_path);
+    fs.unlinkSync(se2FilePath);
+    const se2RejectResult = await call('fx_settler', 'POST', `/api/customer/site-expense-submissions/${se2.id}/reject`, { reason: 'ทดสอบไฟล์หายไปก่อนแล้ว' });
+    assert(se2RejectResult.siteExpenseSubmission.status === 'rejected', `reject ไม่พังแม้ไฟล์บนดิสก์หายไปก่อนแล้ว (ได้ status=${se2RejectResult.siteExpenseSubmission.status})`);
+    const se2DbAfter = await pool.query('SELECT count(*)::int AS n FROM client_site_expense_attachments WHERE submission_id=$1', [se2.id]);
+    assert(se2DbAfter.rows[0].n === 0, 'แถว DB ของไฟล์แนบยังถูกลบตามปกติแม้ไฟล์จริงหายไปก่อนแล้ว (site-expense)');
+
+    // (5c) พังกลางทางก่อน commit -> ไฟล์ต้องไม่หาย (บังคับพังจริงด้วยการทำให้ writeAuditLog throw:
+    // ปิดค่า 'site_expense_submission' ออกจาก CHECK ของ client_document_audit_log.doc_type ชั่วคราว —
+    // DELETE ไฟล์แนบ + UPDATE status เกิดไปแล้วในทรานแซกชันเดียวกันก่อนถึง INSERT audit log ที่จะพัง)
+    const se3 = await createSiteExpenseSubmission('fx_sitework', proj5.project.id, 'ร้าน E2E เทสลบไฟล์แนบ 3');
+    cleanup.siteExpenseSubmissionIds.push(se3.id);
+    const se3AttRow = (await pool.query('SELECT storage_path FROM client_site_expense_attachments WHERE submission_id=$1', [se3.id])).rows[0];
+    const se3FilePath = path.join(SITE_EXPENSE_ATTACHMENTS_DIR, se3AttRow.storage_path);
+    const se3ChecksumBefore = sha256(se3FilePath);
+
+    // NOT VALID: ข้ามการตรวจแถวเก่าที่มีอยู่แล้ว (มีแถว doc_type='site_expense_submission' จริงจาก
+    // se1/se2 ข้างบนแล้ว — ADD CONSTRAINT แบบปกติจะพังทันทีตรงนี้เพราะ validate ข้อมูลเก่าด้วยเสมอ) แต่ยัง
+    // บังคับกับ INSERT ใหม่ทุกแถวเหมือนเดิม ตรงตามที่ต้องการทดสอบ (บังคับ INSERT audit log ใหม่ให้พัง)
+    await pool.query(`ALTER TABLE client_document_audit_log DROP CONSTRAINT client_document_audit_log_doc_type_check`);
+    await pool.query(`ALTER TABLE client_document_audit_log ADD CONSTRAINT client_document_audit_log_doc_type_check CHECK (doc_type IN (${AUDIT_DOC_TYPES_WITHOUT_SITE_EXPENSE})) NOT VALID`);
+    try {
+      let se3RejectError = null;
+      try {
+        await call('fx_settler', 'POST', `/api/customer/site-expense-submissions/${se3.id}/reject`, { reason: 'ทดสอบพังกลางทาง' });
+      } catch (e) { se3RejectError = e; }
+      assert(se3RejectError !== null, `reject ที่ถูกบังคับให้พังกลางทางล้มเหลวจริง (ได้ status=${se3RejectError && se3RejectError.status})`);
+      assert(fs.existsSync(se3FilePath), `ไฟล์บนดิสก์ยังอยู่ครบหลังพังกลางทาง (site-expense) (fs.existsSync=${fs.existsSync(se3FilePath)})`);
+      assert(sha256(se3FilePath) === se3ChecksumBefore, 'เนื้อหาไฟล์ (site-expense) เหมือนเดิมเป๊ะหลังพังกลางทาง');
+      const se3DbMid = await pool.query('SELECT count(*)::int AS n FROM client_site_expense_attachments WHERE submission_id=$1', [se3.id]);
+      assert(se3DbMid.rows[0].n === 1, `แถว DB ของไฟล์แนบ (site-expense) ยังอยู่ครบหลังพังกลางทาง (ได้ ${se3DbMid.rows[0].n} แถว)`);
+      const se3StatusMid = await pool.query('SELECT status FROM client_site_expense_submissions WHERE id=$1', [se3.id]);
+      assert(se3StatusMid.rows[0].status === 'submitted', `สถานะใบส่งบิลไม่เปลี่ยนเลยหลังพังกลางทาง (ยังเป็น submitted) (ได้ ${se3StatusMid.rows[0].status})`);
+    } finally {
+      await pool.query(`ALTER TABLE client_document_audit_log DROP CONSTRAINT client_document_audit_log_doc_type_check`);
+      await pool.query(`ALTER TABLE client_document_audit_log ADD CONSTRAINT client_document_audit_log_doc_type_check CHECK (doc_type IN (${AUDIT_DOC_TYPES_FULL}))`);
+    }
+    const se3RejectClean = await call('fx_settler', 'POST', `/api/customer/site-expense-submissions/${se3.id}/reject`, { reason: 'ทดสอบหลังคืน constraint แล้ว' });
+    assert(se3RejectClean.siteExpenseSubmission.status === 'rejected', `หลังคืน constraint แล้ว reject สำเร็จตามปกติ (ได้ ${se3RejectClean.siteExpenseSubmission.status})`);
+    await new Promise(r => setTimeout(r, 300));
+    assert(!fs.existsSync(se3FilePath), 'รอบนี้ reject สำเร็จจริง ไฟล์ (site-expense) จึงถูกลบไปจริงแล้ว');
+
+    // (5d) /close ต้องไม่ลบไฟล์แนบเลย (หลักฐานต้องอยู่ต่อเพราะมีเอกสารการเงินจริงอ้างอิงแล้ว)
+    const se4 = await createSiteExpenseSubmission('fx_sitework', proj5.project.id, 'ร้าน E2E เทสลบไฟล์แนบ 4');
+    cleanup.siteExpenseSubmissionIds.push(se4.id);
+    const se4AttRow = (await pool.query('SELECT storage_path FROM client_site_expense_attachments WHERE submission_id=$1', [se4.id])).rows[0];
+    const se4FilePath = path.join(SITE_EXPENSE_ATTACHMENTS_DIR, se4AttRow.storage_path);
+    const payeeForClose = await call('fx_super', 'POST', '/api/customer/external-payees', { name: 'ร้าน E2E ปิดเรื่อง site-expense ' + Date.now(), taxpayerType: 'individual' });
+    const voucherForClose = await call('fx_maker', 'POST', '/api/customer/payment-vouchers', {
+      voucherType: 'other', payeeExternalId: payeeForClose.externalPayee.id, projectId: proj5.project.id, amount: 500, expenseAccountCode: '5300', purpose: 'E2E voucher สำหรับปิดเรื่อง site-expense (attachment test)',
+    }, idemKey('att-se-close-voucher'));
+    cleanup.voucherIds.push(voucherForClose.voucher.id);
+    await call('fx_settler', 'POST', `/api/customer/site-expense-submissions/${se4.id}/close`, { resultDocType: 'payment_voucher', resultDocId: voucherForClose.voucher.id, closingNote: 'ทดสอบว่า close ไม่ลบไฟล์แนบ' });
+    await new Promise(r => setTimeout(r, 300));
+    assert(fs.existsSync(se4FilePath), 'ไฟล์แนบยังอยู่ครบหลัง /close (ไม่ลบ เพราะมีเอกสารการเงินจริงอ้างอิงแล้ว)');
+    const se4DbAfter = await pool.query('SELECT count(*)::int AS n FROM client_site_expense_attachments WHERE submission_id=$1', [se4.id]);
+    assert(se4DbAfter.rows[0].n === 1, 'แถว DB ของไฟล์แนบยังอยู่ครบหลัง /close เช่นกัน');
+
     console.log(`\nALL ${passed} CHECKS PASSED`);
   } catch (err) {
     console.error('\nTEST FAILED:', err.message, err.body ? JSON.stringify(err.body) : '');
@@ -201,8 +305,23 @@ async function uploadAttachment(username, voucherId) {
         await pool.query(`DELETE FROM client_document_audit_log WHERE doc_type='payment_voucher' AND doc_id = ANY($1)`, [voucherIds]);
         await pool.query('DELETE FROM client_payment_vouchers WHERE id = ANY($1)', [voucherIds]);
       }
+      const { siteExpenseSubmissionIds, projectIds } = cleanup;
+      if (siteExpenseSubmissionIds.length) {
+        await pool.query('DELETE FROM client_site_expense_attachments WHERE submission_id = ANY($1)', [siteExpenseSubmissionIds]);
+        await pool.query(`DELETE FROM client_document_audit_log WHERE doc_type='site_expense_submission' AND doc_id = ANY($1)`, [siteExpenseSubmissionIds]);
+        await pool.query('DELETE FROM client_site_expense_submissions WHERE id = ANY($1)', [siteExpenseSubmissionIds]);
+      }
+      await pool.query(`DELETE FROM client_external_payees WHERE name LIKE 'ร้าน E2E ปิดเรื่อง site-expense%' AND company_id=$1`, [COMPANY_A_ID]);
+      if (projectIds.length) {
+        await pool.query('DELETE FROM client_projects WHERE id = ANY($1)', [projectIds]);
+      }
+      // เผื่อ constraint ยังค้างอยู่ในสถานะแคบ (ถ้าเทสพังกลางทางในขั้น 5c ก่อนถึง finally ของ try ชั้นในเอง)
+      await pool.query(`ALTER TABLE client_document_audit_log DROP CONSTRAINT IF EXISTS client_document_audit_log_doc_type_check`);
+      await pool.query(`ALTER TABLE client_document_audit_log ADD CONSTRAINT client_document_audit_log_doc_type_check CHECK (doc_type IN (${AUDIT_DOC_TYPES_FULL}))`);
       await pool.query(`UPDATE client_chart_of_accounts SET is_active=true WHERE company_id=$1 AND code='5300'`, [COMPANY_A_ID]);
       await pool.query(`DELETE FROM client_idempotency_keys WHERE company_id=$1 AND endpoint LIKE 'att-%'`, [COMPANY_A_ID]);
+      await pool.query(`DELETE FROM client_idempotency_keys WHERE company_id=$1 AND endpoint='site-expense-submissions-create'`, [COMPANY_A_ID]);
+      await pool.query(`DELETE FROM client_idempotency_keys WHERE company_id=$1 AND endpoint='payment-vouchers-create' AND idempotency_key LIKE 'att-se-close-voucher-%'`, [COMPANY_A_ID]);
     } catch (e) { console.error('cleanup warning (manual cleanup may be needed):', e.message); }
     await pool.end();
   }

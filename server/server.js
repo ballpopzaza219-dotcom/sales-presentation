@@ -11282,6 +11282,10 @@ async function deleteAdvanceClearanceAttachmentRows(client, clearanceId) {
   const r = await client.query('DELETE FROM client_advance_clearance_attachments WHERE clearance_id=$1 RETURNING storage_path', [clearanceId]);
   return r.rows.map(row => row.storage_path);
 }
+async function deleteSiteExpenseAttachmentRows(client, submissionId) {
+  const r = await client.query('DELETE FROM client_site_expense_attachments WHERE submission_id=$1 RETURNING storage_path', [submissionId]);
+  return r.rows.map(row => row.storage_path);
+}
 // เรียกได้ก็ต่อเมื่อทรานแซกชันที่ลบแถว DB ไปแล้ว commit สำเร็จจริงเท่านั้น (ผู้เรียกต้องเช็ค
 // res.statusCode เป็น 2xx ก่อนเสมอ) — fire-and-forget แต่ log เตือนไว้ถ้าลบไม่สำเร็จ โดยแยกกรณีไฟล์หายไป
 // ก่อนแล้ว (ENOENT — เช่นถูกลบมือ ไม่ใช่ปัญหา ไม่ต้อง alarm) ออกจากกรณีอื่น (permission/disk error จริง
@@ -11717,6 +11721,10 @@ app.post('/api/customer/site-expense-submissions', requireCustomerAuth, uploadSi
 function hasSiteExpenseProcessPermission(customer) {
   return customer.role === 'super_user' || customer.can_settle_cash === true;
 }
+// ลบไฟล์แนบจริงตอนตีกลับ (คนละกรณีกับ /close — ตีกลับคือทิ้งใบที่ไม่ถูกต้อง/ไม่ใช้แล้ว เหมือน void/cancel
+// ที่อื่น จึงลบไฟล์ได้ ต่างจาก /close ที่หมายถึง "สร้างเอกสารการเงินจริงอ้างอิงใบนี้แล้ว" ต้องเก็บรูปต้นฉบับ
+// ไว้เป็นหลักฐานประกอบเอกสารนั้นต่อไป ห้ามลบ) — ลบไฟล์บนดิสก์หลัง commit สำเร็จเท่านั้น ตาม pattern เดียวกับ
+// payment-vouchers/advance-clearances (ดู unlinkAttachmentFiles ด้านบน)
 app.post('/api/customer/site-expense-submissions/:id/reject', requireCustomerAuth, async (req, res) => {
   if (!hasSiteExpenseProcessPermission(req.customer)) return res.status(403).json({ error: 'ไม่มีสิทธิ์ดำเนินการเรื่องนี้' });
   const id = parseInt(req.params.id, 10);
@@ -11724,17 +11732,20 @@ app.post('/api/customer/site-expense-submissions/:id/reject', requireCustomerAut
   const { reason } = req.body || {};
   if (!reason || !String(reason).trim()) return res.status(400).json({ error: 'กรุณาระบุเหตุผลที่ตีกลับ' });
   const client = await pool.connect();
+  let deletedAttachmentPaths = null;
   try {
     await client.query('BEGIN');
     const r = await client.query('SELECT status FROM client_site_expense_submissions WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
     if (r.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบใบส่งบิล' }); }
     if (r.rows[0].status !== 'submitted') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'ตีกลับได้เฉพาะเรื่องที่ยังไม่ได้ดำเนินการเท่านั้น' }); }
     await client.query(`UPDATE client_site_expense_submissions SET status='rejected', rejected_reason=$1 WHERE id=$2`, [reason.trim(), id]);
+    deletedAttachmentPaths = await deleteSiteExpenseAttachmentRows(client, id);
     await writeAuditLog(client, {
       companyId, docType: 'site_expense_submission', docId: id, action: 'reject',
       fromStatus: 'submitted', toStatus: 'rejected', performedBy: req.customer.id, reason: reason.trim(),
     });
     await client.query('COMMIT');
+    unlinkAttachmentFiles(deletedAttachmentPaths, SITE_EXPENSE_ATTACHMENTS_DIR);
     res.json({ siteExpenseSubmission: await fetchFullSiteExpenseSubmission(pool, id, companyId) });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -13776,6 +13787,12 @@ app.post('/api/customer/advance-clearances/:id/approve', requireCustomerAuth, as
     const c = r.rows[0];
     if (c.status !== 'submitted') return { status: 409, body: { error: 'อนุมัติได้เฉพาะใบเคลียร์ที่ยื่นแล้วเท่านั้น' } };
 
+    // client_advance_clearances ไม่มี project_id เป็นของตัวเอง (ดู known-limitations ข.9) — journal entry
+    // ที่ยังผูกโครงการได้ต้อง join ผ่าน voucher ต้นทางเสมอ (project_id เป็น NULL ได้ถ้า voucher ต้นทางเองก็
+    // ไม่ได้ผูกโครงการไว้ — ไม่ throw เพราะเป็นค่า optional ของ voucher อยู่แล้ว)
+    const voucherProjectRes = await client.query('SELECT project_id FROM client_payment_vouchers WHERE id=$1', [c.advance_voucher_id]);
+    const clearanceProjectId = voucherProjectRes.rows[0] ? voucherProjectRes.rows[0].project_id : null;
+
     const result = await canApprove(client, req.customer, 'advance', c.total_expense_amount, {
       companyId, originators: [c.created_by, c.submitted_by],
     });
@@ -13834,7 +13851,7 @@ app.post('/api/customer/advance-clearances/:id/approve', requireCustomerAuth, as
 
     await createClientJournalEntry(client, {
       companyId, entryDate: getBangkokDateStr(), description: `เคลียร์เงินทดรองจ่าย ${c.clearance_no}`,
-      sourceType: 'advance_clearance', sourceId: id, createdBy: req.customer.id,
+      sourceType: 'advance_clearance', sourceId: id, projectId: clearanceProjectId, createdBy: req.customer.id,
       lines,
     });
 
@@ -13911,6 +13928,9 @@ app.post('/api/customer/advance-clearances/:id/settle', requireCustomerAuth, asy
     if (c.status !== 'approved') {
       return { status: 409, body: { error: 'บันทึกชำระส่วนต่างได้เฉพาะใบเคลียร์สถานะอนุมัติแล้วเท่านั้น (ใบที่ไม่มีส่วนต่างจะเป็นสถานะ settled ไปแล้วตั้งแต่ตอนอนุมัติ)' } };
     }
+    // ดู comment เดียวกันที่ /approve — ไม่มี project_id เป็นของตัวเอง ต้อง join ผ่าน voucher ต้นทางเสมอ
+    const voucherProjectRes = await client.query('SELECT project_id FROM client_payment_vouchers WHERE id=$1', [c.advance_voucher_id]);
+    const clearanceProjectId = voucherProjectRes.rows[0] ? voucherProjectRes.rows[0].project_id : null;
     // ปฏิเสธวันที่ก่อนวันที่อนุมัติใบเคลียร์นี้ — เทียบฝั่ง SQL ด้วยการแปลง approved_at (TIMESTAMPTZ) เป็น
     // วันที่ตาม timezone Asia/Bangkok ก่อนเทียบเสมอ (ไม่ใช่เทียบ Date object ใน JS ตรงๆ ซึ่งเสี่ยงเทียบผิด
     // timezone ถ้า server ไม่ได้ตั้ง TZ=UTC ไว้ชัดเจน)
@@ -13947,7 +13967,7 @@ app.post('/api/customer/advance-clearances/:id/settle', requireCustomerAuth, asy
 
     await createClientJournalEntry(client, {
       companyId, entryDate: settlementDate, description: `ชำระส่วนต่างเคลียร์เงินทดรองจ่าย ${c.clearance_no}`,
-      sourceType: 'advance_clearance', sourceId: id, createdBy: req.customer.id,
+      sourceType: 'advance_clearance', sourceId: id, projectId: clearanceProjectId, createdBy: req.customer.id,
       lines,
     });
 
@@ -14260,10 +14280,15 @@ app.post('/api/customer/petty-cash-replenishments/:id/approve', requireCustomerA
       [req.customer.id, id]
     );
 
+    // client_petty_cash_replenishments ไม่มี project_id เป็นของตัวเอง (ดู known-limitations ข.9) — join
+    // ผ่านกองทุนต้นทางเสมอ (project_id เป็น NULL ได้ถ้ากองทุนเองก็ไม่ได้ผูกโครงการไว้)
+    const fundProjectRes = await client.query('SELECT project_id FROM client_petty_cash_funds WHERE id=$1', [rep.fund_id]);
+    const replenishmentProjectId = fundProjectRes.rows[0] ? fundProjectRes.rows[0].project_id : null;
+
     // Dr เงินสดย่อย / Cr เงินสด — เติมเงินเข้ากองทุนจากเงินสดบริษัท
     await createClientJournalEntry(client, {
       companyId, entryDate: getBangkokDateStr(), description: `เติมเงินกองทุนเงินสดย่อย ${rep.replenish_no}`,
-      sourceType: 'petty_cash_replenishment', sourceId: id, createdBy: req.customer.id,
+      sourceType: 'petty_cash_replenishment', sourceId: id, projectId: replenishmentProjectId, createdBy: req.customer.id,
       lines: [
         { accountCode: ACCOUNT_CODE_PETTY_CASH, debitAmount: rep.amount, creditAmount: 0, description: 'เงินสดย่อย' },
         { accountCode: ACCOUNT_CODE_CASH, debitAmount: 0, creditAmount: rep.amount, description: 'เงินสด' },
