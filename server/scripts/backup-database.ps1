@@ -78,6 +78,27 @@ try {
   Add-Content -Path $logFile -Value $successMsg -Encoding utf8
   Write-Output $successMsg
 
+  # ก๊อปสำเนาที่สองไปไดรฟ์อื่น (D:) นอกเหนือจาก C: ที่เก็บ Postgres data อยู่แล้ว — ป้องกันกรณีดิสก์ C:
+  # เสียทั้งลูก (ซึ่งจะพา backup ที่อยู่ดิสก์เดียวกันหายไปด้วย ไม่ต่างจากไม่มี backup เลย) D: เป็น USB
+  # removable FAT32 (ตั้ง ACL จำกัดสิทธิ์ไม่ได้ — ดู database-backup-setup.md) จึงไม่ใช่ที่เก็บหลักที่ปลอดภัย
+  # พอสำหรับข้อมูลลูกค้า แต่เป็นสำเนาสำรองสำรอง (defense against disk failure, ไม่ใช่ access control) ยัง
+  # ดีกว่าไม่มีเลย — soft-fail ถ้าถอด USB ออกไปแล้ว ไม่ทำให้ backup หลักที่สำเร็จแล้วถูกนับเป็น FAILED
+  try {
+    $secondaryDir = 'D:\SiteReqBackups'
+    if (-not (Test-Path $secondaryDir)) { New-Item -ItemType Directory -Path $secondaryDir -Force | Out-Null }
+    Copy-Item -Path $backupFile -Destination $secondaryDir -Force
+    $secondaryMsg = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') OK (secondary copy) - $(Join-Path $secondaryDir (Split-Path $backupFile -Leaf))"
+    Add-Content -Path $logFile -Value $secondaryMsg -Encoding utf8
+    Write-Output $secondaryMsg
+    Get-ChildItem -Path $secondaryDir -Filter 'sitereq_db_*.dump' -ErrorAction SilentlyContinue |
+      Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-$RetentionDays) } |
+      ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
+  } catch {
+    $secondaryWarnMsg = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') WARN (secondary copy) - ก๊อปไป D: ไม่สำเร็จ: $($_.Exception.Message) (ไม่กระทบ backup หลักบน C: ซึ่งสำเร็จแล้ว — เช็คว่า USB เสียบอยู่ไหม)"
+    Add-Content -Path $logFile -Value $secondaryWarnMsg -Encoding utf8
+    Write-Warning $secondaryWarnMsg
+  }
+
   # ลบไฟล์ backup (ทั้งสองชนิด — sitereq_db_*.dump รายวันจากสคริปต์นี้ และ sitereq_globals_*.sql รายเดือน
   # จาก backup-globals.ps1) ที่เก่าเกิน $RetentionDays วัน — รวมไว้จุดเดียวกันเพื่อไม่ต้องซ้ำ logic retention
   Get-ChildItem -Path $BackupDir -Filter 'sitereq_db_*.dump' |

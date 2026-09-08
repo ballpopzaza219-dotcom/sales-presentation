@@ -73,8 +73,9 @@ try {
 
 Write-Output "`n=== Backup ฐานข้อมูล (C:\SiteReqBackups) ==="
 $backupMaxAgeHours = 48
-$globalsMaxAgeDays = 35
+$globalsMaxAgeDays = 45
 $backupDir = 'C:\SiteReqBackups'
+$secondaryDir = 'D:\SiteReqBackups'
 if (Test-Path $backupDir) {
   $latestBackup = Get-ChildItem -Path $backupDir -Filter 'sitereq_db_*.dump' -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -87,7 +88,7 @@ if (Test-Path $backupDir) {
     $problems += "ไม่พบไฟล์ backup ฐานข้อมูลเลยที่ $backupDir"
   }
   # sitereq_globals_*.sql มาจาก backup-globals.ps1 ซึ่งตั้งใจให้รันมือทุกเดือน (ไม่ใช่รายวันอัตโนมัติ —
-  # ต้องใช้รหัสผ่าน superuser ที่ไม่เก็บไว้ที่ไหนเลย) เกณฑ์เตือนจึงกว้างกว่า backup ข้อมูลหลักมาก (35 วัน)
+  # ต้องใช้รหัสผ่าน superuser ที่ไม่เก็บไว้ที่ไหนเลย) เกณฑ์เตือนจึงกว้างกว่า backup ข้อมูลหลักมาก (45 วัน)
   $latestGlobals = Get-ChildItem -Path $backupDir -Filter 'sitereq_globals_*.sql' -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
   if ($latestGlobals) {
@@ -100,6 +101,24 @@ if (Test-Path $backupDir) {
 } else {
   Write-Output "  ไม่พบโฟลเดอร์ $backupDir"
   $problems += "ไม่พบโฟลเดอร์ backup ($backupDir) — ยังไม่เคยรัน server\scripts\backup-database.ps1 เลยหรือไม่"
+}
+
+# สำเนาที่สองบน D: (USB) — ป้องกันดิสก์ C: เสียทั้งลูก ไม่ใช่ ACL (D: ตั้งสิทธิ์จำกัดไม่ได้ — ดู
+# database-backup-setup.md) เกณฑ์อายุเดียวกับ backup หลัก เพราะควรมาจากการรันคืนเดียวกันเสมอ
+if (Test-Path $secondaryDir) {
+  $latestSecondary = Get-ChildItem -Path $secondaryDir -Filter 'sitereq_db_*.dump' -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  if ($latestSecondary) {
+    $secondaryAgeHours = [math]::Round(((Get-Date) - $latestSecondary.LastWriteTime).TotalHours, 1)
+    Write-Output "  สำเนาที่สอง (D:) ล่าสุด: $($latestSecondary.Name) (อายุ $secondaryAgeHours ชม.)"
+    if ($secondaryAgeHours -gt $backupMaxAgeHours) { $problems += "สำเนา backup ที่สองบน D: เก่าเกิน $backupMaxAgeHours ชม. — เช็คว่า USB เสียบอยู่ไหมตอน backup รันคืนล่าสุด" }
+  } else {
+    Write-Output "  ไม่พบสำเนาที่สองบน D: เลย"
+    $problems += "ไม่พบสำเนา backup สำรองบน D: เลย — เช็คว่า USB เสียบอยู่ตอน backup-database.ps1 รันไหม"
+  }
+} else {
+  Write-Output "  ไม่พบโฟลเดอร์สำเนาที่สอง ($secondaryDir) — USB อาจไม่ได้เสียบอยู่"
+  $problems += "ไม่พบโฟลเดอร์สำเนา backup สำรองบน D: เลย — เช็คว่า USB เสียบอยู่ไหม"
 }
 
 Write-Output "`n================================"
