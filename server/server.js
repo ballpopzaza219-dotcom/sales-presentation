@@ -4846,7 +4846,7 @@ async function fetchFullProgressClaim(dbClient, id, companyId) {
 async function generateClientClaimNumber(client, companyId) {
   const year = getBangkokYear() + 543;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const seq = await nextDocumentSeq(client, companyId, 'progress_claim');
+    const seq = await nextDocumentSeq(client, companyId, 'progress_claim', year);
     const no = `PC-${year}-` + String(seq).padStart(4, '0');
     const exists = await client.query('SELECT 1 FROM client_progress_claims WHERE company_id=$1 AND claim_no=$2', [companyId, no]);
     if (exists.rowCount === 0) return no;
@@ -5758,10 +5758,10 @@ async function insertProjectInstallments(client, companyId, projectId, installme
 }
 
 async function generateClientProjectCode(client, companyId) {
-  const year = new Date().getFullYear() + 543; // Buddhist Era, matching every other document-number generator in this codebase
+  const year = getBangkokYear() + 543;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const countRes = await client.query('SELECT COUNT(*)::int AS n FROM client_projects WHERE company_id=$1', [companyId]);
-    const code = `PRJ-${year}-` + String(countRes.rows[0].n + 1 + attempt).padStart(4, '0');
+    const seq = await nextDocumentSeq(client, companyId, 'project', year);
+    const code = `PRJ-${year}-` + String(seq).padStart(4, '0');
     const exists = await client.query('SELECT 1 FROM client_projects WHERE company_id=$1 AND code=$2', [companyId, code]);
     if (exists.rowCount === 0) return code;
   }
@@ -6792,28 +6792,32 @@ async function insertTenderInstallments(client, companyId, tenderId, installment
 }
 
 // Atomically returns the next per-company, per-doc_type sequence number from
-// company_document_counters (schema.sql) — next_seq only ever increases (a plain UPSERT increment,
-// never derived from a COUNT of current rows), so deleting old records can never cause a
-// previously-issued number to be reissued. Bug fixed 2026-07-24: generateTenderNo used to compute
-// `COUNT(*) FROM client_tenders + 1`, so deleting 10 old tenders (dropping the count from 12 to 2)
-// made the very next tender created reissue "TDR-2569-0003" — a number already used (and deleted)
-// minutes earlier. `client` must be the same pool client the caller's transaction is using, so this
-// increment rolls back together with the rest of the caller's work if anything after it fails.
-async function nextDocumentSeq(client, companyId, docType) {
+// company_document_counters (schema.sql, key widened to (company_id, doc_type, year) by migration
+// 0023) — next_seq only ever increases within a given year (a plain UPSERT increment, never derived
+// from a COUNT of current rows), so deleting old records can never cause a previously-issued number
+// to be reissued. Bug fixed 2026-07-24: generateTenderNo used to compute `COUNT(*) FROM
+// client_tenders + 1`, so deleting 10 old tenders (dropping the count from 12 to 2) made the very
+// next tender created reissue "TDR-2569-0003" — a number already used (and deleted) minutes earlier.
+// `client` must be the same pool client the caller's transaction is using, so this increment rolls
+// back together with the rest of the caller's work if anything after it fails. `year` must always be
+// the Buddhist-era year computed via getBangkokYear() at the call site — never a bare
+// `new Date().getFullYear()`, which reads the server's local/UTC clock and would compute the wrong
+// year for roughly 7 hours after every UTC midnight once this runs on a UTC-timezone production host.
+async function nextDocumentSeq(client, companyId, docType, year) {
   const r = await client.query(
-    `INSERT INTO company_document_counters (company_id, doc_type, next_seq)
-     VALUES ($1, $2, 1)
-     ON CONFLICT (company_id, doc_type) DO UPDATE SET next_seq = company_document_counters.next_seq + 1
+    `INSERT INTO company_document_counters (company_id, doc_type, year, next_seq)
+     VALUES ($1, $2, $3, 1)
+     ON CONFLICT (company_id, doc_type, year) DO UPDATE SET next_seq = company_document_counters.next_seq + 1
      RETURNING next_seq`,
-    [companyId, docType]
+    [companyId, docType, year]
   );
   return r.rows[0].next_seq;
 }
 
 async function generateTenderNo(client, companyId) {
-  const year = new Date().getFullYear() + 543; // Buddhist Era, matching every other document-number generator in this codebase
+  const year = getBangkokYear() + 543;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const seq = await nextDocumentSeq(client, companyId, 'tender');
+    const seq = await nextDocumentSeq(client, companyId, 'tender', year);
     const no = `TDR-${year}-` + String(seq).padStart(4, '0');
     // Still checked (rather than trusting the counter blindly) — a company that manually types its
     // OWN custom tender_no (the trimmedNo branch in the POST route below) could otherwise collide
@@ -8323,7 +8327,7 @@ async function fetchFullPurchaseOrder(dbClient, id, companyId) {
 async function generateClientPoNumber(client, companyId) {
   const year = getBangkokYear() + 543;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const seq = await nextDocumentSeq(client, companyId, 'purchase_order');
+    const seq = await nextDocumentSeq(client, companyId, 'purchase_order', year);
     const no = `PO-${year}-` + String(seq).padStart(4, '0');
     const exists = await client.query('SELECT 1 FROM client_purchase_orders WHERE company_id=$1 AND po_no=$2', [companyId, no]);
     if (exists.rowCount === 0) return no;
@@ -9410,7 +9414,7 @@ function getBangkokYear() {
 async function generateClientPrNumber(client, companyId) {
   const year = getBangkokYear() + 543;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const seq = await nextDocumentSeq(client, companyId, 'purchase_request');
+    const seq = await nextDocumentSeq(client, companyId, 'purchase_request', year);
     const no = `PR-${year}-` + String(seq).padStart(4, '0');
     const exists = await client.query('SELECT 1 FROM client_purchase_requests WHERE company_id=$1 AND pr_no=$2', [companyId, no]);
     if (exists.rowCount === 0) return no;
@@ -10115,7 +10119,7 @@ const CLIENT_WO_SELECT = `
 async function generateClientWoNumber(client, companyId) {
   const year = getBangkokYear() + 543;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const seq = await nextDocumentSeq(client, companyId, 'subcontract_term');
+    const seq = await nextDocumentSeq(client, companyId, 'subcontract_term', year);
     const no = `WO-${year}-` + String(seq).padStart(4, '0');
     const exists = await client.query('SELECT 1 FROM client_subcontract_terms WHERE company_id=$1 AND contract_no=$2', [companyId, no]);
     if (exists.rowCount === 0) return no;
@@ -10545,7 +10549,7 @@ async function fetchFullSubcontractBilling(dbClient, id, companyId) {
 async function generateClientSubcontractBillingNo(client, companyId) {
   const year = getBangkokYear() + 543;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const seq = await nextDocumentSeq(client, companyId, 'subcontract_billing');
+    const seq = await nextDocumentSeq(client, companyId, 'subcontract_billing', year);
     const no = `SB-${year}-` + String(seq).padStart(4, '0');
     const exists = await client.query('SELECT 1 FROM client_subcontract_billings WHERE company_id=$1 AND billing_no=$2', [companyId, no]);
     if (exists.rowCount === 0) return no;
@@ -11436,7 +11440,7 @@ async function fetchFullGoodsReceipt(dbClient, id, companyId) {
 async function generateClientGoodsReceiptNo(client, companyId) {
   const year = getBangkokYear() + 543;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const seq = await nextDocumentSeq(client, companyId, 'goods_receipt');
+    const seq = await nextDocumentSeq(client, companyId, 'goods_receipt', year);
     const no = `GR-${year}-` + String(seq).padStart(4, '0');
     const exists = await client.query('SELECT 1 FROM client_goods_receipts WHERE company_id=$1 AND receipt_no=$2', [companyId, no]);
     if (exists.rowCount === 0) return no;
@@ -11619,7 +11623,7 @@ async function fetchFullSiteExpenseSubmission(dbClient, id, companyId) {
 async function generateClientSiteExpenseSubmissionNo(client, companyId) {
   const year = getBangkokYear() + 543;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const seq = await nextDocumentSeq(client, companyId, 'site_expense_submission');
+    const seq = await nextDocumentSeq(client, companyId, 'site_expense_submission', year);
     const no = `SE-${year}-` + String(seq).padStart(4, '0');
     const exists = await client.query('SELECT 1 FROM client_site_expense_submissions WHERE company_id=$1 AND submission_no=$2', [companyId, no]);
     if (exists.rowCount === 0) return no;
@@ -12633,7 +12637,7 @@ app.put('/api/customer/payment-vouchers/:id', requireCustomerAuth, async (req, r
 async function generateVoucherNo(client, companyId) {
   const year = getBangkokYear() + 543;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const seq = await nextDocumentSeq(client, companyId, 'payment_voucher');
+    const seq = await nextDocumentSeq(client, companyId, 'payment_voucher', year);
     const no = `PV-${year}-` + String(seq).padStart(4, '0');
     const exists = await client.query('SELECT 1 FROM client_payment_vouchers WHERE company_id=$1 AND voucher_no=$2', [companyId, no]);
     if (exists.rowCount === 0) return no;
@@ -13180,7 +13184,7 @@ async function insertAdvanceClearanceItems(client, companyId, clearanceId, safeI
 async function generateClearanceNo(client, companyId) {
   const year = getBangkokYear() + 543;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const seq = await nextDocumentSeq(client, companyId, 'advance_clearance');
+    const seq = await nextDocumentSeq(client, companyId, 'advance_clearance', year);
     const no = `ADV-${year}-` + String(seq).padStart(4, '0');
     const exists = await client.query('SELECT 1 FROM client_advance_clearances WHERE company_id=$1 AND clearance_no=$2', [companyId, no]);
     if (exists.rowCount === 0) return no;
@@ -13210,7 +13214,7 @@ function resolveWhtRateForTaxpayer(incomeTypeRow, taxpayerType) {
 async function generateWhtCertNo(client, companyId) {
   const year = getBangkokYear() + 543;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const seq = await nextDocumentSeq(client, companyId, 'wht_certificate');
+    const seq = await nextDocumentSeq(client, companyId, 'wht_certificate', year);
     const no = `WHT-${year}-` + String(seq).padStart(4, '0');
     const exists = await client.query('SELECT 1 FROM client_wht_certificates WHERE company_id=$1 AND cert_no=$2', [companyId, no]);
     if (exists.rowCount === 0) return no;
@@ -14220,7 +14224,7 @@ app.put('/api/customer/petty-cash-replenishments/:id', requireCustomerAuth, asyn
 async function generateReplenishNo(client, companyId) {
   const year = getBangkokYear() + 543;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const seq = await nextDocumentSeq(client, companyId, 'petty_cash_replenishment');
+    const seq = await nextDocumentSeq(client, companyId, 'petty_cash_replenishment', year);
     const no = `PCR-${year}-` + String(seq).padStart(4, '0');
     const exists = await client.query('SELECT 1 FROM client_petty_cash_replenishments WHERE company_id=$1 AND replenish_no=$2', [companyId, no]);
     if (exists.rowCount === 0) return no;
@@ -14415,10 +14419,10 @@ const CLIENT_QUOTATION_SELECT = `
   LEFT JOIN client_projects cp ON cp.id = q.project_id`;
 
 async function generateClientQuotationNo(client, companyId) {
-  const year = new Date().getFullYear() + 543;
+  const year = getBangkokYear() + 543;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const countRes = await client.query('SELECT COUNT(*)::int AS n FROM client_quotations WHERE company_id=$1', [companyId]);
-    const no = `QT-${year}-` + String(countRes.rows[0].n + 1 + attempt).padStart(4, '0');
+    const seq = await nextDocumentSeq(client, companyId, 'quotation', year);
+    const no = `QT-${year}-` + String(seq).padStart(4, '0');
     const exists = await client.query('SELECT 1 FROM client_quotations WHERE company_id=$1 AND quotation_no=$2', [companyId, no]);
     if (exists.rowCount === 0) return no;
   }

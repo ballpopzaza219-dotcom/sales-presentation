@@ -74,12 +74,15 @@ function seqOf(tenderNo) { return parseInt(tenderNo.match(/(\d+)$/)[1], 10); }
 
     // Delete B and C too, then confirm the counter itself (not just observed behavior) never went
     // backwards — this is what actually guarantees no future collision, regardless of row counts.
-    const counterBefore = await pool.query(`SELECT next_seq FROM company_document_counters WHERE company_id=$1 AND doc_type='tender'`, [company.id]);
+    // migration 0023 widened the key to (company_id, doc_type, year) — filter by the current Buddhist
+    // year explicitly rather than assuming exactly one row exists for this doc_type
+    const bangkokYear = parseInt(new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Bangkok', year: 'numeric' }).format(new Date()), 10) + 543;
+    const counterBefore = await pool.query(`SELECT next_seq FROM company_document_counters WHERE company_id=$1 AND doc_type='tender' AND year=$2`, [company.id, bangkokYear]);
     await pool.query('DELETE FROM client_tenders WHERE id = ANY($1)', [createdTenderIds]);
     createdTenderIds.length = 0;
     const tenderD = await call('POST', '/api/customer/tenders', { name: 'no-sequence test D', sectorType: 'private' });
     createdTenderIds.push(tenderD.tender.id);
-    const counterAfter = await pool.query(`SELECT next_seq FROM company_document_counters WHERE company_id=$1 AND doc_type='tender'`, [company.id]);
+    const counterAfter = await pool.query(`SELECT next_seq FROM company_document_counters WHERE company_id=$1 AND doc_type='tender' AND year=$2`, [company.id, bangkokYear]);
     assert(counterAfter.rows[0].next_seq > counterBefore.rows[0].next_seq, `company_document_counters.next_seq strictly increased (${counterBefore.rows[0].next_seq} -> ${counterAfter.rows[0].next_seq}) even after every tender created during this test was deleted`);
     assert(seqOf(tenderD.tender.tenderNo) > seqOf(tenderC.tender.tenderNo), `D (${tenderD.tender.tenderNo}) still comes after C (${tenderC.tender.tenderNo}) despite B/C both being deleted first`);
 

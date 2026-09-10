@@ -182,6 +182,27 @@ parent ปกติดี พบ 3 จุดที่เป็นช่องโ
 
 ### ข.10 D: เป็น FAT32 ไม่รองรับ ACL — ต้องทบทวนก่อนนำระบบขึ้นใช้งานจริงกับข้อมูลลูกค้า
 
+### ข.11 `generateInvoiceNumber`/`generateQuotationNumber` (Platform/admin-panel, ไม่ใช่ client ledger) — timezone + reuse-after-delete บั๊กเดียวกับที่เพิ่งแก้ไปใน migration 0023
+
+**พบระหว่างแก้ document numbering ของฝั่ง client (migration 0023)** — 2 ฟังก์ชันนี้อยู่คนละส่วนกับ
+`company_document_counters` เลย (เป็นเลขที่ SiteReq เองออกใบแจ้งหนี้/ใบเสนอราคาให้ **ลูกค้าเช่าระบบ**
+ผ่าน `admin-panel.html`, ตาราง `invoices`/`quotations` ระดับ platform ไม่ใช่ตาราง `client_*` ของ tenant
+ใดๆ เลย) แต่มีบั๊กแบบเดียวกันเป๊ะ 2 อย่าง:
+1. คำนวณปีจาก `new Date().getFullYear()` (เวลาเครื่อง server) ไม่ใช่ `getBangkokYear()` — ยังไม่มีอาการ
+   ตอนนี้เพราะเครื่องนี้ตั้ง timezone เป็น Asia/Bangkok อยู่แล้ว แต่จะออกเลขปีผิดทันทีช่วง 00:00-07:00
+   น. เวลาไทยถ้าย้ายขึ้น production host ที่ตั้ง UTC (เหมือนที่พบใน document numbering ฝั่ง client)
+2. นับเลขแบบ `COUNT(*) FROM invoices/quotations` — เลขซ้ำได้จริงถ้ามีการลบแถว (บั๊กเดียวกับที่ `tender`/
+   `client_projects`/`client_quotations` เคยเป็นมาก่อนแก้)
+
+**ผลกระทบจริง**: จำกัดอยู่แค่บัญชี/ใบแจ้งหนี้ของ SiteReq เอง (ฝั่งขาย subscription ให้ลูกค้า) ไม่กระทบข้อมูล
+ธุรกิจของบริษัทผู้เช่าระบบรายใดเลย — ความเสี่ยงต่ำกว่าฝั่ง client เพราะ (1) เป็นการออกใบแจ้งหนี้ภายในของ
+SiteReq เอง ปริมาณยังน้อย (2) ยังไม่ได้ deploy ขึ้น production host จริงที่ตั้ง UTC — แต่ยังควรแก้ก่อนขึ้น
+production เพื่อไม่ให้เอกสารบัญชีของ SiteReq เองมีปัญหาเดียวกัน
+
+**ยังไม่ได้แก้** — วิธีแก้เหมือนกับที่ทำไปแล้วกับ `client_projects`/`client_quotations` เป๊ะ (เปลี่ยนมาใช้
+counter table แยกของ platform เอง เช่น `platform_document_counters`, แก้ให้ใช้ `getBangkokYear()`) แต่
+เป็นคนละ migration/คนละ scope กับ 0023 (แก้ไว้เฉพาะ `company_document_counters` ของฝั่ง tenant เท่านั้น)
+
 ---
 
 ## ตารางสรุปด่วน
@@ -200,3 +221,4 @@ parent ปกติดี พบ 3 จุดที่เป็นช่องโ
 | ข.8 | ไฟล์แนบตรวจรับของ/ส่งบิลหน้างาน ไม่เคยถูกลบทิ้ง (payment voucher/advance clearance แก้แล้ว, เหลือ goods receipt/site expense) | บางส่วนแก้แล้ว |
 | ข.9 | `project_id`: 3 journal insert แก้แล้ว ✅ / advance clearance ไม่เพิ่มคอลัมน์ (ตัดสินใจแล้ว) / รายงาน filter โครงการ รอฝ่ายบัญชียืนยัน | บางส่วนแก้แล้ว |
 | ข.10 | D: เป็น FAT32 ไม่รองรับ ACL — ต้องทบทวนก่อนนำระบบขึ้นใช้งานจริงกับข้อมูลลูกค้า | ไม่บล็อก (ช่วงพัฒนา ไม่มีข้อมูลลูกค้าจริง) |
+| ข.11 | generateInvoiceNumber/generateQuotationNumber (platform, ไม่ใช่ tenant) เจอบั๊ก timezone+reuse-after-delete เดียวกับที่เพิ่งแก้ในฝั่ง client — ยังไม่แก้ | ไม่บล็อก (กระทบแค่บัญชี SiteReq เอง ยังไม่ deploy UTC host) |
