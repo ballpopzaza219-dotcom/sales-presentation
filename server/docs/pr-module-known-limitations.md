@@ -203,6 +203,14 @@ production เพื่อไม่ให้เอกสารบัญชีข
 counter table แยกของ platform เอง เช่น `platform_document_counters`, แก้ให้ใช้ `getBangkokYear()`) แต่
 เป็นคนละ migration/คนละ scope กับ 0023 (แก้ไว้เฉพาะ `company_document_counters` ของฝั่ง tenant เท่านั้น)
 
+### ข.12 down.sql ของ migration 0023 ส่วน guard เรื่อง >1 ปี ยังไม่เคยถูกทดสอบแบบ trigger จริงในเทสถาวร
+
+ยืนยันด้วยมือครั้งเดียวระหว่างพัฒนา (เซ็ตแถวข้อมูล 2 ปีปลอมแล้วรัน `migrate.js down` ยืนยันว่า
+`RAISE EXCEPTION` ทำงานถูกจริง) แต่ `document-numbering-year-key.regression.js` ข้อ (1) ทดสอบแค่ฝั่ง
+forward (สร้าง counter ปีใหม่แยกจากปีเก่าถูกต้อง) เท่านั้น ไม่เคยเรียก `down.sql` เพื่อ trigger guard นี้เลย
+— ควรเพิ่ม unit test เฉพาะจุดนี้เมื่อมีโอกาส (เซ็ตแถว 2 ปีปลอมแล้วรัน down.sql จริง ยืนยัน exception + ยืนยัน
+ว่าไม่มีอะไรถูกลบไปจริง)
+
 ---
 
 ## ตารางสรุปด่วน
@@ -222,3 +230,4 @@ counter table แยกของ platform เอง เช่น `platform_docum
 | ข.9 | `project_id`: 3 journal insert แก้แล้ว ✅ / advance clearance ไม่เพิ่มคอลัมน์ (ตัดสินใจแล้ว) / รายงาน filter โครงการ รอฝ่ายบัญชียืนยัน | บางส่วนแก้แล้ว |
 | ข.10 | D: เป็น FAT32 ไม่รองรับ ACL — ต้องทบทวนก่อนนำระบบขึ้นใช้งานจริงกับข้อมูลลูกค้า | ไม่บล็อก (ช่วงพัฒนา ไม่มีข้อมูลลูกค้าจริง) |
 | ข.11 | generateInvoiceNumber/generateQuotationNumber (platform, ไม่ใช่ tenant) เจอบั๊ก timezone+reuse-after-delete เดียวกับที่เพิ่งแก้ในฝั่ง client — ยังไม่แก้ | ไม่บล็อก (กระทบแค่บัญชี SiteReq เอง ยังไม่ deploy UTC host) |
+| ข.12 | down.sql migration 0023 ส่วน guard >1 ปี ยืนยันด้วยมือแล้ว แต่ยังไม่มี automated test — ควรเพิ่มเมื่อมีโอกาส | ไม่บล็อก (SQL logic ตรวจแล้วถูกต้อง ความเสี่ยงต่ำ) |
