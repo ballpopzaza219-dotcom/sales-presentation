@@ -10055,6 +10055,213 @@ app.put('/api/customer/subcontractors/:id', requireCustomerAuth, async (req, res
   }
 });
 
+// ---------------- Branches/Departments (Blueprint ข้อ 3: Platform → Company → Branch → Department →
+// Users — migration 0024) — สิทธิ์จัดการจำกัดเฉพาะ super_user เท่านั้น (ยืนยันแล้ว ไม่แยก flag ใหม่ —
+// เหมือน company settings/chart of accounts ซึ่งเป็นการตั้งค่าโครงสร้างองค์กรระดับบริษัท ไม่ใช่ธุรกรรม
+// ที่ต้องแยกสิทธิ์ operational ละเอียดแบบ can_approve_*) — soft-delete ผ่าน is_active เหมือน
+// client_subcontractors/client_external_payees ไม่มี hard DELETE endpoint
+function hasOrgStructureManagePermission(customer) {
+  return customer.role === 'super_user';
+}
+
+function serializeBranch(row) {
+  return { id: row.id, code: row.code, name: row.name, address: row.address, phone: row.phone, isActive: row.is_active, createdAt: row.created_at };
+}
+function validateBranchInput({ code, name, address, phone }) {
+  const safeCode = String(code || '').trim();
+  if (!safeCode) return { error: 'กรุณาระบุรหัสสาขา' };
+  const safeName = String(name || '').trim();
+  if (!safeName) return { error: 'กรุณาระบุชื่อสาขา' };
+  return { safeCode, safeName, safeAddress: String(address || '').trim(), safePhone: String(phone || '').trim() };
+}
+
+app.get('/api/customer/branches', requireCustomerAuth, async (req, res) => {
+  const companyId = req.customer.company_id;
+  const r = await pool.query('SELECT * FROM client_branches WHERE company_id=$1 ORDER BY name', [companyId]);
+  res.json({ branches: r.rows.map(serializeBranch) });
+});
+
+app.post('/api/customer/branches', requireCustomerAuth, async (req, res) => {
+  if (!hasOrgStructureManagePermission(req.customer)) return res.status(403).json({ error: 'ไม่มีสิทธิ์จัดการโครงสร้างสาขา' });
+  const companyId = req.customer.company_id;
+  const v = validateBranchInput(req.body || {});
+  if (v.error) return res.status(400).json({ error: v.error });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const insert = await client.query(
+      `INSERT INTO client_branches (company_id, code, name, address, phone) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [companyId, v.safeCode, v.safeName, v.safeAddress, v.safePhone]
+    );
+    const row = insert.rows[0];
+    await writeAuditLog(client, {
+      companyId, docType: 'branch', docId: row.id, action: 'create', performedBy: req.customer.id,
+      reason: `เพิ่มสาขาใหม่ "${row.name}" (รหัส ${row.code})`,
+    });
+    await client.query('COMMIT');
+    res.json({ branch: serializeBranch(row) });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    if (err.code === '23505') return res.status(409).json({ error: 'มีสาขาที่ใช้รหัสนี้อยู่แล้ว' });
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+// ⚠️ full-replace เสมอ ไม่ใช่ partial patch — client ต้องส่งครบทุกฟิลด์ทุกครั้ง (รวม isActive) ไม่งั้น
+// isActive ที่ไม่ได้ส่งมาจะ default เป็น true เงียบๆ (เปิดใช้งานสาขาที่เคยปิดกลับมาโดยไม่ตั้งใจ) — เหมือน
+// pattern เดียวกับ client_subcontractors PUT ทุกประการ (ฟอร์มแก้ไขฝั่ง UI โหลดค่าปัจจุบันมาเต็มก่อนเสมอจึง
+// ปลอดภัยในทางปฏิบัติ แต่ผู้เรียก endpoint นี้ตรงๆ เช่นเทส ต้องรู้พฤติกรรมนี้ไว้เสมอ)
+app.put('/api/customer/branches/:id', requireCustomerAuth, async (req, res) => {
+  if (!hasOrgStructureManagePermission(req.customer)) return res.status(403).json({ error: 'ไม่มีสิทธิ์จัดการโครงสร้างสาขา' });
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const existing = await client.query('SELECT * FROM client_branches WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (existing.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบสาขานี้' }); }
+    const old = existing.rows[0];
+    const v = validateBranchInput(req.body || {});
+    if (v.error) { await client.query('ROLLBACK'); return res.status(400).json({ error: v.error }); }
+    const isActive = req.body && typeof req.body.isActive === 'boolean' ? req.body.isActive : true;
+
+    // WHERE ใส่ company_id ซ้ำด้วยแม้ SELECT FOR UPDATE ข้างบนเช็คไปแล้ว — defense-in-depth ตาม CLAUDE.md
+    // ข้อ 10 (ทุก query ต้อง scope ด้วย company_id เอง ไม่พึ่งพาผลจาก query ก่อนหน้าเป็นกลไกป้องกันทางอ้อม)
+    const update = await client.query(
+      `UPDATE client_branches SET code=$1, name=$2, address=$3, phone=$4, is_active=$5 WHERE id=$6 AND company_id=$7 RETURNING *`,
+      [v.safeCode, v.safeName, v.safeAddress, v.safePhone, isActive, id, companyId]
+    );
+    const row = update.rows[0];
+
+    const changes = [];
+    if (old.code !== v.safeCode) changes.push(`รหัส: "${old.code}" → "${v.safeCode}"`);
+    if (old.name !== v.safeName) changes.push(`ชื่อ: "${old.name}" → "${v.safeName}"`);
+    if (old.address !== v.safeAddress) changes.push(`ที่อยู่: "${old.address || '-'}" → "${v.safeAddress || '-'}"`);
+    if (old.phone !== v.safePhone) changes.push(`โทรศัพท์: "${old.phone || '-'}" → "${v.safePhone || '-'}"`);
+    if (old.is_active !== isActive) changes.push(`สถานะ: ${old.is_active ? 'ใช้งานอยู่' : 'ปิดใช้งาน'} → ${isActive ? 'ใช้งานอยู่' : 'ปิดใช้งาน'}`);
+    if (changes.length > 0) {
+      await writeAuditLog(client, {
+        companyId, docType: 'branch', docId: id, action: 'edit', performedBy: req.customer.id,
+        fromStatus: old.is_active !== isActive ? String(old.is_active) : null,
+        toStatus: old.is_active !== isActive ? String(isActive) : null,
+        reason: changes.join('; '),
+      });
+    }
+    await client.query('COMMIT');
+    res.json({ branch: serializeBranch(row) });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    if (err.code === '23505') return res.status(409).json({ error: 'มีสาขาที่ใช้รหัสนี้อยู่แล้ว' });
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+function serializeDepartment(row) {
+  return { id: row.id, branchId: row.branch_id, code: row.code, name: row.name, isActive: row.is_active, createdAt: row.created_at };
+}
+// ต้องเช็ค branch ผ่าน DB (ไม่ใช่แค่ validate รูปแบบ) จึงรับ client (ทรานแซกชันเดิม) เข้ามาด้วยเสมอ —
+// branchId ไม่ระบุ/ว่างเปล่า = แผนกระดับบริษัท ไม่ผูกสาขาใดสาขาหนึ่ง (nullable ตามที่ตกลงไว้)
+async function validateDepartmentInput(client, companyId, { branchId, code, name }) {
+  const safeCode = String(code || '').trim();
+  if (!safeCode) return { error: 'กรุณาระบุรหัสแผนก' };
+  const safeName = String(name || '').trim();
+  if (!safeName) return { error: 'กรุณาระบุชื่อแผนก' };
+  let safeBranchId = null;
+  if (branchId !== null && branchId !== undefined && branchId !== '') {
+    const parsedBranchId = parseInt(branchId, 10);
+    if (!Number.isInteger(parsedBranchId)) return { error: 'รหัสสาขาไม่ถูกต้อง' };
+    const branchCheck = await client.query('SELECT 1 FROM client_branches WHERE id=$1 AND company_id=$2', [parsedBranchId, companyId]);
+    if (branchCheck.rowCount === 0) return { error: 'ไม่พบสาขานี้ในบริษัทของคุณ' };
+    safeBranchId = parsedBranchId;
+  }
+  return { safeBranchId, safeCode, safeName };
+}
+
+app.get('/api/customer/departments', requireCustomerAuth, async (req, res) => {
+  const companyId = req.customer.company_id;
+  const r = await pool.query('SELECT * FROM client_departments WHERE company_id=$1 ORDER BY name', [companyId]);
+  res.json({ departments: r.rows.map(serializeDepartment) });
+});
+
+app.post('/api/customer/departments', requireCustomerAuth, async (req, res) => {
+  if (!hasOrgStructureManagePermission(req.customer)) return res.status(403).json({ error: 'ไม่มีสิทธิ์จัดการโครงสร้างแผนก' });
+  const companyId = req.customer.company_id;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const v = await validateDepartmentInput(client, companyId, req.body || {});
+    if (v.error) { await client.query('ROLLBACK'); return res.status(400).json({ error: v.error }); }
+    const insert = await client.query(
+      `INSERT INTO client_departments (company_id, branch_id, code, name) VALUES ($1,$2,$3,$4) RETURNING *`,
+      [companyId, v.safeBranchId, v.safeCode, v.safeName]
+    );
+    const row = insert.rows[0];
+    await writeAuditLog(client, {
+      companyId, docType: 'department', docId: row.id, action: 'create', performedBy: req.customer.id,
+      reason: `เพิ่มแผนกใหม่ "${row.name}" (รหัส ${row.code})${row.branch_id ? ` ผูกสาขา id=${row.branch_id}` : ' (ระดับบริษัท ไม่ผูกสาขา)'}`,
+    });
+    await client.query('COMMIT');
+    res.json({ department: serializeDepartment(row) });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    if (err.code === '23505') return res.status(409).json({ error: 'มีแผนกที่ใช้รหัสนี้อยู่แล้ว' });
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+// ⚠️ full-replace เสมอ ไม่ใช่ partial patch — ดูคอมเมนต์เดียวกันที่ PUT /branches/:id ข้างบน (isActive
+// default เป็น true ถ้าไม่ส่งมา ตาม pattern เดียวกับ client_subcontractors ทุกประการ)
+app.put('/api/customer/departments/:id', requireCustomerAuth, async (req, res) => {
+  if (!hasOrgStructureManagePermission(req.customer)) return res.status(403).json({ error: 'ไม่มีสิทธิ์จัดการโครงสร้างแผนก' });
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const existing = await client.query('SELECT * FROM client_departments WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (existing.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบแผนกนี้' }); }
+    const old = existing.rows[0];
+    const v = await validateDepartmentInput(client, companyId, req.body || {});
+    if (v.error) { await client.query('ROLLBACK'); return res.status(400).json({ error: v.error }); }
+    const isActive = req.body && typeof req.body.isActive === 'boolean' ? req.body.isActive : true;
+
+    // defense-in-depth เดียวกับ PUT /branches/:id — ใส่ company_id ซ้ำใน WHERE ของ UPDATE เองด้วย
+    const update = await client.query(
+      `UPDATE client_departments SET branch_id=$1, code=$2, name=$3, is_active=$4 WHERE id=$5 AND company_id=$6 RETURNING *`,
+      [v.safeBranchId, v.safeCode, v.safeName, isActive, id, companyId]
+    );
+    const row = update.rows[0];
+
+    const changes = [];
+    if (old.branch_id !== v.safeBranchId) changes.push(`สาขา: ${old.branch_id ?? '(ไม่ผูก)'} → ${v.safeBranchId ?? '(ไม่ผูก)'}`);
+    if (old.code !== v.safeCode) changes.push(`รหัส: "${old.code}" → "${v.safeCode}"`);
+    if (old.name !== v.safeName) changes.push(`ชื่อ: "${old.name}" → "${v.safeName}"`);
+    if (old.is_active !== isActive) changes.push(`สถานะ: ${old.is_active ? 'ใช้งานอยู่' : 'ปิดใช้งาน'} → ${isActive ? 'ใช้งานอยู่' : 'ปิดใช้งาน'}`);
+    if (changes.length > 0) {
+      await writeAuditLog(client, {
+        companyId, docType: 'department', docId: id, action: 'edit', performedBy: req.customer.id,
+        fromStatus: old.is_active !== isActive ? String(old.is_active) : null,
+        toStatus: old.is_active !== isActive ? String(isActive) : null,
+        reason: changes.join('; '),
+      });
+    }
+    await client.query('COMMIT');
+    res.json({ department: serializeDepartment(row) });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    if (err.code === '23505') return res.status(409).json({ error: 'มีแผนกที่ใช้รหัสนี้อยู่แล้ว' });
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
 // ---------------- ใบสั่งจ้างผู้รับเหมาช่วง (Work Order / client_subcontract_terms, หัวข้อ 5 รอบ B) ----------------
 // เอกสารเดียวกับที่ร่างไว้ตอนวางแผนหัวข้อ 2 (ตอนนั้นชื่อ client_subcontract_terms เตรียมไว้ล่วงหน้า) ดึงมา
 // รวมกับหัวข้อ 5 ตามที่ตกลงกันไว้ — ไม่มีตาราง items ย่อยเหมือน PO (เป็นสัญญาก้อนเดียว ไม่ใช่รายการวัสดุ)

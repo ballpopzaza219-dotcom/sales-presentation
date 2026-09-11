@@ -43,7 +43,8 @@
     "test:attachments-void-cancel": "node tests/attachments-void-cancel.regression.js",
     "test:journal-project-id-linkage": "node tests/journal-project-id-linkage.regression.js",
     "test:document-numbering-year-key": "node tests/document-numbering-year-key.regression.js",
-    "test:regression-all": "npm run test:client-ledger && npm run test:petty-cash-vouchers-ui && npm run test:advance-vouchers-ui && npm run test:external-payment-ui && npm run test:advance-clearance-ui && npm run test:advance-clearance-settle-ui && npm run test:pr-ui && npm run test:po-ui && npm run test:wo-ui && npm run test:progress-claims-ui && npm run test:subcontract-billings-ui && npm run test:dual-module-nav && npm run test:site-work-ui && npm run test:void-reversing-entry && npm run test:wht-remittances && npm run test:attachments-void-cancel && npm run test:journal-project-id-linkage && npm run test:tender-no-sequence && npm run test:document-numbering-year-key"
+    "test:branches-departments": "node tests/branches-departments.regression.js",
+    "test:regression-all": "npm run test:client-ledger && npm run test:petty-cash-vouchers-ui && npm run test:advance-vouchers-ui && npm run test:external-payment-ui && npm run test:advance-clearance-ui && npm run test:advance-clearance-settle-ui && npm run test:pr-ui && npm run test:po-ui && npm run test:wo-ui && npm run test:progress-claims-ui && npm run test:subcontract-billings-ui && npm run test:dual-module-nav && npm run test:site-work-ui && npm run test:void-reversing-entry && npm run test:wht-remittances && npm run test:attachments-void-cancel && npm run test:journal-project-id-linkage && npm run test:tender-no-sequence && npm run test:document-numbering-year-key && npm run test:branches-departments"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
