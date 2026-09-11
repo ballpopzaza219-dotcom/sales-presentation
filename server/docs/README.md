@@ -91,6 +91,7 @@ SiteReq คือระบบบริหารงานก่อสร้าง
 | ไฟล์ | เนื้อหา |
 |---|---|
 | [`pr-module-known-limitations.md`](./pr-module-known-limitations.md) | รายการจุดที่ยังไม่สมบูรณ์ **ที่ยังค้างจริงเท่านั้น** (ตัดรายการที่ปิดแล้วออก) แบ่งกลุ่ม ก. (บล็อกการใช้งานจริง) / ข. (ไม่สะดวกแต่ใช้ได้) |
+| [`blueprint-progress.md`](./blueprint-progress.md) | สถานะเทียบกับ Master Blueprint 74 ข้อ (วิสัยทัศน์ Multi-Tenant SaaS เต็มรูปแบบ) — อัปเดตต่อเนื่องทุก stage ดูแผนเต็มที่ `idempotent-forging-wave.md` |
 | [`accounting-review-checklist.md`](./accounting-review-checklist.md) | เช็คลิสต์ที่ฝ่ายบัญชียืนยันสมมติฐานบัญชี/ภาษีของหัวข้อ 1 ไปแล้ว (WHT 8 ประเภท, ผังบัญชีใหม่, Dr/Cr 5 เคส) |
 | [`subcontractor-module-plan.md`](./subcontractor-module-plan.md) | แผนบัญชีเต็มของหัวข้อ 2 (ผู้รับเหมาช่วง) — ใช้เป็นข้อมูลอ้างอิงเชิงประวัติ (ทุกจุด ⚠️ ในนี้ตกลง/สร้างจริงไปหมดแล้ว) |
 | [`module-status-overview.md`](./module-status-overview.md) | Endpoint ทั้งหมดที่มีจริง แยกตามหัวข้อ + migration 0001-0018 แต่ละไฟล์เพิ่มอะไร — เอกสารอ้างอิงเชิงเทคนิค |
