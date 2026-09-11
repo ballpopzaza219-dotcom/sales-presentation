@@ -18,8 +18,6 @@
 --    client_external_payees (migration 0009/0010/0011) ที่ master data ก็เข้า audit log เหมือนกัน ไม่ใช่
 --    แค่ transactional documents
 
-BEGIN;
-
 -- ---------------- client_branches ----------------
 CREATE TABLE client_branches (
   id SERIAL PRIMARY KEY,
@@ -111,4 +109,3 @@ ALTER TABLE client_document_audit_log ADD CONSTRAINT client_document_audit_log_d
     'purchase_order','subcontract_term','goods_receipt','site_expense_submission','wht_remittance',
     'branch','department'));
 
-COMMIT;

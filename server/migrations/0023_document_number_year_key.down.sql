@@ -4,8 +4,6 @@
 -- apply migration นี้) การยุบกลับเหลือ 1 แถวจะต้องเลือกทิ้งข้อมูลของปีใดปีหนึ่ง — ไม่มีทางเลือกที่ถูกต้อง
 -- แบบอัตโนมัติ จึงต้อง RAISE EXCEPTION ปฏิเสธการ rollback ทันทีถ้าเจอสถานการณ์นี้ ไม่เดาให้ว่าจะเก็บปีไหน
 
-BEGIN;
-
 DO $$
 DECLARE
   offending RECORD;
@@ -33,4 +31,3 @@ ALTER TABLE company_document_counters DROP COLUMN year;
 -- ฝั่ง server.js ต้อง revert กลับไปใช้ COUNT(*)-based ด้วยเช่นกัน (คนละไฟล์ ไม่ใช่ DDL)
 DELETE FROM company_document_counters WHERE doc_type IN ('project', 'quotation');
 
-COMMIT;

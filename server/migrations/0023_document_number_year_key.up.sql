@@ -21,8 +21,6 @@
 -- หน้านี้) มาใช้กลไก company_document_counters เดียวกันกับเอกสารประเภทอื่นทั้งหมด — เพิ่ม 2 doc_type ใหม่
 -- ('project', 'quotation') เข้าตารางนี้พร้อมกัน
 
-BEGIN;
-
 -- (1) เพิ่มคอลัมน์ year แบบ nullable ก่อน จะตั้ง NOT NULL หลัง backfill เสร็จ
 ALTER TABLE company_document_counters ADD COLUMN year INTEGER;
 
@@ -126,4 +124,3 @@ ALTER TABLE company_document_counters DROP CONSTRAINT company_document_counters_
 ALTER TABLE company_document_counters ADD CONSTRAINT company_document_counters_pkey
   PRIMARY KEY (company_id, doc_type, year);
 
-COMMIT;

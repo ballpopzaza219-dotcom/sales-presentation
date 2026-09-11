@@ -11,8 +11,6 @@
 --    สร้างไว้ หรือง่ายกว่านั้น: เช็คแค่ว่ามีแถวเหลืออยู่เลยหรือไม่ เพราะถ้า rollback ต้องทำทันทีหลัง apply
 --    โดยไม่มีใครสร้างข้อมูลจริงเพิ่มเข้ามาก่อน จำนวนแถวควรตรงกับที่ backfill สร้างไว้เป๊ะเท่านั้น)
 
-BEGIN;
-
 DO $$
 DECLARE
   audit_count INTEGER;
@@ -61,4 +59,3 @@ END $$;
 DROP TABLE client_departments;
 DROP TABLE client_branches;
 
-COMMIT;
