@@ -4,7 +4,8 @@
 `idempotent-forging-wave.md` (แผนที่อนุมัติแล้ว 2026-09-10) ต่างจากแผนตรงที่ไฟล์นี้อยู่ใน repo และจะอัปเดต
 ต่อเนื่องไปเรื่อยๆ ตลอดโปรเจกต์ ไม่ใช่ snapshot ครั้งเดียวตอนวางแผน
 
-อัปเดตล่าสุด: 2026-09-11 — หลังปิดงาน Stage A ข้อ 1 (document numbering, migration 0023)
+อัปเดตล่าสุด: 2026-09-11 — หลังปิดงาน Stage A ข้อ 1-2 (document numbering migration 0023; Branch/Department
+migration 0024 + CRUD endpoints) — เทสถาวรรวม 27 ไฟล์/752 checks ผ่านหมด
 
 ---
 
@@ -33,7 +34,7 @@
 | ข้อ | หมวด | % | หมายเหตุ |
 |---|---|---|---|
 | 1-2 | วิสัยทัศน์/หลักการออกแบบ | หลักการ | ยึดปฏิบัติต่อเนื่อง |
-| 3-6 | Multi-tenant/Platform/Company | ~65% | tenant provisioning จริงผ่าน admin-panel แล้ว ขาด branch/department, default currency/VAT ระดับบริษัท |
+| 3-6 | Multi-tenant/Platform/Company | **~75%** ⬆️ | tenant provisioning จริงผ่าน admin-panel แล้ว **Branch/Department เสร็จแล้ว 2026-09-11** (migration 0024, CRUD 6 endpoints, composite FK isolation, audit log) — เหลือขาด default currency/VAT ระดับบริษัท |
 | 7 | Module Architecture (เปิด/ปิดต่อบริษัท) | ~10% | โมดูลมีจริงแต่ hardcode ทั้งหมด ไม่มี toggle ต่อบริษัทเลย |
 | 8 | Dashboard | ~40% | มี overview แยกตามโมดูล ไม่มี dashboard รวมศูนย์ |
 | 9 | CRM/Sales | 0% | ไม่มี Customer master/opportunity pipeline เลย |
@@ -98,12 +99,23 @@
 | งาน | สถานะ |
 |---|---|
 | 1. แก้บั๊ก document numbering (ปี/สาขาใน key) | ✅ **เสร็จแล้ว 2026-09-10** — migration 0023, commit `dc20a4f`/`b4198a9`, เทส 26 ไฟล์/733 checks ผ่านหมด |
-| 2. Branch/Department ของบริษัทเอง | ⏳ ยังไม่เริ่ม (ลำดับถัดไปตามแผน) |
-| 3. Customer Master จริง | ⏳ ยังไม่เริ่ม |
+| 2. Branch/Department ของบริษัทเอง | ✅ **เสร็จแล้ว 2026-09-11** — migration 0024, CRUD 6 endpoints (`server.js`), commit `6d4bea6`/`b4942a7`/`45db393`, เทส 27 ไฟล์/752 checks ผ่านหมด |
+| 3. Customer Master จริง | ⏳ ยังไม่เริ่ม (ลำดับถัดไปตามแผน) |
 
-## จุดที่ต้องติดตามต่อ (จากงาน Stage A ข้อ 1)
+## จุดที่ต้องติดตามต่อ (จากงาน Stage A ข้อ 1-2)
 
 - ข.11: `generateInvoiceNumber`/`generateQuotationNumber` (admin-panel/platform billing) มีบั๊กเดียวกัน
   (timezone + reuse-after-delete) — ยังไม่แก้ นอกขอบเขต migration 0023 ดู `pr-module-known-limitations.md`
 - ข.12: down.sql migration 0023 ส่วน guard >1 ปี ยืนยันด้วยมือแล้วแต่ยังไม่มี automated test — ดู
   `pr-module-known-limitations.md`
+- ข.13: down.sql migration 0024 guard แยกข้อมูล backfill เป็น heuristic (`code NOT LIKE 'DEPT-%'`) — ดู
+  `pr-module-known-limitations.md`
+- ข.14 (แก้แล้ว 2026-09-11, commit `cd0e461`): `tests/attachments-void-cancel.regression.js` เคย hardcode
+  รายการ `doc_type` ของ CHECK constraint ไว้ตรงๆ เพื่อ "คืนค่า" หลังจงใจแคบ CHECK กลางเทส — ค่าที่ hardcode
+  เก่ากว่า migration 0024 ทำให้ทุกครั้งที่ไฟล์นี้รันใน `test:regression-all` จะคืนค่า CHECK กลับไปแคบกว่าที่
+  migration 0024 ตั้งไว้จริง (ไม่มี `'branch'`/`'department'`) ทำให้ `test:branches-departments` ที่รันทีหลัง
+  ในลำดับ chain พังแบบดูเหมือนสุ่ม ทั้งที่ apply migration ถูกต้องแล้ว — แก้โดยให้อ่าน constraint จริงจาก DB
+  (`pg_get_constraintdef`) ตอนเริ่มเทสแทน hardcode **บทเรียน: เทสไฟล์ใดก็ตามที่ "จำลองการพังกลางทาง" ด้วยการ
+  แคบ constraint ชั่วคราวแล้วคืนค่าด้วย string ตายตัว มีความเสี่ยงแบบเดียวกับ CLAUDE.md ข้อ 23 (hardcoded
+  status/type list ตกหล่นตาม migration ใหม่) — ควรตรวจแนวเดียวกันนี้ในเทสไฟล์อื่นที่ทำ pattern คล้ายกันด้วย
+  ถ้าเจอในอนาคต**
