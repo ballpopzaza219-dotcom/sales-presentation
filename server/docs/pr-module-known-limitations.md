@@ -211,6 +211,18 @@ forward (สร้าง counter ปีใหม่แยกจากปีเ�
 — ควรเพิ่ม unit test เฉพาะจุดนี้เมื่อมีโอกาส (เซ็ตแถว 2 ปีปลอมแล้วรัน down.sql จริง ยืนยัน exception + ยืนยัน
 ว่าไม่มีอะไรถูกลบไปจริง)
 
+### ข.13 down.sql migration 0024 ส่วน guard "แยกข้อมูล backfill กับข้อมูลที่ผู้ใช้สร้างเอง" เป็น heuristic ไม่ใช่การตรวจสมบูรณ์แบบ
+
+Guard ที่กัน rollback ทำลายข้อมูลจริงของ `client_departments` เช็คจาก `code NOT LIKE 'DEPT-%'` (แยกโค้ดที่
+backfill อัตโนมัติสร้างตอน `up.sql` ออกจากโค้ดที่ผู้ใช้กรอกเอง) — ยืนยันด้วยการรันจริงแล้วว่า guard ทำงานถูก
+ต้องตามที่ออกแบบไว้ (2026-09-11) **แต่เป็น heuristic**: ถ้า endpoint ที่จะสร้างขึ้นในอนาคต (backend
+controller ของ branches/departments) บังเอิญ generate โค้ดขึ้นต้นด้วย `DEPT-` เอง แถวนั้นจะหลุดผ่าน guard
+ไปได้โดยไม่ตั้งใจ — ควรออกแบบ endpoint จริงให้ผู้ใช้กำหนดโค้ดเองเสมอ (ไม่ auto-generate ด้วย pattern เดียวกับ
+migration) เพื่อไม่ให้ชนกับ heuristic นี้ หรือถ้าจำเป็นต้อง auto-generate ในอนาคตจริงๆ ให้ใช้ prefix อื่นที่
+ไม่ใช่ `DEPT-` เพื่อไม่ให้ปนกับข้อมูลจาก migration ก็ได้ — บันทึกไว้เป็น known-limitation ไม่ใช่บั๊ก เพราะ
+ยอมรับความเสี่ยงนี้แล้วตอนออกแบบ (สถานการณ์ปกติที่จะ trigger migration นี้ rollback คือทันทีหลัง apply ก่อน
+มีข้อมูลจริงเกิดขึ้นเลย ซึ่ง heuristic นี้ครอบคลุมถูกต้อง 100%)
+
 ---
 
 ## ตารางสรุปด่วน
@@ -231,3 +243,4 @@ forward (สร้าง counter ปีใหม่แยกจากปีเ�
 | ข.10 | D: เป็น FAT32 ไม่รองรับ ACL — ต้องทบทวนก่อนนำระบบขึ้นใช้งานจริงกับข้อมูลลูกค้า | ไม่บล็อก (ช่วงพัฒนา ไม่มีข้อมูลลูกค้าจริง) |
 | ข.11 | generateInvoiceNumber/generateQuotationNumber (platform, ไม่ใช่ tenant) เจอบั๊ก timezone+reuse-after-delete เดียวกับที่เพิ่งแก้ในฝั่ง client — ยังไม่แก้ | ไม่บล็อก (กระทบแค่บัญชี SiteReq เอง ยังไม่ deploy UTC host) |
 | ข.12 | down.sql migration 0023 ส่วน guard >1 ปี ยืนยันด้วยมือแล้ว แต่ยังไม่มี automated test — ควรเพิ่มเมื่อมีโอกาส | ไม่บล็อก (SQL logic ตรวจแล้วถูกต้อง ความเสี่ยงต่ำ) |
+| ข.13 | down.sql migration 0024 guard แยกข้อมูล backfill เป็น heuristic (`code NOT LIKE 'DEPT-%'`) ยืนยันด้วยมือแล้วว่าถูกต้อง | ไม่บล็อก (ครอบคลุมสถานการณ์จริงถูก 100% ตอนนี้) |
