@@ -20,8 +20,14 @@ const { setup, COMPANY_A_ID, PASSWORD } = require('./fixtures/setup-approval-fix
 const BASE = process.env.BOQ_TEST_BASE_URL || 'http://localhost:3000';
 const PAYMENT_VOUCHER_ATTACHMENTS_DIR = path.join(__dirname, '..', 'uploads', 'payment-voucher-attachments');
 const SITE_EXPENSE_ATTACHMENTS_DIR = path.join(__dirname, '..', 'uploads', 'site-expense-attachments');
-const AUDIT_DOC_TYPES_FULL = "'payment_voucher','advance_clearance','subcontractor_payment','progress_claim','purchase_request','petty_cash_replenishment','user_permission','subcontractor','external_payee','purchase_order','subcontract_term','goods_receipt','site_expense_submission','wht_remittance'";
-const AUDIT_DOC_TYPES_WITHOUT_SITE_EXPENSE = "'payment_voucher','advance_clearance','subcontractor_payment','progress_claim','purchase_request','petty_cash_replenishment','user_permission','subcontractor','external_payee','purchase_order','subcontract_term','goods_receipt','wht_remittance'";
+// เดิมสองค่านี้ hardcode รายการ doc_type ไว้ตรงๆ — พอ migration ใหม่ (เช่น 0024 เพิ่ม 'branch'/'department')
+// ขยาย CHECK จริงใน DB แล้ว แต่ค่า hardcode ในไฟล์นี้ไม่ได้ตามไปด้วย ทำให้ finally-block ที่ "คืนค่า" CHECK
+// กลับไปใช้ AUDIT_DOC_TYPES_FULL ที่เก่ากว่า จริงๆ แล้วกลับไปแคบกว่าที่ migration ล่าสุดตั้งไว้ — ทำลาย
+// CHECK ที่เพิ่งขยายไปแบบเงียบๆ ทุกครั้งที่รันไฟล์นี้ (พบจริงจากการไล่ debug: หลัง apply migration 0024 แล้ว
+// verify constraint ถูกต้องเอง แต่รันเทสทั้งชุด (test:regression-all) แล้ว constraint แคบกลับไปอีกครั้ง เพราะ
+// ไฟล์นี้รันก่อน branches-departments ในลำดับ chain) — แก้โดยอ่านค่าจริงจาก DB ตอนเริ่มเทสแทน hardcode
+// (ดู AUDIT_DOC_TYPES_FULL/AUDIT_DOC_TYPES_WITHOUT_SITE_EXPENSE ที่ประกาศเป็น let ด้านล่าง แล้วเติมค่าใน IIFE)
+let AUDIT_DOC_TYPES_FULL, AUDIT_DOC_TYPES_WITHOUT_SITE_EXPENSE;
 
 let passed = 0;
 function assert(cond, msg) {
@@ -89,6 +95,17 @@ async function createSiteExpenseSubmission(username, projectId, vendorName) {
   try {
     console.log('Ensuring fixtures...');
     await setup();
+
+    // อ่านรายการ doc_type ที่ CHECK อนุญาตจริงตอนนี้จาก DB โดยตรง (ไม่ hardcode) กัน constraint ที่เพิ่งถูก
+    // migration ล่าสุดขยายไว้ถูกไฟล์นี้ทำให้แคบกลับไปโดยไม่ตั้งใจตอน "คืนค่า" หลังเทสจบ
+    const liveCheckDef = (await pool.query(
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+       WHERE conrelid='client_document_audit_log'::regclass AND conname='client_document_audit_log_doc_type_check'`
+    )).rows[0].def;
+    const liveDocTypes = [...liveCheckDef.matchAll(/'([^']+)'::text/g)].map(m => m[1]);
+    AUDIT_DOC_TYPES_FULL = liveDocTypes.map(t => `'${t}'`).join(',');
+    AUDIT_DOC_TYPES_WITHOUT_SITE_EXPENSE = liveDocTypes.filter(t => t !== 'site_expense_submission').map(t => `'${t}'`).join(',');
+
     const companyARes = await pool.query('SELECT code FROM customer_companies WHERE id=$1', [COMPANY_A_ID]);
     const codeA = companyARes.rows[0].code;
     for (const u of ['fx_maker', 'fx_approver_mid', 'fx_settler', 'fx_super', 'fx_sitework']) await login(u, codeA);
