@@ -10008,13 +10008,16 @@ app.put('/api/customer/subcontractors/:id', requireCustomerAuth, async (req, res
       }
     }
 
+    // defense-in-depth ตาม CLAUDE.md ข้อ 10 — ใส่ company_id ซ้ำใน WHERE ของ UPDATE เองด้วย แม้ SELECT FOR
+    // UPDATE ข้างบนเช็คไปแล้ว (ก.3 ใน pr-module-known-limitations.md — เดิมพึ่งพา SELECT FOR UPDATE ล้วนๆ
+    // ไม่มี defense-in-depth ชั้นที่สอง เหมือนบั๊กที่เคยพบและแก้ในโค้ด branches/departments)
     const update = await client.query(
       `UPDATE client_subcontractors SET
          name=$1, tax_id=$2, branch_code=$3, address=$4, taxpayer_type=$5, phone=$6,
          contact_person=$7, email=$8, bank_name=$9, bank_account_no=$10, bank_account_name=$11, is_active=$12
-       WHERE id=$13 RETURNING *`,
+       WHERE id=$13 AND company_id=$14 RETURNING *`,
       [v.safeName, v.safeTaxId, v.safeBranchCode, v.safeAddress, v.safeTaxpayerType, v.safePhone,
-       v.safeContactPerson, v.safeEmail, v.safeBankName, v.safeBankAccountNo, v.safeBankAccountName, isActive, id]
+       v.safeContactPerson, v.safeEmail, v.safeBankName, v.safeBankAccountNo, v.safeBankAccountName, isActive, id, companyId]
     );
     const row = update.rows[0];
 

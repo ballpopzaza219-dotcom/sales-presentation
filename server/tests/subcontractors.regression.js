@@ -101,6 +101,21 @@ async function login(username, companyCode) {
       name: 'Hacked Name', taxpayerType: 'individual',
     });
     assert(eCross.status === 404, `บริษัทอื่นแก้ผู้รับเหมาช่วงบริษัทเราไม่ได้ 404 (ได้ ${eCross.status})`);
+    // ยืนยันจาก DB ตรงๆ ว่าข้อมูลไม่ถูกแก้เลยจริงๆ (defense-in-depth ของ UPDATE ที่เพิ่งเติม company_id เข้า
+    // WHERE โดยตรง — ก.3 ใน pr-module-known-limitations.md — ก่อนหน้านี้ UPDATE พึ่งพา SELECT FOR UPDATE
+    // ที่ scope ด้วย company_id ก่อนหน้าเพียงอย่างเดียว ไม่มี defense-in-depth ชั้นที่สอง) เน้นข้อมูลธนาคาร
+    // เป็นพิเศษเพราะเป็นฟิลด์ที่กระทบเงินจริงหากถูกแก้ผิดบริษัท
+    const subAfterCrossAttempt = await pool.query(
+      'SELECT name, is_active, bank_name, bank_account_no FROM client_subcontractors WHERE id=$1',
+      [created.subcontractor.id]
+    );
+    assert(
+      subAfterCrossAttempt.rows[0].name === `Smoke CRUD Sub ${uniq} Edited` &&
+      subAfterCrossAttempt.rows[0].is_active === false &&
+      subAfterCrossAttempt.rows[0].bank_name === 'SCB' &&
+      subAfterCrossAttempt.rows[0].bank_account_no === '9998887776',
+      `ข้อมูลผู้รับเหมาช่วง (รวมข้อมูลธนาคาร) ไม่ถูกแก้ไขเลยจริงๆ หลัง cross-tenant PUT attempt (ยืนยันจาก DB ตรงๆ ไม่ใช่แค่ดู response code) (ได้ ${JSON.stringify(subAfterCrossAttempt.rows[0])})`
+    );
 
     // ================= 4) ชื่อซ้ำถูกบล็อก (รวม normalize collision) =================
     const fullName = `บริษัท ทดสอบซ้ำ ${uniq} จำกัด`;
