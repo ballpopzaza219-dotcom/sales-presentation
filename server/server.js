@@ -10262,6 +10262,156 @@ app.put('/api/customer/departments/:id', requireCustomerAuth, async (req, res) =
   }
 });
 
+// ---------------- Customer Master (Blueprint ข้อ 9: CRM/Sales — migration 0025) ----------------
+// ⚠️ client_customers คือ "ลูกค้า/เจ้าของโครงการ" ของบริษัทผู้เช่าระบบ (ผู้จ่ายเงินภายนอก กลับด้านกับ
+// client_subcontractors/client_external_payees ที่เป็นผู้รับเงินภายนอก) — คนละเรื่องกับ customers/
+// customer_companies โดยสิ้นเชิง (ดูคอมเมนต์หัวไฟล์ migration 0025)
+//
+// เส้นทาง REST ตั้งใจใช้ "/clients" ไม่ใช่ "/customers" ทั้งที่ตารางชื่อ client_customers (ตัดสินใจเอง,
+// ต่างจาก branches/departments/subcontractors ที่ route ตรงกับชื่อตารางแบบตัดคำนำหน้า client_ ออกตรงๆ) —
+// เหตุผล: ทุก route ในระบบนี้ขึ้นต้นด้วย /api/customer/ อยู่แล้ว (หมายถึง "API ฝั่งผู้ใช้ที่ login เป็น
+// customer" ของ tenant) ถ้าตั้งชื่อ resource ตรงตามตารางจะได้ /api/customer/customers ซึ่งอ่านสับสนมาก
+// (ดูเหมือนพิมพ์ผิดซ้ำคำ) — ใช้ /clients แทนเพื่อความชัดเจน ไม่กระทบชื่อตาราง/คอลัมน์ใดๆ ในโค้ด (แค่ URL)
+//
+// สิทธิ์จัดการ: super_user เท่านั้น (ยืนยันแล้ว เหมือน branches/departments) — แยกฟังก์ชันเองแม้ body
+// เหมือนกัน ตาม CLAUDE.md ข้อ 14 (แยกสิทธิ์ตั้งค่า/จัดการทรัพยากรออกจากสิทธิ์อนุมัติธุรกรรมเสมอ แม้ตอนนี้
+// ยังไม่มีธุรกรรมที่ผูกกับลูกค้าโดยตรงที่ต้องอนุมัติแยก)
+function hasCustomerManagePermission(customer) {
+  return customer.role === 'super_user';
+}
+
+// ⚠️ ตั้งชื่อ serializeClientCustomer ไม่ใช่ serializeCustomer โดยตั้งใจ — มีฟังก์ชัน serializeCustomer(row)
+// อยู่แล้วก่อนหน้านี้ในไฟล์ (บรรทัด ~2591, ใช้กับตาราง customers คือผู้ใช้ login ของ tenant ไม่ใช่
+// client_customers) พบจริงระหว่างทดสอบว่าถ้าตั้งชื่อชนกัน function declaration ตัวหลังจะ override ตัวแรก
+// แบบเงียบๆ ทั่วทั้งไฟล์ (JS module-scope function hoisting) ทำให้ทุกจุดที่เคยเรียก serializeCustomer()
+// เดิม (รวมถึง response ตอน login ที่ส่ง role/permission flags กลับไปให้ frontend) พังไปด้วยทั้งหมด —
+// ตรวจพบจาก regression suite ที่ไม่เกี่ยวข้องกันเลย (fx_maker2 เห็นปุ่มอนุมัติเงินสดย่อยทั้งที่ไม่มีสิทธิ์)
+function serializeClientCustomer(row) {
+  return {
+    id: row.id, name: row.name, taxId: row.tax_id, branchCode: row.branch_code, address: row.address,
+    taxpayerType: row.taxpayer_type, phone: row.phone, contactPerson: row.contact_person, email: row.email,
+    isActive: row.is_active, createdAt: row.created_at,
+  };
+}
+
+// ⚠️ ไม่บังคับ tax_id แม้ taxpayerType='juristic' — ต่างจาก validateSubcontractorInput/
+// validateExternalPayeeInput โดยตั้งใจ (ตกลงไว้ตอนออกแบบ migration 0025): usecase ที่ต้องใช้ tax_id จริง
+// (ออกใบกำกับภาษีขาย) เกิดตอนวางบิล/รับชำระ ไม่ใช่ตอนสร้าง master record — รูปแบบ 13 หลักยังตรวจเหมือนกัน
+// ถ้ามีการกรอกมา (defense-in-depth คู่กับ DB CHECK)
+function validateCustomerInput({ name, taxId, branchCode, address, taxpayerType, phone, contactPerson, email }) {
+  const safeName = String(name || '').trim();
+  if (!safeName) return { error: 'กรุณาระบุชื่อลูกค้า' };
+  const safeTaxpayerType = ['individual', 'juristic'].includes(taxpayerType) ? taxpayerType : 'juristic';
+  const safeTaxId = taxId ? String(taxId).trim() : null;
+  if (safeTaxId && !/^\d{13}$/.test(safeTaxId)) return { error: 'เลขผู้เสียภาษีต้องเป็นตัวเลข 13 หลัก' };
+  return {
+    safeName,
+    safeTaxId,
+    safeBranchCode: String(branchCode || '00000').trim() || '00000',
+    safeAddress: String(address || '').trim(),
+    safeTaxpayerType,
+    safePhone: String(phone || '').trim(),
+    safeContactPerson: String(contactPerson || '').trim(),
+    safeEmail: String(email || '').trim(),
+  };
+}
+
+app.get('/api/customer/clients', requireCustomerAuth, async (req, res) => {
+  const companyId = req.customer.company_id;
+  const r = await pool.query('SELECT * FROM client_customers WHERE company_id=$1 ORDER BY name', [companyId]);
+  res.json({ customers: r.rows.map(serializeClientCustomer) });
+});
+
+app.post('/api/customer/clients', requireCustomerAuth, async (req, res) => {
+  if (!hasCustomerManagePermission(req.customer)) return res.status(403).json({ error: 'ไม่มีสิทธิ์จัดการลูกค้า' });
+  const companyId = req.customer.company_id;
+  const v = validateCustomerInput(req.body || {});
+  if (v.error) return res.status(400).json({ error: v.error });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const insert = await client.query(
+      `INSERT INTO client_customers (company_id, name, tax_id, branch_code, address, taxpayer_type, phone, contact_person, email)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [companyId, v.safeName, v.safeTaxId, v.safeBranchCode, v.safeAddress, v.safeTaxpayerType, v.safePhone, v.safeContactPerson, v.safeEmail]
+    );
+    const row = insert.rows[0];
+    await writeAuditLog(client, {
+      companyId, docType: 'customer', docId: row.id, action: 'create', performedBy: req.customer.id,
+      reason: `เพิ่มลูกค้าใหม่ "${row.name}"`,
+    });
+    await client.query('COMMIT');
+    res.json({ customer: serializeClientCustomer(row) });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    if (err.code === '23505') {
+      const isDupTaxId = err.constraint === 'uq_client_customers_taxid';
+      return res.status(409).json({ error: isDupTaxId ? 'มีลูกค้าที่ใช้เลขผู้เสียภาษีนี้อยู่แล้ว' : 'มีลูกค้าชื่อนี้อยู่แล้ว (เทียบแบบไม่สนตัวพิมพ์เล็ก-ใหญ่และคำนำหน้านิติบุคคล)' });
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+// ⚠️ full-replace เสมอ ไม่ใช่ partial patch — ดูคอมเมนต์เดียวกันที่ PUT /branches/:id (isActive default
+// เป็น true ถ้าไม่ส่งมา ตาม pattern เดียวกับ client_subcontractors ทุกประการ)
+app.put('/api/customer/clients/:id', requireCustomerAuth, async (req, res) => {
+  if (!hasCustomerManagePermission(req.customer)) return res.status(403).json({ error: 'ไม่มีสิทธิ์จัดการลูกค้า' });
+  const id = parseInt(req.params.id, 10);
+  const companyId = req.customer.company_id;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const existing = await client.query('SELECT * FROM client_customers WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (existing.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบลูกค้านี้' }); }
+    const old = existing.rows[0];
+    const v = validateCustomerInput(req.body || {});
+    if (v.error) { await client.query('ROLLBACK'); return res.status(400).json({ error: v.error }); }
+    const isActive = req.body && typeof req.body.isActive === 'boolean' ? req.body.isActive : true;
+
+    // defense-in-depth ตาม CLAUDE.md ข้อ 10 — ใส่ company_id ซ้ำใน WHERE ของ UPDATE เองด้วย แม้ SELECT FOR
+    // UPDATE ข้างบนเช็คไปแล้ว (บทเรียนจาก branches/departments ที่เคยพลาดจุดนี้มาก่อน)
+    const update = await client.query(
+      `UPDATE client_customers SET name=$1, tax_id=$2, branch_code=$3, address=$4, taxpayer_type=$5, phone=$6,
+         contact_person=$7, email=$8, is_active=$9 WHERE id=$10 AND company_id=$11 RETURNING *`,
+      [v.safeName, v.safeTaxId, v.safeBranchCode, v.safeAddress, v.safeTaxpayerType, v.safePhone,
+       v.safeContactPerson, v.safeEmail, isActive, id, companyId]
+    );
+    const row = update.rows[0];
+
+    const changes = [];
+    if (old.name !== v.safeName) changes.push(`ชื่อ: "${old.name}" → "${v.safeName}"`);
+    if ((old.tax_id || '') !== (v.safeTaxId || '')) changes.push(`เลขผู้เสียภาษี: "${old.tax_id || '-'}" → "${v.safeTaxId || '-'}"`);
+    if (old.branch_code !== v.safeBranchCode) changes.push(`สาขาสรรพากร: "${old.branch_code}" → "${v.safeBranchCode}"`);
+    if (old.address !== v.safeAddress) changes.push(`ที่อยู่: "${old.address || '-'}" → "${v.safeAddress || '-'}"`);
+    if (old.taxpayer_type !== v.safeTaxpayerType) changes.push(`ประเภท: "${old.taxpayer_type}" → "${v.safeTaxpayerType}"`);
+    if (old.phone !== v.safePhone) changes.push(`โทรศัพท์: "${old.phone || '-'}" → "${v.safePhone || '-'}"`);
+    if (old.contact_person !== v.safeContactPerson) changes.push(`ผู้ติดต่อ: "${old.contact_person || '-'}" → "${v.safeContactPerson || '-'}"`);
+    if (old.email !== v.safeEmail) changes.push(`อีเมล: "${old.email || '-'}" → "${v.safeEmail || '-'}"`);
+    if (old.is_active !== isActive) changes.push(`สถานะ: ${old.is_active ? 'ใช้งานอยู่' : 'ปิดใช้งาน'} → ${isActive ? 'ใช้งานอยู่' : 'ปิดใช้งาน'}`);
+    if (changes.length > 0) {
+      await writeAuditLog(client, {
+        companyId, docType: 'customer', docId: id, action: 'edit', performedBy: req.customer.id,
+        fromStatus: old.is_active !== isActive ? String(old.is_active) : null,
+        toStatus: old.is_active !== isActive ? String(isActive) : null,
+        reason: changes.join('; '),
+      });
+    }
+    await client.query('COMMIT');
+    res.json({ customer: serializeClientCustomer(row) });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    if (err.code === '23505') {
+      const isDupTaxId = err.constraint === 'uq_client_customers_taxid';
+      return res.status(409).json({ error: isDupTaxId ? 'มีลูกค้าที่ใช้เลขผู้เสียภาษีนี้อยู่แล้ว' : 'มีลูกค้าชื่อนี้อยู่แล้ว (เทียบแบบไม่สนตัวพิมพ์เล็ก-ใหญ่และคำนำหน้านิติบุคคล)' });
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
 // ---------------- ใบสั่งจ้างผู้รับเหมาช่วง (Work Order / client_subcontract_terms, หัวข้อ 5 รอบ B) ----------------
 // เอกสารเดียวกับที่ร่างไว้ตอนวางแผนหัวข้อ 2 (ตอนนั้นชื่อ client_subcontract_terms เตรียมไว้ล่วงหน้า) ดึงมา
 // รวมกับหัวข้อ 5 ตามที่ตกลงกันไว้ — ไม่มีตาราง items ย่อยเหมือน PO (เป็นสัญญาก้อนเดียว ไม่ใช่รายการวัสดุ)
