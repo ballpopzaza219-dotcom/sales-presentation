@@ -65,6 +65,46 @@ state/cache ฝั่ง browser ระหว่างสลับ user ใน�
 เงินจริง เป็นแค่ UI แสดงปุ่มผิดที่ทำให้สับสน** — ความเร่งด่วนต่ำกว่า ก.3 (ที่กระทบเงินจริงได้จริง) จึงเรียง
 ลำดับ ก.3 ก่อน ก.4 ตามเดิม
 
+### ก.5 pattern "UPDATE ไม่ scope ด้วย company_id เอง พึ่งพา SELECT FOR UPDATE ก่อนหน้าอย่างเดียว" แพร่หลายทั่วระบบ — เตรียมไว้สำหรับ audit แยกต่างหาก ยังไม่แก้ตอนนี้
+
+**พบ 2026-09-12** ระหว่างแก้ ก.3 (`client_subcontractors`) — grep `UPDATE client_` ทั้งไฟล์ `server.js` แล้ว
+เช็คว่าแต่ละ statement มี `company_id` ใน `WHERE`/`SET` เองหรือไม่ (ไม่นับที่ `company_id` โผล่แค่ใน subquery
+คำนวณยอดรวมแบบ `COALESCE(...)` ซึ่งปลอดภัยอยู่แล้ว) — พบว่าเป็น**ธรรมเนียมเดิมของทั้งระบบ** (ล็อกแถวด้วย
+`SELECT ... FOR UPDATE WHERE id=$1 AND company_id=$2` ก่อนเสมอ แล้วค่อย `UPDATE ... WHERE id=$X` ตัวเดียวโดย
+ไม่ scope ซ้ำ) ไม่ใช่บั๊กเฉพาะจุดแบบ ก.3 — ระดับความเสี่ยงเดียวกับ ก.3 ทุกจุด (defense-in-depth ชั้นที่สอง
+หายไป ไม่ใช่ช่องโหว่ที่ใช้งานได้จริงถ้า flow ปกติทำงานถูกทุกจุด แต่เสี่ยงถ้ามี bug อื่นแทรกระหว่างทาง)
+
+**ไม่ทำรวมกับ ก.3 ตอนนี้ตามที่ตกลง** — ขอบเขตใหญ่เกินไปสำหรับแก้ทีละจุดกลางงานอื่น ควรเป็น audit sprint
+แยกต่างหากที่ไล่ตรวจ+แก้+เทสให้ครบทุกจุดในรอบเดียว รายชื่อ endpoint/ตารางที่ grep เจอ (บรรทัดใน `server.js`
+ณ วันที่บันทึก อาจขยับถ้ามีการแก้ไฟล์เพิ่มเติมทีหลัง — ใช้ชื่อ endpoint/ตารางอ้างอิงเป็นหลัก ไม่ใช่เลขบรรทัด):
+
+| ตาราง | บรรทัด (ประมาณ) | บริบท |
+|---|---|---|
+| `client_progress_claims` | 5042, 5105, 5169, 5227, 5355, 5544 | แก้ไข draft, submit, certify, approve (2 จุด), void |
+| `client_revenue` | 5540 | void (คู่กับ progress claim ด้านบน) |
+| `client_project_tasks` | 6572 | แก้ไข task (Gantt/schedule) |
+| `client_tenders` | 7052 | แก้ไข tender (PUT) |
+| `client_budget_revisions` | 8016, 8039, 8067 | submit, approve, reject |
+| `client_purchase_orders` | 8469, 8538, 8610 | แก้ไข PO, submit, approve |
+| `client_purchase_requests` | 9629, 9702, 9736 | แก้ไข PR, submit, approve |
+| `client_subcontract_terms` | 10597, 10636, 10665 | แก้ไขสัญญา/WO, submit, approve |
+| `client_subcontract_billings` | 11161, 11501 | แก้ไขใบวางบิลผู้รับเหมาช่วง, void |
+| `client_site_expense_submissions` | 12146 | แก้ไข/ประมวลผลใบส่งบิลหน้างาน |
+| `client_external_payees` | 12659 | แก้ไขผู้รับเงินภายนอก (เหมือน ก.3 เป๊ะ แต่คนละตาราง) |
+| `client_payment_vouchers` | 12965, 13053, 13116, 13326 | แก้ไขใบเบิกเงิน, submit, approve, void |
+| `client_advance_clearances` | 14073, 14128, 14212, 14317, 14470 | แก้ไขใบเคลียร์เงินทดรอง, submit, approve, settle, void |
+| `client_petty_cash_replenishments` | 14615, 14643 | submit, approve |
+
+**ตรวจแล้วว่าปลอดภัยอยู่แล้ว** (มี `company_id` ใน `WHERE`/subquery เองครบ ไม่ต้องแก้): `client_branches`,
+`client_departments`, `client_customers` (ทั้งสามแก้ในงานนี้แล้ว), `client_petty_cash_funds`,
+`client_wht_remittances`, `client_wht_certificates`, และ 3 จุด `total_amount recompute` แบบ `COALESCE` บน
+`client_purchase_orders`/`client_purchase_requests`/`client_advance_clearances`
+
+**ข้อควรระวังตอนทำ audit จริง**: บาง sub-table ระดับ item (เช่น `client_purchase_request_items` บรรทัด
+~9616) อาจไม่มีคอลัมน์ `company_id` ของตัวเองเลย (ผูกกับ header ผ่าน `purchase_request_id` แทน) ต้อง
+ตรวจสอบ schema จริงของแต่ละตารางก่อนว่ามีคอลัมน์ `company_id` ให้ scope ได้จริงหรือไม่ ก่อนสรุปว่าเป็นช่องโหว่
+เดียวกัน — บางจุดอาจต้อง JOIN ไปยัง header แทนการเติม `AND company_id=$N` ตรงๆ
+
 ### ~~ก.1 เอกสารที่อนุมัติแล้วไม่มี `/void`~~ — ✅ ทำเสร็จแล้ว (2026-09-07, migration 0021)
 
 `POST .../:id/void` มีครบทั้ง 4 โมดูล (`payment-vouchers`, `advance-clearances`, `subcontract-billings`,
@@ -283,6 +323,7 @@ migration) เพื่อไม่ให้ชนกับ heuristic นี้ 
 | ~~ก.2~~ | ~~ไม่มีกระบวนการนำส่ง ภ.ง.ด.~~ — ✅ เสร็จแล้ว (2026-09-07) | ปิดแล้ว |
 | **ก.3** | **`client_subcontractors` PUT ไม่ scope UPDATE ด้วย `company_id`** (พบ 2026-09-12, โค้ด production กระทบข้อมูลธนาคารจริง) | **เปิดอยู่ — งานถัดไปทันทีหลัง client_customers** |
 | **ก.4** | **`fx_maker2` เห็นปุ่มอนุมัติเงินสดย่อยทั้งที่ไม่มีสิทธิ์** (พบ 2026-09-12, บั๊กเก่าไม่เกี่ยวกับ client_customers/branches/departments — ยืนยันแล้วว่าเป็นแค่ UI แสดงผลผิด ไม่ใช่ broken permission enforcement, ยังไม่พบ root cause) | **เปิดอยู่ — ไม่กระทบเงินจริง แต่บล็อก test:regression-all ไม่ให้ EXIT=0 เต็มชุด** |
+| **ก.5** | **UPDATE ไม่ scope ด้วย company_id เอง (พึ่งพา SELECT FOR UPDATE อย่างเดียว) แพร่หลายทั่วระบบ** — พบ 2026-09-12 ระหว่างแก้ ก.3, รายชื่อ ~36 จุดข้าม 13 ตาราง | **เปิดอยู่ — เตรียมไว้สำหรับ audit sprint แยกต่างหาก ไม่ได้แก้ในงานนี้** |
 | ข.1 | หัวข้อ 3.2 Project Complete (อสังหาริมทรัพย์) — รอนิยาม requirement | รอ requirement |
 | ข.2 | PR item adjustment ไม่มี uncancel (ตั้งใจ) | ไม่สะดวก |
 | ข.3 | payment voucher (other) รองรับ 1 บรรทัด/ใบ | ไม่สะดวก |
