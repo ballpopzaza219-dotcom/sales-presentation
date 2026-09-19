@@ -83,7 +83,7 @@ state/cache ฝั่ง browser ระหว่างสลับ user ใน�
 | `client_progress_claims` | 5042, 5105, 5169, 5227, 5355, 5544 | แก้ไข draft, submit, certify, approve (2 จุด), void |
 | `client_revenue` | 5540 | void (คู่กับ progress claim ด้านบน) |
 | `client_project_tasks` | 6572 | แก้ไข task (Gantt/schedule) |
-| `client_tenders` | 7052 | แก้ไข tender (PUT) |
+| ~~`client_tenders`~~ | ~~7052~~ | ~~แก้ไข tender (PUT)~~ — ✅ แก้แล้ว 2026-09-13 (บังเอิญกำลังแก้ statement นี้อยู่แล้วตอนเชื่อม customerId เข้า tenders ต้นทุนเพิ่มแทบเป็นศูนย์) |
 | `client_budget_revisions` | 8016, 8039, 8067 | submit, approve, reject |
 | `client_purchase_orders` | 8469, 8538, 8610 | แก้ไข PO, submit, approve |
 | `client_purchase_requests` | 9629, 9702, 9736 | แก้ไข PR, submit, approve |
@@ -323,7 +323,7 @@ migration) เพื่อไม่ให้ชนกับ heuristic นี้ 
 | ~~ก.2~~ | ~~ไม่มีกระบวนการนำส่ง ภ.ง.ด.~~ — ✅ เสร็จแล้ว (2026-09-07) | ปิดแล้ว |
 | **ก.3** | **`client_subcontractors` PUT ไม่ scope UPDATE ด้วย `company_id`** (พบ 2026-09-12, โค้ด production กระทบข้อมูลธนาคารจริง) | **เปิดอยู่ — งานถัดไปทันทีหลัง client_customers** |
 | **ก.4** | **`fx_maker2` เห็นปุ่มอนุมัติเงินสดย่อยทั้งที่ไม่มีสิทธิ์** (พบ 2026-09-12, บั๊กเก่าไม่เกี่ยวกับ client_customers/branches/departments — ยืนยันแล้วว่าเป็นแค่ UI แสดงผลผิด ไม่ใช่ broken permission enforcement, ยังไม่พบ root cause) | **เปิดอยู่ — ไม่กระทบเงินจริง แต่บล็อก test:regression-all ไม่ให้ EXIT=0 เต็มชุด** |
-| **ก.5** | **UPDATE ไม่ scope ด้วย company_id เอง (พึ่งพา SELECT FOR UPDATE อย่างเดียว) แพร่หลายทั่วระบบ** — พบ 2026-09-12 ระหว่างแก้ ก.3, รายชื่อ ~36 จุดข้าม 13 ตาราง | **เปิดอยู่ — เตรียมไว้สำหรับ audit sprint แยกต่างหาก ไม่ได้แก้ในงานนี้** |
+| **ก.5** | **UPDATE ไม่ scope ด้วย company_id เอง (พึ่งพา SELECT FOR UPDATE อย่างเดียว) แพร่หลายทั่วระบบ** — พบ 2026-09-12 ระหว่างแก้ ก.3, รายชื่อ ~35 จุดข้าม 12 ตารางที่เหลือ (`client_tenders` แก้ไปแล้ว 1 จุดระหว่างทาง) | **เปิดอยู่ — เตรียมไว้สำหรับ audit sprint แยกต่างหาก ไม่ได้แก้ในงานนี้** |
 | ข.1 | หัวข้อ 3.2 Project Complete (อสังหาริมทรัพย์) — รอนิยาม requirement | รอ requirement |
 | ข.2 | PR item adjustment ไม่มี uncancel (ตั้งใจ) | ไม่สะดวก |
 | ข.3 | payment voucher (other) รองรับ 1 บรรทัด/ใบ | ไม่สะดวก |

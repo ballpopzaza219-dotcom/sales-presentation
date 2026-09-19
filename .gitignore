@@ -7,3 +7,5 @@ PGSQL1.sql
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 server/tests/screenshots/
+stripe_backup_code.txt
+*backup_code*.txt
