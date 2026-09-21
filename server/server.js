@@ -3291,15 +3291,25 @@ async function createJournalEntry(client, { entryDate, description, sourceType, 
 }
 
 // ---------------- Admin panel: invoices ----------------
+// แก้ ข.11 (pr-module-known-limitations.md, migration 0026) — เดิมใช้ new Date().getFullYear() (server
+// local/UTC clock) + COUNT(*) (reuse-after-delete ถ้ามีแถวถูกลบ) เหมือน bug class ที่แก้ไปแล้วใน migration
+// 0023 ฝั่ง client ledger — platform_document_counters เป็นเลขระดับแพลตฟอร์ม ไม่ scope ด้วย company_id
+// (invoice_no/quotation_no เป็น UNIQUE ระดับ global จริง ตรวจ endpoint แล้วไม่เคยรับค่าจาก user เองเลย จึง
+// ไม่ต้อง retry+exists-check แบบ generateClientProjectCode — atomic counter รับประกัน unique ได้เต็มที่)
+async function nextPlatformDocumentSeq(client, docType, year) {
+  const r = await client.query(
+    `INSERT INTO platform_document_counters (doc_type, year, next_seq) VALUES ($1, $2, 1)
+     ON CONFLICT (doc_type, year) DO UPDATE SET next_seq = platform_document_counters.next_seq + 1
+     RETURNING next_seq`,
+    [docType, year]
+  );
+  return r.rows[0].next_seq;
+}
+
 async function generateInvoiceNumber(client) {
-  const year = new Date().getFullYear() + 543; // Buddhist Era, matches Thai convention used elsewhere in this app
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const countRes = await client.query('SELECT COUNT(*)::int AS n FROM invoices');
-    const no = `INV-${year}-` + String(countRes.rows[0].n + 1 + attempt).padStart(4, '0');
-    const exists = await client.query('SELECT 1 FROM invoices WHERE invoice_no=$1', [no]);
-    if (exists.rowCount === 0) return no;
-  }
-  throw new Error('ไม่สามารถสร้างเลขที่ใบแจ้งหนี้ได้');
+  const year = getBangkokYear() + 543;
+  const seq = await nextPlatformDocumentSeq(client, 'invoice', year);
+  return `INV-${year}-` + String(seq).padStart(4, '0');
 }
 
 const INVOICE_SELECT = `
@@ -3634,14 +3644,9 @@ app.delete('/api/admin/slips/:id', requireAdminAuth, requireAdminRole('admin'), 
 
 // ---------------- Admin panel: quotations (ใบเสนอราคา) ----------------
 async function generateQuotationNumber(client) {
-  const year = new Date().getFullYear() + 543;
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const countRes = await client.query('SELECT COUNT(*)::int AS n FROM quotations');
-    const no = `QT-${year}-` + String(countRes.rows[0].n + 1 + attempt).padStart(4, '0');
-    const exists = await client.query('SELECT 1 FROM quotations WHERE quotation_no=$1', [no]);
-    if (exists.rowCount === 0) return no;
-  }
-  throw new Error('ไม่สามารถสร้างเลขที่ใบเสนอราคาได้');
+  const year = getBangkokYear() + 543;
+  const seq = await nextPlatformDocumentSeq(client, 'quotation', year);
+  return `QT-${year}-` + String(seq).padStart(4, '0');
 }
 
 const QUOTATION_SELECT = `
@@ -15237,7 +15242,11 @@ app.use(express.static(path.join(__dirname, '..'), {
   setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache'),
 }));
 
-// ---------------- Cron: expire subscriptions past their expires_at, daily at midnight ----------------
+// ---------------- Cron: expire subscriptions past their expires_at, daily at midnight (Bangkok) ----------------
+// แก้ ข.11 (บั๊ก class เดียวกัน) — เดิมไม่ระบุ timezone เลย ทำให้ "เที่ยงคืน" หมายถึงเที่ยงคืนของ timezone
+// เริ่มต้นของ node-cron (มักเป็น system timezone ของ host) ไม่ใช่ Asia/Bangkok ชัดเจน — สำคัญขึ้นมากเมื่อ
+// จะต่อ Stripe Billing เพราะ cron นี้เป็นส่วนหนึ่งของ auto-suspend policy ที่วางแผนไว้ (grace period ต้องนับ
+// จากเที่ยงคืนไทยจริง ไม่ใช่ของ host)
 cron.schedule('0 0 * * *', async () => {
   try {
     const r = await pool.query(
@@ -15248,7 +15257,7 @@ cron.schedule('0 0 * * *', async () => {
   } catch (err) {
     console.error('[cron] Failed to expire subscriptions:', err);
   }
-});
+}, { timezone: 'Asia/Bangkok' });
 
 // ---------------- Cron: foreign worker document expiry reminders, daily shortly after midnight ----------------
 cron.schedule('5 0 * * *', async () => {
