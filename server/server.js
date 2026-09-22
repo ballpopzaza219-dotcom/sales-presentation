@@ -2817,6 +2817,93 @@ app.post('/api/admin/companies/:id/renew', requireAdminAuth, async (req, res) =>
   res.json({ subscription: r.rows[0], total, packageCost, addUsersCost, discount: duration.discount });
 });
 
+// ---------------- Stripe Billing (migration 0027, stage 2): สร้าง Checkout link ----------------
+// Admin เป็นคนกดสร้างลิงก์แล้วส่งให้ลูกค้าเอง (ตกลงไว้แล้ว — ยังไม่ใช่ self-service ฝั่ง tenant) รองรับระบุ
+// ที่นั่งเพิ่มตั้งแต่ตอนสร้าง checkout เลย (ตกลงไว้แล้ว) เป็น subscription item ที่สองแยกจาก item หลัก
+//
+// ไม่ต้องมี idempotency-key ตาม CLAUDE.md ข้อ 8 (ต่างจาก endpoint ที่กระทบเงิน/ยอดโดยตรง) เพราะ endpoint นี้
+// แค่ "สร้างลิงก์ให้จ่าย" ยังไม่มีเงินขยับหรือยอดอะไรเปลี่ยนในระบบเราเลยจนกว่าลูกค้าจะกดจ่ายจริงบน Stripe —
+// เทียบได้กับสร้างใบเสนอราคา ไม่ใช่เหตุการณ์ทางการเงินเอง เหตุการณ์ทางการเงินจริงจะมาทาง webhook (สเตจ 3)
+// ซึ่งต้องมี idempotency เต็มรูปแบบผ่าน platform_webhook_events ตอนนั้น
+app.post('/api/admin/companies/:id/checkout-session', requireAdminAuth, async (req, res) => {
+  const companyId = parseInt(req.params.id, 10);
+  const { packageId, additionalSeats } = req.body || {};
+  const safeAdditionalSeats = Math.max(0, parseInt(additionalSeats, 10) || 0);
+
+  const companyRes = await pool.query('SELECT * FROM customer_companies WHERE id=$1', [companyId]);
+  if (companyRes.rowCount === 0) return res.status(404).json({ error: 'ไม่พบบริษัทลูกค้า' });
+  const company = companyRes.rows[0];
+
+  const packageRes = await pool.query('SELECT * FROM packages WHERE id=$1 AND active=true', [packageId]);
+  if (packageRes.rowCount === 0) return res.status(400).json({ error: 'ไม่พบแพ็กเกจนี้ หรือถูกปิดใช้งานแล้ว' });
+  const pkg = packageRes.rows[0];
+  if (!pkg.stripe_price_id) {
+    return res.status(400).json({ error: 'แพ็กเกจนี้ยังไม่ได้ sync ขึ้น Stripe (ไม่มี stripe_price_id) — กรุณาแก้ไข/บันทึกแพ็กเกจนี้ในหน้าจัดการแพ็กเกจก่อนเพื่อ trigger การ sync' });
+  }
+  if (safeAdditionalSeats > 0 && !pkg.stripe_seat_price_id) {
+    return res.status(400).json({ error: 'แพ็กเกจนี้ไม่รองรับการซื้อที่นั่งเพิ่ม' });
+  }
+
+  // กันสร้าง subscription ซ้อนกัน — ถ้าบริษัทนี้มี Stripe subscription ที่ active อยู่แล้วจริง การเปลี่ยน/
+  // อัปเกรดแพ็กเกจต้องทำผ่านอีก flow ต่างหาก (ยังไม่ทำในสเตจนี้) ไม่ใช่สร้าง checkout ใหม่ซ้อนทับ — ไม่งั้น
+  // ลูกค้าจะเสี่ยงโดนเรียกเก็บเงิน 2 subscription พร้อมกันโดยไม่ตั้งใจถ้า checkout ที่สองถูกจ่ายจริง
+  //
+  // ⚠️ เช็คด้วยว่า company.payment_failed_at ไม่ใช่ NULL (อยู่ระหว่าง grace period จาก Stripe แต่ยังไม่ถูก
+  // suspend) แยกต่างหากจาก subscriptions.status — เพราะ subscriptions.status ที่ schema จริงตอนนี้อนุญาตแค่
+  // 'active'/'expired' เท่านั้น (ยังไม่มีค่า past_due/unpaid เลย) ถ้าเช็คแค่ status='active' อย่างเดียวจะ
+  // ถูกต้องเพราะ "บังเอิญ" สเตจ webhook (สเตจ 3) ยังไม่ถูกสร้างขึ้นมาเปลี่ยนอะไรเท่านั้น ไม่ใช่เพราะออกแบบไว้
+  // ถูกจริง — payment_failed_at คือสัญญาณที่ migration 0027 ตั้งใจแยกไว้สำหรับสถานะ "มีปัญหาการจ่ายเงินแต่ยัง
+  // ไม่ถูก suspend" นี้โดยเฉพาะ ต้องเช็คคู่กันเสมอ ไม่พึ่งพา status เพียงอย่างเดียว — ลูกค้าที่อยู่ใน grace
+  // period ควรถูกพาไปอัปเดตวิธีชำระเงิน/retry invoice เดิม ไม่ใช่ไปสร้าง subscription คู่ขนานใหม่
+  const activeSub = await pool.query(
+    `SELECT id FROM subscriptions WHERE company_id=$1 AND stripe_subscription_id IS NOT NULL AND status='active' ORDER BY id DESC LIMIT 1`,
+    [companyId]
+  );
+  if (activeSub.rowCount > 0) {
+    return res.status(409).json({ error: 'บริษัทนี้มี Stripe subscription ที่ active อยู่แล้ว — การเปลี่ยน/อัปเกรดแพ็กเกจต้องทำผ่าน flow อื่น (ยังไม่รองรับในตอนนี้) ไม่ใช่สร้าง checkout ใหม่ซ้อน' });
+  }
+  if (company.payment_failed_at !== null) {
+    return res.status(409).json({ error: 'บริษัทนี้อยู่ระหว่าง grace period เนื่องจากเก็บเงินไม่สำเร็จ — ควรให้ลูกค้าอัปเดตวิธีชำระเงิน/retry invoice เดิมผ่าน Stripe แทน ไม่ใช่สร้าง checkout ใหม่ซ้อน' });
+  }
+
+  try {
+    // สร้าง Stripe Customer แค่ครั้งแรกที่บริษัทนี้ยังไม่มี แล้วบันทึก id ไว้ใช้ซ้ำทุกครั้งต่อจากนี้
+    let stripeCustomerId = company.stripe_customer_id;
+    if (!stripeCustomerId) {
+      const customer = await stripe.customers.create({
+        name: company.name,
+        email: company.email || undefined,
+        phone: company.phone || undefined,
+        metadata: { local_company_id: String(company.id) },
+      });
+      stripeCustomerId = customer.id;
+      await pool.query('UPDATE customer_companies SET stripe_customer_id=$1 WHERE id=$2', [stripeCustomerId, companyId]);
+    }
+
+    const lineItems = [{ price: pkg.stripe_price_id, quantity: 1 }];
+    if (safeAdditionalSeats > 0) {
+      lineItems.push({ price: pkg.stripe_seat_price_id, quantity: safeAdditionalSeats });
+    }
+
+    const baseUrl = process.env.APP_BASE_URL || 'http://localhost:3000';
+    const session = await stripe.checkout.sessions.create({
+      customer: stripeCustomerId,
+      mode: 'subscription',
+      line_items: lineItems,
+      success_url: `${baseUrl}/admin-panel.html?checkout=success&company=${companyId}`,
+      cancel_url: `${baseUrl}/admin-panel.html?checkout=cancelled&company=${companyId}`,
+      // metadata ผูกไว้ตั้งแต่ตอนสร้าง session — webhook handler (สเตจ 3) จะอ่าน metadata นี้กลับมาเพื่อรู้
+      // ว่า event ที่ Stripe ส่งมาเป็นของบริษัท/แพ็กเกจไหน โดยไม่ต้องเดาจาก stripe_customer_id เพียงอย่างเดียว
+      metadata: { company_id: String(companyId), package_id: String(pkg.id), additional_seats: String(safeAdditionalSeats) },
+    });
+
+    res.json({ checkoutUrl: session.url, sessionId: session.id });
+  } catch (err) {
+    console.error('[stripe] checkout session creation failed:', err);
+    res.status(502).json({ error: 'สร้างลิงก์ชำระเงินผ่าน Stripe ไม่สำเร็จ: ' + err.message });
+  }
+});
+
 app.post('/api/admin/companies', requireAdminAuth, async (req, res) => {
   const { code, name, taxId, phone, email, address, packageId, fax } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'กรุณากรอกชื่อบริษัท' });
