@@ -11,6 +11,7 @@ const cron = require('node-cron');
 const multer = require('multer');
 const ExcelJS = require('exceljs');
 const nodemailer = require('nodemailer');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const pool = require('./db');
 
 // Safety net: an uncaught error in any async route handler must never take down the whole
@@ -3149,41 +3150,142 @@ app.post('/api/admin/products/:id/toggle-active', requireAdminAuth, async (req, 
 });
 
 // ---------------- Admin panel: packages ----------------
+// Stripe Billing (migration 0027) — ระบบเราเองเป็น source of truth ของราคา (ตกลงไว้แล้ว): admin แก้ชื่อ/
+// ราคาในนี้ก่อนเสมอ แล้ว syncPackageToStripe() ค่อย sync ขึ้น Stripe ผ่าน API ไม่ใช่ทางกลับกัน — ถ้า Stripe
+// call ล้มเหลว endpoint ต้องปฏิเสธการบันทึกทั้งก้อนเลย (ไม่เขียนลง DB) กัน packages ในระบบเรากับ Stripe
+// หลุด sync กัน เรียก Stripe ก่อนเขียน DB เสมอ (ไม่ใช่กลับกัน) เพราะ Stripe object สร้างสำเร็จแล้วเขียน DB
+// พังทีหลังจะเหลือแค่ Stripe Price ที่ไม่มีใครใช้ (เก็บกวาดทีหลังได้ ไม่กระทบอะไร) แต่ถ้าเขียน DB ก่อนแล้ว
+// Stripe ล้มเหลว จะกลายเป็น "แพ็กเกจนี้มีอยู่จริงแต่ซื้อผ่าน Stripe ไม่ได้" ซึ่งเลวร้ายกว่ามาก
+const PACKAGE_BILLING_CYCLE_TO_STRIPE_INTERVAL = { daily: 'day', monthly: 'month', yearly: 'year' };
+
+// Stripe Price เป็น immutable object (แก้ไข unit_amount ตรงๆ ไม่ได้) — "แก้ราคา" จริงๆ คือสร้าง Price ใหม่
+// แล้ว archive (active:false) ของเดิม ไม่ mutate ตัวเดิม — subscription เดิมที่ยังผูกกับ Price เก่าอยู่จะยัง
+// ทำงานต่อไปตามปกติของ Stripe เอง จนกว่าจะต่ออายุ/upgrade จริงถึงจะย้ายมาใช้ Price ใหม่ — ถ้าราคาไม่ได้
+// เปลี่ยนจริง (แก้แค่ field อื่น เช่น max_users) คืน priceId เดิมตรงๆ ไม่สร้างซ้ำโดยไม่จำเป็น
+async function ensureStripePrice({ productId, existingPriceId, amount, interval, nickname }) {
+  const unitAmount = Math.round(Number(amount) * 100); // จำนวนเงินฝั่ง Stripe เป็นหน่วยสตางค์ (smallest unit ของ THB)
+  if (existingPriceId) {
+    const existing = await stripe.prices.retrieve(existingPriceId);
+    if (existing.active && existing.unit_amount === unitAmount) return existingPriceId;
+    await stripe.prices.update(existingPriceId, { active: false });
+  }
+  const price = await stripe.prices.create({
+    product: productId, currency: 'thb', unit_amount: unitAmount,
+    recurring: { interval }, nickname: nickname || undefined,
+  });
+  return price.id;
+}
+
+// เรียกจาก POST/PUT /api/admin/packages ทั้งคู่ — seatPrice=null หมายถึง "แพ็กเกจนี้ไม่ขายที่นั่งเพิ่มเลย"
+// (ตาม CLAUDE.md ข้อ 17 เดียวกับ client_wht_income_types.default_rate — ไม่ fallback เป็น 0)
+async function syncPackageToStripe({ name, price, seatPrice, billingCycle, stripeProductId, stripePriceId, stripeSeatPriceId }) {
+  let productId = stripeProductId;
+  if (!productId) {
+    const product = await stripe.products.create({ name });
+    productId = product.id;
+  } else {
+    await stripe.products.update(productId, { name });
+  }
+
+  const interval = PACKAGE_BILLING_CYCLE_TO_STRIPE_INTERVAL[billingCycle] || 'month';
+  const priceId = await ensureStripePrice({ productId, existingPriceId: stripePriceId, amount: price, interval });
+
+  let seatPriceId = stripeSeatPriceId;
+  if (seatPrice !== null && seatPrice !== undefined) {
+    seatPriceId = await ensureStripePrice({ productId, existingPriceId: stripeSeatPriceId, amount: seatPrice, interval, nickname: 'ที่นั่งเพิ่ม' });
+  } else if (stripeSeatPriceId) {
+    // seat_price ถูกเคลียร์เป็น NULL ในระบบเรา (เลิกขายที่นั่งเพิ่มของแพ็กเกจนี้แล้ว) — archive Price เดิมบน
+    // Stripe ด้วย ไม่ปล่อยค้างเป็น active เฉยๆ
+    await stripe.prices.update(stripeSeatPriceId, { active: false });
+    seatPriceId = null;
+  }
+
+  return { stripeProductId: productId, stripePriceId: priceId, stripeSeatPriceId: seatPriceId };
+}
+
 app.get('/api/admin/packages', requireAdminAuth, async (req, res) => {
   const r = await pool.query('SELECT * FROM packages ORDER BY price');
   res.json({ packages: r.rows });
 });
 
 app.post('/api/admin/packages', requireAdminAuth, async (req, res) => {
-  const { name, price, billingCycle, billingDays, description, maxUsers } = req.body || {};
+  const { name, price, billingCycle, billingDays, description, maxUsers, seatPrice } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'กรุณากรอกชื่อแพ็กเกจ' });
   const cycle = billingCycle === 'yearly' ? 'yearly' : billingCycle === 'daily' ? 'daily' : 'monthly';
   const days = cycle === 'daily' ? Math.max(1, parseInt(billingDays, 10) || 1) : null;
+  const safePrice = Number(price) || 0;
+  const safeSeatPrice = (seatPrice !== undefined && seatPrice !== null && seatPrice !== '') ? Number(seatPrice) : null;
+
+  let stripeIds;
+  try {
+    stripeIds = await syncPackageToStripe({
+      name: name.trim(), price: safePrice, seatPrice: safeSeatPrice, billingCycle: cycle,
+      stripeProductId: null, stripePriceId: null, stripeSeatPriceId: null,
+    });
+  } catch (err) {
+    console.error('[stripe] package sync failed (create):', err);
+    return res.status(502).json({ error: 'สร้างแพ็กเกจใน Stripe ไม่สำเร็จ: ' + err.message });
+  }
+
   const r = await pool.query(
-    `INSERT INTO packages (name, price, billing_cycle, billing_days, description, max_users) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [name.trim(), Number(price) || 0, cycle, days, (description || '').trim(), Math.max(1, parseInt(maxUsers, 10) || 1)]
+    `INSERT INTO packages (name, price, billing_cycle, billing_days, description, max_users, seat_price, stripe_product_id, stripe_price_id, stripe_seat_price_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+    [name.trim(), safePrice, cycle, days, (description || '').trim(), Math.max(1, parseInt(maxUsers, 10) || 1),
+     safeSeatPrice, stripeIds.stripeProductId, stripeIds.stripePriceId, stripeIds.stripeSeatPriceId]
   );
   res.json({ package: r.rows[0] });
 });
 
 app.put('/api/admin/packages/:id', requireAdminAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const { name, price, billingCycle, billingDays, description, maxUsers } = req.body || {};
+  const { name, price, billingCycle, billingDays, description, maxUsers, seatPrice } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'กรุณากรอกชื่อแพ็กเกจ' });
+  const existing = await pool.query('SELECT * FROM packages WHERE id=$1', [id]);
+  if (existing.rowCount === 0) return res.status(404).json({ error: 'ไม่พบแพ็กเกจ' });
+  const old = existing.rows[0];
+
   const cycle = billingCycle === 'yearly' ? 'yearly' : billingCycle === 'daily' ? 'daily' : 'monthly';
   const days = cycle === 'daily' ? Math.max(1, parseInt(billingDays, 10) || 1) : null;
+  const safePrice = Number(price) || 0;
+  const safeSeatPrice = (seatPrice !== undefined && seatPrice !== null && seatPrice !== '') ? Number(seatPrice) : null;
+
+  let stripeIds;
+  try {
+    stripeIds = await syncPackageToStripe({
+      name: name.trim(), price: safePrice, seatPrice: safeSeatPrice, billingCycle: cycle,
+      stripeProductId: old.stripe_product_id, stripePriceId: old.stripe_price_id, stripeSeatPriceId: old.stripe_seat_price_id,
+    });
+  } catch (err) {
+    console.error('[stripe] package sync failed (update):', err);
+    return res.status(502).json({ error: 'อัปเดตแพ็กเกจใน Stripe ไม่สำเร็จ: ' + err.message });
+  }
+
   const r = await pool.query(
-    `UPDATE packages SET name=$1, price=$2, billing_cycle=$3, billing_days=$4, description=$5, max_users=$6 WHERE id=$7 RETURNING *`,
-    [name.trim(), Number(price) || 0, cycle, days, (description || '').trim(), Math.max(1, parseInt(maxUsers, 10) || 1), id]
+    `UPDATE packages SET name=$1, price=$2, billing_cycle=$3, billing_days=$4, description=$5, max_users=$6,
+       seat_price=$7, stripe_product_id=$8, stripe_price_id=$9, stripe_seat_price_id=$10
+     WHERE id=$11 RETURNING *`,
+    [name.trim(), safePrice, cycle, days, (description || '').trim(), Math.max(1, parseInt(maxUsers, 10) || 1),
+     safeSeatPrice, stripeIds.stripeProductId, stripeIds.stripePriceId, stripeIds.stripeSeatPriceId, id]
   );
-  if (r.rowCount === 0) return res.status(404).json({ error: 'ไม่พบแพ็กเกจ' });
   res.json({ package: r.rows[0] });
 });
 
 app.post('/api/admin/packages/:id/toggle-active', requireAdminAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const r = await pool.query('UPDATE packages SET active = NOT active WHERE id=$1 RETURNING *', [id]);
-  if (r.rowCount === 0) return res.status(404).json({ error: 'ไม่พบแพ็กเกจ' });
+  const existing = await pool.query('SELECT * FROM packages WHERE id=$1', [id]);
+  if (existing.rowCount === 0) return res.status(404).json({ error: 'ไม่พบแพ็กเกจ' });
+  const old = existing.rows[0];
+  const newActive = !old.active;
+  // แพ็กเกจปิดใช้งาน -> archive Price บน Stripe ด้วย (ซื้อผ่าน Stripe ไม่ได้อีกต่อไป) เปิดกลับมา ->
+  // reactivate Price เดิม (Stripe ยอมให้ตั้ง active:true กลับได้ ไม่ใช่ลบถาวร)
+  try {
+    if (old.stripe_price_id) await stripe.prices.update(old.stripe_price_id, { active: newActive });
+    if (old.stripe_seat_price_id) await stripe.prices.update(old.stripe_seat_price_id, { active: newActive });
+  } catch (err) {
+    console.error('[stripe] package toggle-active sync failed:', err);
+    return res.status(502).json({ error: 'เปลี่ยนสถานะแพ็กเกจใน Stripe ไม่สำเร็จ: ' + err.message });
+  }
+  const r = await pool.query('UPDATE packages SET active=$1 WHERE id=$2 RETURNING *', [newActive, id]);
   res.json({ package: r.rows[0] });
 });
 
