@@ -57,7 +57,8 @@
     "multer": "^2.2.0",
     "node-cron": "^4.6.0",
     "nodemailer": "^9.0.3",
-    "pg": "^8.11.5"
+    "pg": "^8.11.5",
+    "stripe": "^22.6.2"
   },
   "devDependencies": {
     "playwright": "^1.61.1"

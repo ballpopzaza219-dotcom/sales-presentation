@@ -201,19 +201,28 @@ uncancel ในอนาคตต้องเพิ่ม `adjustment_type='unca
 ลักษณะเดียวกัน ผลกระทบจำกัดเพราะเงินทดรองจ่ายพนักงานมักไม่ใช่กรณีที่ต้องออก 50 ทวิให้ตัวพนักงานเอง (WHT ใน
 เคลียร์เงินทดรองจ่ายคือหักจาก "ผู้รับเงินปลายทาง" ที่พนักงานสำรองจ่ายให้ ไม่ใช่หักจากตัวพนักงาน)
 
-### ข.5 npm audit — เหลือ 2 รายการ (moderate) ที่แก้ไม่ได้ ยอมรับความเสี่ยงแล้ว
+### ข.5 npm audit — 7 รายการ (5 moderate, 2 high) — ยอมรับความเสี่ยงแล้วทั้งหมด ไม่ได้เกิดจาก stripe
 
-ทั้งคู่คือ `exceljs@4.4.0` (เวอร์ชันล่าสุดที่มีจริงบน npm ตอนนี้) ที่ pin `uuid` ไว้ที่ `^8.3.0` ตายตัวในตัว
-มันเอง ไม่มี release ใหม่กว่านี้ที่แก้ — `npm audit fix --force` เสนอทางแก้เดียวคือ downgrade `exceljs`
-ไปเป็น 3.4.0 (major ย้อนหลัง) ซึ่งเสี่ยงเกินไป ไม่ทำ
+**อัปเดต 2026-09-22**: จำนวนเพิ่มจาก 2 เป็น 7 หลังติดตั้ง `stripe` (เริ่ม Stripe Billing integration) — ตรวจ
+แล้วด้วย `npm ls stripe qs uuid` ว่า **`stripe` เองไม่ได้พา dependency ที่มีช่องโหว่เข้ามาเลยสักตัว** (เป็น leaf
+package ไม่มี sub-dependency ที่ชนกับรายการด้านล่าง) — 7 รายการทั้งหมดเป็น CVE ที่เพิ่งถูกประกาศใหม่ใน
+dependency เดิมที่มีอยู่ก่อนแล้ว (`npm audit` แค่ refresh ฐานข้อมูลตอนรัน `npm install`):
 
-**เหตุผลที่ exploitability ต่ำ**: CVE ของ `uuid` (GHSA-w5hq-g745-h8pq) คือ "missing buffer bounds check
-เมื่อมีการส่ง `buf` param เข้าไป" เท่านั้น — โค้ดจริงของ `exceljs` เรียก `uuidv4()` แบบไม่ส่ง `buf` เลยสักจุด
-(ใช้แค่สร้าง unique id สำหรับ conditional-formatting rule) → code path ที่จะโดนช่องโหว่นี้ไม่เคยถูกเรียกใช้
-จริงในระบบเรา
+- `multer` (2 high) — DoS หลายช่องทาง (crafted multipart field names, file descriptor leak, fileFilter
+  race, oversized array index) — ใช้จริงสำหรับ upload ไฟล์แนบ/สลิป/ใบเสร็จ มีเวอร์ชันแก้แล้วแต่ major
+  ใหม่กว่า (ต้องประเมิน breaking change ก่อน bump)
+- `nodemailer` (moderate) — หลายจุดเกี่ยวกับ domain allow-list bypass / ReDoS — ใช้จริงสำหรับส่งอีเมล
+- `qs` (moderate, มาจาก `express`/`body-parser`) — array-limit bypass, DoS
+- `uuid` (moderate, มาจาก `exceljs@4.4.0` — เหตุผล exploitability ต่ำเดิม): CVE (GHSA-w5hq-g745-h8pq) คือ
+  "missing buffer bounds check เมื่อส่ง `buf` param" เท่านั้น — โค้ดจริงของ `exceljs` เรียก `uuidv4()` แบบ
+  ไม่ส่ง `buf` เลยสักจุด (ใช้แค่สร้าง unique id สำหรับ conditional-formatting rule) → code path ที่จะโดน
+  ช่องโหว่นี้ไม่เคยถูกเรียกใช้จริงในระบบเรา — `exceljs@4.4.0` เป็นเวอร์ชันล่าสุดที่มีจริงบน npm ตอนนี้ที่ยัง pin
+  `uuid@^8.3.0` อยู่ ทางแก้เดียวที่ `npm audit fix --force` เสนอคือ downgrade `exceljs` กลับไป 3.4.0
+  (major ย้อนหลัง) ซึ่งเสี่ยงเกินไป ไม่ทำ
 
-**ต้องทำต่อไป**: เช็ค release ใหม่ของ `exceljs` เป็นระยะ (เช่นทุกไตรมาส) ว่าอัปเดต dependency `uuid` เป็น
-`^11.x` แล้วหรือยัง ถ้าอัปเดตแล้วให้ bump ทันทีเพื่อปิดช่องนี้ให้สนิท
+**ต้องทำต่อไป**: ประเมิน `multer`/`nodemailer` version ใหม่ที่แก้ CVE แล้วว่ามี breaking change กระทบโค้ด
+จริงแค่ไหน (ยังไม่ได้ประเมิน ณ วันที่บันทึก) และเช็ค release ใหม่ของ `exceljs` เป็นระยะว่าอัปเดต `uuid` เป็น
+`^11.x` แล้วหรือยัง
 
 ### ข.6 `client_external_payees` บังคับ "นิติบุคคลต้องมีเลขผู้เสียภาษี" แค่ชั้น application เท่านั้น — ไม่เหมือน `client_subcontractors`
 
@@ -356,7 +365,7 @@ migration) เพื่อไม่ให้ชนกับ heuristic นี้ 
 | ข.2 | PR item adjustment ไม่มี uncancel (ตั้งใจ) | ไม่สะดวก |
 | ข.3 | payment voucher (other) รองรับ 1 บรรทัด/ใบ | ไม่สะดวก |
 | ข.4 | payee_tax_id พนักงานไม่ผูก master data | ไม่สะดวก |
-| ข.5 | npm audit เหลือ 2 (moderate, exceljs/uuid) | หนี้เทคนิค (ยอมรับแล้ว) |
+| ข.5 | npm audit เหลือ 7 (5 moderate: qs/uuid, 2 high: multer/nodemailer) — ยืนยันแล้วว่า stripe ไม่ใช่สาเหตุ | หนี้เทคนิค (ยอมรับแล้ว, multer/nodemailer ยังไม่ได้ประเมิน breaking change) |
 | ข.6 | external_payees บังคับ juristic+tax_id แค่ชั้น app (subcontractors มี DB CHECK ด้วย) | ไม่สะดวก (ยอมรับแล้ว) |
 | ข.7 | คอลัมน์ DATE ที่ไม่ cast to_char แสดงผิดวันไปหนึ่งวัน (แก้แล้วทุกจุดที่เจอ, เหลือ 30+ จุดนอกขอบเขตยังไม่ตรวจ) | บางส่วนแก้แล้ว |
 | ข.8 | ไฟล์แนบตรวจรับของ/ส่งบิลหน้างาน ไม่เคยถูกลบทิ้ง (payment voucher/advance clearance แก้แล้ว, เหลือ goods receipt/site expense) | บางส่วนแก้แล้ว |
