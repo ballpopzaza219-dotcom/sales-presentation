@@ -13,6 +13,7 @@ const ExcelJS = require('exceljs');
 const nodemailer = require('nodemailer');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const pool = require('./db');
+const { runAutoSuspendSweep, AUTO_SUSPEND_GRACE_PERIOD_DAYS } = require('./lib/auto-suspend');
 
 // Safety net: an uncaught error in any async route handler must never take down the whole
 // server for every other user. Express 4 does not catch throws/rejections inside `async`
@@ -186,6 +187,25 @@ function getSubscriptionPeriodEnd(stripeSubscription) {
   return new Date(periodEnd * 1000);
 }
 
+// สเตจ 4 — เรียกจาก handleCheckoutSessionCompleted และ handleInvoicePaid ทั้งคู่ (ตกลงไว้แล้วว่า
+// reactivate อัตโนมัติทันทีที่จ่ายเงินสำเร็จจริง ไม่ต้องรอ admin กดเอง) ไม่ว่าจะเป็นการจ่ายครั้งแรกผ่าน
+// checkout ใหม่ (เช่น บริษัทที่เคย suspend แล้วสมัครสัญญาใหม่) หรือจ่ายรอบต่ออายุตามปกติ — เขียน
+// platform_company_status_log เฉพาะตอนสถานะเปลี่ยนจริง (จาก suspended เป็น active) เท่านั้น ไม่เขียนซ้ำ
+// เปล่าๆ ถ้า status เป็น active อยู่แล้ว (ไม่มีอะไรเปลี่ยน) — ต้องเรียกใน transaction เดียวกับงานอื่นของ
+// caller เสมอ (ส่ง client ของทรานแซกชันเดียวกันเข้ามา ไม่ใช่ pool เฉยๆ)
+async function reactivateCompanyIfSuspended(client, companyId, reason) {
+  const companyRes = await client.query('SELECT status FROM customer_companies WHERE id=$1 FOR UPDATE', [companyId]);
+  const oldStatus = companyRes.rows[0].status;
+  await client.query(`UPDATE customer_companies SET payment_failed_at=NULL, status='active' WHERE id=$1`, [companyId]);
+  if (oldStatus === 'suspended') {
+    await client.query(
+      `INSERT INTO platform_company_status_log (company_id, from_status, to_status, reason, changed_by)
+       VALUES ($1,'suspended','active',$2,NULL)`,
+      [companyId, reason]
+    );
+  }
+}
+
 // checkout.session.completed — ลูกค้าจ่ายเงินสำเร็จครั้งแรกผ่าน Checkout link (สเตจ 2) — สร้างแถว
 // subscriptions ใหม่จริง (ครั้งแรกที่มี stripe_subscription_id) และเคลียร์ grace period ถ้ามีค้างอยู่
 async function handleCheckoutSessionCompleted(session) {
@@ -231,7 +251,8 @@ async function handleCheckoutSessionCompleted(session) {
     if (insertResult.rowCount === 0) {
       console.log('[stripe webhook] subscriptions row for this stripe_subscription_id already exists (retry after a partial success), skipping insert:', stripeSubscription.id);
     }
-    await client.query(`UPDATE customer_companies SET payment_failed_at=NULL, package_id=$1 WHERE id=$2`, [packageId, companyId]);
+    await client.query(`UPDATE customer_companies SET package_id=$1 WHERE id=$2`, [packageId, companyId]);
+    await reactivateCompanyIfSuspended(client, companyId, 'สมัคร/จ่ายเงินสำเร็จผ่าน Checkout ใหม่ — reactivate อัตโนมัติ');
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
@@ -255,8 +276,19 @@ async function handleInvoicePaid(invoice) {
   }
   const stripeSubscription = await stripe.subscriptions.retrieve(invoice.subscription);
   const expiresAt = getSubscriptionPeriodEnd(stripeSubscription);
-  await pool.query(`UPDATE subscriptions SET expires_at=$1, status='active' WHERE id=$2`, [expiresAt, subRes.rows[0].id]);
-  await pool.query(`UPDATE customer_companies SET payment_failed_at=NULL WHERE id=$1`, [subRes.rows[0].company_id]);
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`UPDATE subscriptions SET expires_at=$1, status='active' WHERE id=$2`, [expiresAt, subRes.rows[0].id]);
+    await reactivateCompanyIfSuspended(client, subRes.rows[0].company_id, 'จ่ายเงินสำเร็จ (รอบต่ออายุ) — reactivate อัตโนมัติหลังเคย suspend');
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 // invoice.payment_failed — เก็บเงินไม่สำเร็จ (Stripe เองมี Smart Retries พยายามซ้ำอัตโนมัติอยู่แล้วก่อนจะ
@@ -275,7 +307,8 @@ async function handleInvoicePaymentFailed(invoice) {
 
 // customer.subscription.deleted — subscription ถูกยกเลิก/จบสิ้นสุดจริงฝั่ง Stripe (ไม่ว่าจะยกเลิกเองหรือ
 // unpaid จนหมดรอบ retry ทั้งหมดของ Stripe) — แค่ปิด local subscriptions.status เป็น expired เท่านั้น ยังไม่
-// แตะ customer_companies.status (auto-suspend จริงเป็นงานของสเตจ 4 ที่ยังไม่ทำในสเตจนี้)
+// แตะ customer_companies.status ตรงนี้ (การ suspend จริงมาจาก grace-period cron ของสเตจ 4 แยกต่างหาก ไม่ใช่
+// จาก event นี้โดยตรง — เพราะ unpaid จนถูกยกเลิกจริงมักเกิดหลัง grace period ของเราเองผ่านไปนานแล้ว)
 async function handleSubscriptionDeleted(subscription) {
   const subRes = await pool.query('SELECT id FROM subscriptions WHERE stripe_subscription_id=$1 ORDER BY id DESC LIMIT 1', [subscription.id]);
   if (subRes.rowCount === 0) return;
@@ -3129,15 +3162,34 @@ app.put('/api/admin/companies/:id', requireAdminAuth, async (req, res) => {
   res.json({ company: serializeCompany(r.rows[0]) });
 });
 
+// สเตจ 4 (migration 0028) — เพิ่ม audit log ให้ endpoint นี้ด้วย (เดิมไม่เคยบันทึกอะไรไว้เลยแม้แต่ตอน
+// admin กดเอง — พบระหว่างออกแบบ auto-suspend cron ที่ต้องมี log อยู่แล้ว จึงเชื่อมจุดนี้เข้าไปพร้อมกันด้วย
+// ตาม pattern เดียวกับที่เคยทำกับ ก.5) — FOR UPDATE ก่อนเสมอ (CLAUDE.md ข้อ 6) กันสอง request มาพร้อมกัน
 app.post('/api/admin/companies/:id/suspend', requireAdminAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const r = await pool.query(
-    `UPDATE customer_companies SET status = CASE WHEN status='active' THEN 'suspended' ELSE 'active' END
-     WHERE id=$1 RETURNING *`,
-    [id]
-  );
-  if (r.rowCount === 0) return res.status(404).json({ error: 'ไม่พบบริษัทลูกค้า' });
-  res.json({ company: serializeCompany(r.rows[0]) });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const existing = await client.query('SELECT status FROM customer_companies WHERE id=$1 FOR UPDATE', [id]);
+    if (existing.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบบริษัทลูกค้า' }); }
+    const oldStatus = existing.rows[0].status;
+    const newStatus = oldStatus === 'active' ? 'suspended' : 'active';
+    const r = await client.query('UPDATE customer_companies SET status=$1 WHERE id=$2 RETURNING *', [newStatus, id]);
+    await client.query(
+      `INSERT INTO platform_company_status_log (company_id, from_status, to_status, reason, changed_by)
+       VALUES ($1,$2,$3,$4,$5)`,
+      [id, oldStatus, newStatus,
+       newStatus === 'suspended' ? 'ปิดใช้งานโดย admin (กดจากหน้าจัดการบริษัท)' : 'เปิดใช้งานกลับโดย admin (กดจากหน้าจัดการบริษัท)',
+       req.currentAdmin.id]
+    );
+    await client.query('COMMIT');
+    res.json({ company: serializeCompany(r.rows[0]) });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 });
 
 app.delete('/api/admin/companies/:id', requireAdminAuth, requireAdminRole('admin'), async (req, res) => {
@@ -15631,6 +15683,27 @@ cron.schedule('0 0 * * *', async () => {
     console.log(`[cron] Expired ${r.rowCount} subscription(s).`);
   } catch (err) {
     console.error('[cron] Failed to expire subscriptions:', err);
+  }
+}, { timezone: 'Asia/Bangkok' });
+
+// ---------------- Cron: auto-suspend companies past their payment grace period (Stripe Billing stage 4) ----------------
+// grace period 3 วัน (ตกลงไว้แล้ว) นับจาก payment_failed_at ที่ handleInvoicePaymentFailed ตั้งไว้ (COALESCE
+// กันไม่ให้ Stripe Smart Retries reset เวลา — ดูคอมเมนต์ที่ handler นั้น) — timezone Asia/Bangkok ชัดเจน
+// ตาม CLAUDE.md ข้อ 12 เหมือน cron อื่นๆ ในไฟล์นี้ — ตรรกะ SQL จริงอยู่ใน lib/auto-suspend.js (แยกออกมา
+// เพื่อให้เทสถาวรเรียกใช้ตรรกะเดียวกันนี้ตรงๆ ได้ ไม่ต้อง copy query มาซ้ำในไฟล์เทส — กันบั๊ก class เดียวกับ
+// AUDIT_DOC_TYPES_FULL ที่หลุด sync กับ source of truth มาก่อนในเซสชันนี้)
+cron.schedule('10 0 * * *', async () => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const suspendedRows = await runAutoSuspendSweep(client);
+    await client.query('COMMIT');
+    console.log(`[cron] Auto-suspended ${suspendedRows.length} company(ies) for unpaid invoices past the ${AUTO_SUSPEND_GRACE_PERIOD_DAYS}-day grace period.`);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('[cron] Failed to auto-suspend companies:', err);
+  } finally {
+    client.release();
   }
 }, { timezone: 'Asia/Bangkok' });
 
