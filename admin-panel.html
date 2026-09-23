@@ -75,6 +75,7 @@ input,select{font-family:inherit;}
 .badge-partial{background:var(--amber-bg); color:var(--amber);}
 .badge-overdue{background:var(--red-bg); color:var(--red);}
 .badge-cancelled{background:var(--surface-sunken); color:var(--text-muted);}
+.badge-refunded{background:var(--surface-sunken); color:var(--text-muted);}
 
 .filter-bar{display:flex; gap:10px; margin-bottom:18px; flex-wrap:wrap;}
 .filter-bar select{padding:8px 12px; border:1px solid var(--border-strong); border-radius:var(--radius-sm); font-size:13px; background:#fff; font-family:inherit; color:var(--text);}
@@ -1007,7 +1008,7 @@ function renderAccountFormModal(){
 }
 
 function renderPackagesPage(){
-  const statusLabel = { unpaid:'ยังไม่ชำระ', partial:'ชำระบางส่วน', paid:'ชำระแล้ว', overdue:'เกินกำหนด', cancelled:'ยกเลิก' };
+  const statusLabel = { unpaid:'ยังไม่ชำระ', partial:'ชำระบางส่วน', paid:'ชำระแล้ว', overdue:'เกินกำหนด', cancelled:'ยกเลิก', refunded:'คืนเงินแล้ว' };
   const rows = S.invoices.map(i => `
     <tr class="clickable" data-act="view-slips" data-id="${i.id}">
       <td><b>${esc(i.invoiceNo)}</b></td>
@@ -1033,7 +1034,7 @@ function renderPackagesPage(){
 function renderSlipsModal(){
   const sm = S.slipsModal;
   if(!sm) return `<div class="modal-overlay"><div class="modal">กำลังโหลด...</div></div>`;
-  const statusLabel = { unpaid:'ยังไม่ชำระ', partial:'ชำระบางส่วน', paid:'ชำระแล้ว', overdue:'เกินกำหนด', cancelled:'ยกเลิก' };
+  const statusLabel = { unpaid:'ยังไม่ชำระ', partial:'ชำระบางส่วน', paid:'ชำระแล้ว', overdue:'เกินกำหนด', cancelled:'ยกเลิก', refunded:'คืนเงินแล้ว' };
   const inv = S.invoices.find(i => i.id === sm.invoiceId);
   const canDelete = canManage(S.currentAdmin);
   const slipRows = sm.slips.map(s => `
@@ -1127,7 +1128,7 @@ function isInvoiceDueSoon(i){
 }
 
 function renderInvoicesPage(){
-  const statusLabel = { unpaid:'ยังไม่ชำระ', partial:'ชำระบางส่วน', paid:'ชำระแล้ว', overdue:'เกินกำหนด', cancelled:'ยกเลิก' };
+  const statusLabel = { unpaid:'ยังไม่ชำระ', partial:'ชำระบางส่วน', paid:'ชำระแล้ว', overdue:'เกินกำหนด', cancelled:'ยกเลิก', refunded:'คืนเงินแล้ว' };
   const rows = S.invoices.map(i => `
     <tr>
       <td><b>${esc(i.invoiceNo)}</b></td>
@@ -1168,6 +1169,7 @@ function renderInvoicesPage(){
         <option value="paid" ${S.invoiceFilters.status==='paid'?'selected':''}>ชำระแล้ว</option>
         <option value="overdue" ${S.invoiceFilters.status==='overdue'?'selected':''}>เกินกำหนด</option>
         <option value="cancelled" ${S.invoiceFilters.status==='cancelled'?'selected':''}>ยกเลิก</option>
+        <option value="refunded" ${S.invoiceFilters.status==='refunded'?'selected':''}>คืนเงินแล้ว</option>
       </select>
     </div>
     <div class="table-wrap">

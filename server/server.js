@@ -3761,7 +3761,10 @@ function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 // `client` is usually mid-transaction for the caller's own row (an invoice, an expense, ...), and a
 // failed INSERT would poison that whole transaction until ROLLBACK, whereas a thrown JS error from a
 // failed SELECT-based check lets the caller catch it and continue (see postInvoiceJournalEntry).
-async function createJournalEntry(client, { entryDate, description, sourceType, sourceId, createdBy, lines }) {
+// สเตจ 5 — รับ reversesEntryId เพิ่ม (คอลัมน์นี้มีอยู่แล้วตั้งแต่ migration 0027 แต่ยังไม่เคยมี caller ไหน
+// ใช้จริง) mirror pattern เดียวกับ createClientJournalEntry ฝั่ง client ledger ทุกประการ — ใช้ตอนโพสต์
+// journal การคืนเงิน (source_type='refund') ให้ชี้กลับไปยัง journal entry การรับชำระเดิมที่ถูกกลับรายการ
+async function createJournalEntry(client, { entryDate, description, sourceType, sourceId, createdBy, lines, reversesEntryId }) {
   if (!Array.isArray(lines) || lines.length < 2) throw new Error('รายการบันทึกบัญชีต้องมีอย่างน้อย 2 บรรทัด');
   let totalDebit = 0, totalCredit = 0;
   for (const l of lines) {
@@ -3782,9 +3785,9 @@ async function createJournalEntry(client, { entryDate, description, sourceType, 
   if (missing.length) throw new Error(`ไม่พบบัญชีที่ใช้งานอยู่: ${missing.join(', ')}`);
 
   const entry = await client.query(
-    `INSERT INTO journal_entries (entry_date, description, source_type, source_id, created_by)
-     VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-    [entryDate, description || '', sourceType, sourceId || null, createdBy || null]
+    `INSERT INTO journal_entries (entry_date, description, source_type, source_id, created_by, reverses_entry_id)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+    [entryDate, description || '', sourceType, sourceId || null, createdBy || null, reversesEntryId || null]
   );
   const journalEntryId = entry.rows[0].id;
   for (const l of lines) {
@@ -3979,7 +3982,9 @@ async function recordInvoicePayment(client, { invoiceId, amount, paymentDate, no
   const inv = await client.query('SELECT * FROM invoices WHERE id=$1 FOR UPDATE', [invoiceId]);
   if (inv.rowCount === 0) { const e = new Error('ไม่พบใบแจ้งหนี้'); e.status = 404; throw e; }
   const invoice = inv.rows[0];
-  if (invoice.status === 'cancelled') { const e = new Error('ใบแจ้งหนี้นี้ถูกยกเลิกแล้ว ไม่สามารถรับชำระได้'); e.status = 400; throw e; }
+  // สเตจ 5 (CLAUDE.md ข้อ 23) — 'refunded' ต้องถูกบล็อกเหมือน 'cancelled' ด้วย เพราะใบแจ้งหนี้ที่ถูกคืนเงิน
+  // ไปแล้วถือว่าจบวงจรแล้ว ไม่ควรรับชำระซ้อนเข้าไปอีก
+  if (invoice.status === 'cancelled' || invoice.status === 'refunded') { const e = new Error('ใบแจ้งหนี้นี้ถูกยกเลิก/คืนเงินไปแล้ว ไม่สามารถรับชำระได้'); e.status = 400; throw e; }
 
   const amt = round2(amount);
   if (amt <= 0) { const e = new Error('กรุณากรอกจำนวนเงินให้ถูกต้อง'); e.status = 400; throw e; }
@@ -4083,6 +4088,105 @@ app.post('/api/admin/invoices/:id/cancel', requireAdminAuth, async (req, res) =>
   if (r.rowCount === 0) return res.status(404).json({ error: 'ไม่พบใบแจ้งหนี้' });
   const updated = await pool.query(`${INVOICE_SELECT} WHERE i.id=$1`, [id]);
   res.json({ invoice: updated.rows[0] });
+});
+
+// สเตจ 5 (Stripe Billing) — คืนเงินใบแจ้งหนี้ที่ชำระผ่าน Stripe เท่านั้น (ใบที่รับชำระด้วยมือ/สลิปโอนเงิน
+// ไม่มี stripe_charge_id ให้เรียก stripe.refunds.create ได้ — ต้องจัดการแยกทางบัญชีถ้าจำเป็น ไม่ใช่ผ่าน
+// endpoint นี้) รองรับเฉพาะ "คืนเต็มจำนวน" ในเวอร์ชันนี้ (ยังไม่รองรับคืนบางส่วน/คืนซ้ำหลายครั้งต่อใบเดียว
+// — platform_refunds schema รองรับหลายแถวต่อ invoice ได้อยู่แล้วถ้าต้องขยายในอนาคต แต่ไม่ implement ตอนนี้
+// เพราะยังไม่มีการยืนยัน use case จริง) — สิทธิ์จำกัดเฉพาะ role='owner' (ตกลงไว้แล้ว) ผ่านทรานแซกชันเงิน
+// เคลื่อนไหว ต้องผ่าน withPlatformIdempotency (CLAUDE.md ข้อ 8)
+//
+// ⚠️ ออกแบบให้ทนต่อ "Stripe คืนเงินสำเร็จจริงแล้ว แต่ process พังก่อนบันทึก DB เสร็จ" (bug class เดียวกับที่
+// เจอจริงในสเตจ 3 ตอน checkout.session.completed): idempotencyKey ที่ส่งให้ Stripe มาจาก header
+// Idempotency-Key ของ request เอง (คงที่ทุกครั้งที่ retry ด้วย key เดิม) ทำให้ Stripe เองก็ไม่คืนเงินซ้ำสอง
+// ครั้งแม้ endpoint นี้จะถูกเรียกซ้ำ — ฝั่ง DB ใช้ ON CONFLICT (stripe_refund_id) DO NOTHING บน
+// platform_refunds และเช็ค journal_entries ที่มีอยู่แล้วก่อนสร้างซ้ำ (เหมือน pattern เดียวกับ
+// recordStripeInvoicePayment) เพื่อให้ retry หลัง partial-success สมบูรณ์ได้จริง ไม่ throw ซ้ำไม่รู้จบ
+app.post('/api/admin/invoices/:id/refund', requireAdminAuth, requireAdminRole('owner'), async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  await withPlatformIdempotency(req, res, `invoices-refund:${id}`, async (client) => {
+    // SELECT ... FOR UPDATE ต้องเป็นคำสั่งแรกสุด (CLAUDE.md ข้อ 6) ก่อนอ่านค่าอะไรก็ตามที่จะใช้ตัดสินใจ
+    const invRes = await client.query('SELECT * FROM invoices WHERE id=$1 FOR UPDATE', [id]);
+    if (invRes.rowCount === 0) return { status: 404, body: { error: 'ไม่พบใบแจ้งหนี้' } };
+    const invoice = invRes.rows[0];
+    if (!invoice.stripe_charge_id) {
+      return { status: 400, body: { error: 'ใบแจ้งหนี้นี้ไม่ได้ชำระผ่าน Stripe ไม่สามารถคืนเงินผ่านระบบนี้ได้' } };
+    }
+    if (invoice.status !== 'paid') {
+      return { status: 400, body: { error: 'ใบแจ้งหนี้นี้ไม่อยู่ในสถานะที่คืนเงินได้ (ต้องเป็นสถานะ "ชำระแล้ว" เท่านั้น — รองรับคืนเต็มจำนวนเท่านั้นในเวอร์ชันนี้)' } };
+    }
+    const reason = ((req.body && req.body.reason) || '').trim();
+    if (!reason) return { status: 400, body: { error: 'กรุณาระบุเหตุผลการคืนเงิน' } };
+
+    // หา journal entry ของการรับชำระเดิมไว้ผูก reverses_entry_id — ต้องมีคู่กันเสมอถ้า status='paid' จริง
+    // (fail-closed: ถ้าไม่เจอ แปลว่าข้อมูลไม่สอดคล้องกันเอง ไม่ควรเดาต่อ)
+    const paymentRes = await client.query(
+      `SELECT ip.id AS payment_id, je.id AS journal_entry_id
+       FROM invoice_payments ip
+       JOIN journal_entries je ON je.source_type='payment' AND je.source_id = ip.id
+       WHERE ip.invoice_id=$1 ORDER BY ip.id DESC LIMIT 1`,
+      [id]
+    );
+    if (paymentRes.rowCount === 0) {
+      throw new Error(`ใบแจ้งหนี้ ${invoice.invoice_no} มีสถานะ paid แต่ไม่พบแถว invoice_payments/journal entry การรับชำระคู่กัน (ข้อมูลไม่สอดคล้องกัน)`);
+    }
+    const originalPaymentJournalId = paymentRes.rows[0].journal_entry_id;
+
+    // แปลง invoices.amount (NUMERIC) เป็นหน่วยสตางค์สำหรับ Stripe API — คูณ 100 ฝั่ง SQL เท่านั้น (มาตรฐาน
+    // เดียวกับตอนหารรับเข้าใน recordStripeInvoicePayment) ไม่ผ่าน JS Number เลยแม้แต่ก้าวเดียว
+    const subunitsRes = await client.query('SELECT ROUND(amount * 100)::bigint AS subunits FROM invoices WHERE id=$1', [id]);
+    const amountSubunits = Number(subunitsRes.rows[0].subunits); // ผลลัพธ์เป็น integer สำเร็จรูปจาก SQL แล้ว ไม่มีการคำนวณใน JS
+
+    let stripeRefund;
+    try {
+      stripeRefund = await stripe.refunds.create(
+        { charge: invoice.stripe_charge_id, amount: amountSubunits },
+        { idempotencyKey: `refund:${req.get('Idempotency-Key')}` }
+      );
+    } catch (err) {
+      return { status: 502, body: { error: `Stripe ปฏิเสธการคืนเงิน: ${err.message}` } };
+    }
+
+    await client.query(`UPDATE invoices SET status='refunded' WHERE id=$1`, [id]);
+
+    const refundInsert = await client.query(
+      `INSERT INTO platform_refunds (invoice_id, stripe_refund_id, stripe_charge_id, amount, reason, requested_by)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (stripe_refund_id) DO NOTHING
+       RETURNING id`,
+      [id, stripeRefund.id, invoice.stripe_charge_id, invoice.amount, reason, req.currentAdmin.id]
+    );
+    let refundId;
+    if (refundInsert.rowCount > 0) {
+      refundId = refundInsert.rows[0].id;
+    } else {
+      // retry หลัง Stripe คืนเงินสำเร็จไปแล้วจริงในความพยายามก่อนหน้า แต่ DB งานยังไม่เสร็จรอบนั้น
+      const existingRefund = await client.query('SELECT id FROM platform_refunds WHERE stripe_refund_id=$1', [stripeRefund.id]);
+      refundId = existingRefund.rows[0].id;
+    }
+
+    // เช็คว่ามี journal entry ของการคืนเงินนี้อยู่แล้วหรือยัง (retry-safe เหมือนกัน) ก่อนสร้างใหม่
+    const existingJournal = await client.query(`SELECT id FROM journal_entries WHERE source_type='refund' AND source_id=$1`, [refundId]);
+    if (existingJournal.rowCount === 0) {
+      const journalEntryId = await createJournalEntry(client, {
+        entryDate: getBangkokDateStr(),
+        description: `คืนเงิน - ${invoice.invoice_no}: ${reason}`,
+        sourceType: 'refund',
+        sourceId: refundId,
+        createdBy: req.currentAdmin.id,
+        reversesEntryId: originalPaymentJournalId,
+        lines: [
+          { accountCode: '1200', debitAmount: invoice.amount, creditAmount: 0, description: `คืนเงิน - ${invoice.invoice_no}` },
+          { accountCode: '1100', debitAmount: 0, creditAmount: invoice.amount, description: `คืนเงิน - ${invoice.invoice_no}` },
+        ],
+      });
+      await client.query('UPDATE platform_refunds SET journal_entry_id=$1 WHERE id=$2', [journalEntryId, refundId]);
+    }
+
+    const updated = await client.query(`${INVOICE_SELECT} WHERE i.id=$1`, [id]);
+    return { status: 200, body: { invoice: updated.rows[0], refund: { id: refundId, stripeRefundId: stripeRefund.id, amount: invoice.amount, reason } } };
+  });
 });
 
 // ---------------- Admin panel: payment slip evidence (หลักฐานการชำระเงิน) ----------------
@@ -4592,8 +4696,10 @@ app.get('/api/admin/reports/profit-loss', requireAdminAuth, async (req, res) => 
   const from = req.query.from || `${new Date().getFullYear()}-01-01`;
   const to = req.query.to || new Date().toISOString().slice(0, 10);
   const revenueRes = await pool.query(
+    // สเตจ 5 (CLAUDE.md ข้อ 23) — ใบแจ้งหนี้ที่ถูกคืนเงินแล้ว ('refunded') ต้องไม่นับเป็นรายได้ในรายงาน
+    // กำไรขาดทุนด้วย เหมือน 'cancelled' (เงินคืนกลับไปแล้ว ไม่ใช่รายได้จริงอีกต่อไป)
     `SELECT to_char(date_trunc('month', issue_date), 'YYYY-MM') AS month, SUM(amount)::float AS revenue
-     FROM invoices WHERE status <> 'cancelled' AND issue_date BETWEEN $1 AND $2
+     FROM invoices WHERE status NOT IN ('cancelled','refunded') AND issue_date BETWEEN $1 AND $2
      GROUP BY 1`, [from, to]
   );
   const expenseRes = await pool.query(
@@ -4637,8 +4743,10 @@ app.get('/api/admin/reports/vat', requireAdminAuth, async (req, res) => {
   const to = req.query.to || new Date().toISOString().slice(0, 10);
   const VAT_RATE = 0.07;
   const r = await pool.query(
+    // สเตจ 5 (CLAUDE.md ข้อ 23) — ใบแจ้งหนี้ที่คืนเงินแล้วต้องไม่นับเป็นยอดขายที่ต้องเสีย VAT ด้วยเหตุผล
+    // เดียวกับรายงานกำไรขาดทุนข้างบน
     `SELECT to_char(date_trunc('month', issue_date), 'YYYY-MM') AS month, SUM(amount)::float AS "totalSales"
-     FROM invoices WHERE status <> 'cancelled' AND issue_date BETWEEN $1 AND $2
+     FROM invoices WHERE status NOT IN ('cancelled','refunded') AND issue_date BETWEEN $1 AND $2
      GROUP BY 1 ORDER BY 1`, [from, to]
   );
   const months = r.rows.map(row => {
@@ -9833,9 +9941,21 @@ async function withIdempotency(req, res, endpoint, handler) {
     if (ageMs < IDEMPOTENCY_STALE_MS) {
       return res.status(409).json({ error: 'คำขอนี้กำลังประมวลผลอยู่ กรุณาลองใหม่อีกครั้ง' });
     }
+    // ⚠️ พบจริงตอนเทสสเตจ 5 (2026-09-23): ห้ามเทียบ reserved_at แบบ equality (WHERE reserved_at=$2)
+    // เด็ดขาด — TIMESTAMPTZ ใน Postgres ละเอียดถึงไมโครวินาที แต่ JS Date (ที่ pg แปลงให้ตอนอ่านค่ากลับมา)
+    // เก็บได้แค่มิลลิวินาที ปัดเศษไมโครวินาทีที่เหลือทิ้งเสมอ พอส่งค่าที่ถูกปัดทิ้งแล้วนี้กลับไปเทียบกับค่า
+    // เต็มความละเอียดที่เก็บจริงใน DB จะไม่ตรงกันแทบทุกครั้ง (ยืนยันด้วยการทดสอบจริง: INSERT แล้วอ่านค่า
+    // reserved_at กลับมาทันที แล้ว UPDATE ด้วยเงื่อนไขเดิม -> affect 0 แถวเสมอ) ทำให้กลไก "reclaim
+    // reservation ที่ค้างเกิน IDEMPOTENCY_STALE_MS" ไม่เคยทำงานได้จริงเลยตั้งแต่สร้างมา (retry จะติด 409
+    // ตลอดไปถ้า process ตายกลางทางหลังจอง key ไว้ ต้องให้แอดมินลบแถวด้วยมือเท่านั้น) — แก้โดยให้ Postgres
+    // เช็คความเก่าด้วย now() ของตัวเองแทน (ไม่พึ่ง equality บน timestamp ที่ผ่าน JS round-trip เลย) ยังคง
+    // atomic ต่อการแข่งกันของสอง request เหมือนเดิม (พอ UPDATE แรกสำเร็จ set reserved_at=now() แล้ว เงื่อนไข
+    // reserved_at < now() - stale ของ request ที่สองจะเป็นเท็จทันที ไม่ reclaim ซ้ำ)
     const reclaim = await pool.query(
-      `UPDATE client_idempotency_keys SET reserved_at = now() WHERE id=$1 AND reserved_at=$2 RETURNING id, reserved_at`,
-      [row.id, row.reserved_at]
+      `UPDATE client_idempotency_keys SET reserved_at = now()
+       WHERE id=$1 AND response_status IS NULL AND reserved_at < now() - interval '${IDEMPOTENCY_STALE_MS} milliseconds'
+       RETURNING id, reserved_at`,
+      [row.id]
     );
     if (reclaim.rowCount === 0) {
       return res.status(409).json({ error: 'คำขอนี้กำลังประมวลผลอยู่ กรุณาลองใหม่อีกครั้ง' });
@@ -9895,6 +10015,104 @@ async function maybeLazyPurgeIdempotencyKeys() {
     [IDEMPOTENCY_PURGE_BATCH_SIZE]
   );
   if (r.rowCount > 0) console.log(`idempotency purge: deleted ${r.rowCount} rows`);
+}
+
+// สเตจ 5 (Stripe refund) — withIdempotency ข้างบน hardcode req.customer.company_id +
+// client_idempotency_keys ผูกกับ session ฝั่งลูกค้า (tenant) เท่านั้น ใช้กับ route ของ platform_admin
+// (req.currentAdmin, ไม่มี req.customer เลย) ตรงๆ ไม่ได้ — ฟังก์ชันนี้เป็นกลไกเดียวกันเป๊ะ (reserve-then-
+// cache, request_hash กันใช้ key ซ้ำกับ body ต่างกัน, stale reservation reclaim, lazy purge) แค่ผูกกับ
+// admin_id + platform_idempotency_keys (migration 0031) แทน — reuse ค่าคงที่/computeRequestHash เดิมทุกตัว
+// handler: async (client) => ({status, body}) เหมือน withIdempotency ทุกประการ
+async function withPlatformIdempotency(req, res, endpoint, handler) {
+  const key = req.get('Idempotency-Key');
+  if (!key) return res.status(400).json({ error: 'ต้องระบุ Idempotency-Key' });
+  const adminId = req.currentAdmin.id;
+  const requestHash = computeRequestHash(req.body);
+
+  let reservation;
+  const claim = await pool.query(
+    `INSERT INTO platform_idempotency_keys (admin_id, idempotency_key, endpoint, request_hash)
+     VALUES ($1,$2,$3,$4) ON CONFLICT (admin_id, idempotency_key, endpoint) DO NOTHING
+     RETURNING id, reserved_at`,
+    [adminId, key, endpoint, requestHash]
+  );
+
+  if (claim.rowCount > 0) {
+    reservation = claim.rows[0];
+  } else {
+    const existing = await pool.query(
+      `SELECT id, request_hash, response_status, response_body, reserved_at FROM platform_idempotency_keys
+       WHERE admin_id=$1 AND idempotency_key=$2 AND endpoint=$3`,
+      [adminId, key, endpoint]
+    );
+    const row = existing.rows[0];
+    if (row.request_hash !== requestHash) {
+      return res.status(422).json({ error: 'ใช้ Idempotency-Key นี้ซ้ำกับข้อมูลคำขอที่ต่างจากเดิม' });
+    }
+    if (row.response_status !== null) {
+      return res.status(row.response_status).json(row.response_body);
+    }
+    const ageMs = Date.now() - new Date(row.reserved_at).getTime();
+    if (ageMs < IDEMPOTENCY_STALE_MS) {
+      return res.status(409).json({ error: 'คำขอนี้กำลังประมวลผลอยู่ กรุณาลองใหม่อีกครั้ง' });
+    }
+    // ดู comment เดียวกันใน withIdempotency ข้างบน — ห้ามเทียบ reserved_at แบบ equality เด็ดขาด (JS Date
+    // ปัดเศษไมโครวินาทีทิ้งเสมอ ทำให้ reclaim ไม่เคยสำเร็จจริง) ใช้ now() ของ Postgres เช็คความเก่าแทน
+    const reclaim = await pool.query(
+      `UPDATE platform_idempotency_keys SET reserved_at = now()
+       WHERE id=$1 AND response_status IS NULL AND reserved_at < now() - interval '${IDEMPOTENCY_STALE_MS} milliseconds'
+       RETURNING id, reserved_at`,
+      [row.id]
+    );
+    if (reclaim.rowCount === 0) {
+      return res.status(409).json({ error: 'คำขอนี้กำลังประมวลผลอยู่ กรุณาลองใหม่อีกครั้ง' });
+    }
+    reservation = reclaim.rows[0];
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { status, body } = await handler(client);
+    if (status >= 200 && status < 300) {
+      await client.query(
+        'UPDATE platform_idempotency_keys SET response_status=$1, response_body=$2 WHERE id=$3',
+        [status, JSON.stringify(body), reservation.id]
+      );
+      await client.query('COMMIT');
+      client.release();
+      res.status(status).json(body);
+    } else {
+      // ดู comment เดียวกันใน withIdempotency ข้างบน — ห้าม COMMIT ตอน non-2xx เด็ดขาด (partial write
+      // จะติดค้างถาวรทั้งที่ response ที่เห็นเป็น error) ต้อง ROLLBACK แล้วลบ reservation ทิ้งแทน
+      await client.query('ROLLBACK');
+      client.release();
+      await pool.query('DELETE FROM platform_idempotency_keys WHERE id=$1', [reservation.id]).catch(e => console.error('platform idempotency cleanup failed:', e.message));
+      res.status(status).json(body);
+    }
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (rollbackErr) { console.error('platform idempotency rollback failed:', rollbackErr.message); }
+    client.release();
+    await pool.query('DELETE FROM platform_idempotency_keys WHERE id=$1', [reservation.id]).catch(e => console.error('platform idempotency cleanup failed:', e.message));
+    console.error(`[${endpoint}] handler error:`, err);
+    res.status(500).json({ error: 'เกิดข้อผิดพลาดในการประมวลผล' });
+  }
+
+  maybeLazyPurgePlatformIdempotencyKeys().catch(err => console.error('platform idempotency purge failed (non-fatal):', err.message));
+}
+
+async function maybeLazyPurgePlatformIdempotencyKeys() {
+  const state = await pool.query('SELECT last_purged_at FROM platform_idempotency_purge_state WHERE id=1');
+  const lastPurgedAt = state.rows[0]?.last_purged_at;
+  if (lastPurgedAt && (Date.now() - new Date(lastPurgedAt).getTime()) < IDEMPOTENCY_PURGE_THROTTLE_MS) return;
+  await pool.query('UPDATE platform_idempotency_purge_state SET last_purged_at = now() WHERE id=1');
+  const r = await pool.query(
+    `DELETE FROM platform_idempotency_keys WHERE id IN (
+       SELECT id FROM platform_idempotency_keys WHERE created_at < now() - interval '${IDEMPOTENCY_MAX_AGE_DAYS} days' LIMIT $1
+     )`,
+    [IDEMPOTENCY_PURGE_BATCH_SIZE]
+  );
+  if (r.rowCount > 0) console.log(`platform idempotency purge: deleted ${r.rowCount} rows`);
 }
 
 // ---------------- Customer: client ledger — ใบขอซื้อ (Purchase Requests, ข้อ 4) ----------------
