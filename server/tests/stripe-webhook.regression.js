@@ -65,6 +65,17 @@ function fakeEventId() { return 'evt_test_regress_' + Date.now() + '_' + (evtCou
     cleanup.stripeSubscriptionIds.push(stripeSubscription.id);
     assert(stripeSubscription.status === 'active', 'setup: real Stripe subscription เป็น active จริง (ใช้ pm_card_visa test payment method)');
 
+    // ⚠️ ดึง Invoice object จริงจาก Stripe มาใช้ทดสอบ (3)/(4)/(5) ข้างล่าง แทนที่จะ hand-craft
+    // { subscription: '...' } เองเหมือนเดิม — ตอนแรกที่เขียนเทสชุดนี้ใส่ subscription เข้าไปตรงๆ ทำให้ไม่
+    // เจอว่า Stripe API เวอร์ชันจริง (2026-08-26.dahlia) ย้าย field นี้ไปอยู่ที่
+    // invoice.parent.subscription_details.subscription แล้ว (handleInvoicePaid/handleInvoicePaymentFailed
+    // เช็ค invoice.subscription ตรงๆ อยู่ ทำให้ return เปล่าทุกครั้งกับ webhook จริง — บั๊กหลุดผ่านมาได้เพราะ
+    // เทสไม่เคยใช้ shape จริงเลย) ใช้ object เดียวกันนี้ซ้ำได้ทั้ง 3 เทส เพราะจุดที่ทดสอบคือการดึง
+    // subscription id ออกจาก shape จริง ไม่ใช่ paid/failed status ของ invoice เอง
+    const realInvoices = await stripe.invoices.list({ subscription: stripeSubscription.id, limit: 1 });
+    const realInvoice = realInvoices.data[0];
+    assert(!!realInvoice && !realInvoice.subscription && !!(realInvoice.parent && realInvoice.parent.subscription_details && realInvoice.parent.subscription_details.subscription), 'setup: Invoice จริงจาก Stripe ไม่มี .subscription top-level (ยืนยัน shape จริง) แต่มี .parent.subscription_details.subscription แทน');
+
     const companyRes = await pool.query(
       `INSERT INTO customer_companies (name, tax_id, phone, email) VALUES ($1,'1111111111111','02-000-0000','e2e-webhook@example.com') RETURNING id`,
       [`E2E Webhook Test Co ${Date.now()}`]
@@ -127,8 +138,9 @@ function fakeEventId() { return 'evt_test_regress_' + Date.now() + '_' + (evtCou
     // (3) invoice.payment_failed ครั้งแรก -> ตั้ง payment_failed_at
     // ============================================================================================
     console.log('\n=== (3) invoice.payment_failed ครั้งแรก -> ตั้ง payment_failed_at ===');
-    const failEvent1 = { id: fakeEventId(), type: 'invoice.payment_failed', data: { object: { id: 'in_test_fake_1', subscription: stripeSubscription.id } } };
-    await postWebhook(failEvent1);
+    const failEvent1 = { id: fakeEventId(), type: 'invoice.payment_failed', data: { object: realInvoice } };
+    const rFail1 = await postWebhook(failEvent1);
+    assert(rFail1.status === 200 && rFail1.json.received === true, `invoice.payment_failed (shape จริง) ประมวลผลสำเร็จ ไม่ return เปล่าเพราะอ่าน .subscription ผิดที่ (ได้ status=${rFail1.status})`);
     const companyAfterFail1 = (await pool.query('SELECT payment_failed_at FROM customer_companies WHERE id=$1', [companyId])).rows[0];
     assert(companyAfterFail1.payment_failed_at !== null, 'payment_failed_at ถูกตั้งค่าแล้วจริงหลังเก็บเงินล้มเหลวครั้งแรก');
     const firstFailedAt = companyAfterFail1.payment_failed_at;
@@ -139,7 +151,7 @@ function fakeEventId() { return 'evt_test_regress_' + Date.now() + '_' + (evtCou
     // ============================================================================================
     console.log('\n=== (4) invoice.payment_failed ครั้งที่สอง -> payment_failed_at ต้องไม่ reset ===');
     await new Promise(r => setTimeout(r, 1100)); // เว้นจังหวะให้ timestamp ต่างกันจริงถ้าดันถูก reset
-    const failEvent2 = { id: fakeEventId(), type: 'invoice.payment_failed', data: { object: { id: 'in_test_fake_2', subscription: stripeSubscription.id } } };
+    const failEvent2 = { id: fakeEventId(), type: 'invoice.payment_failed', data: { object: realInvoice } };
     await postWebhook(failEvent2);
     const companyAfterFail2 = (await pool.query('SELECT payment_failed_at FROM customer_companies WHERE id=$1', [companyId])).rows[0];
     assert(companyAfterFail2.payment_failed_at.getTime() === firstFailedAt.getTime(), 'payment_failed_at ยังเป็นเวลาเดิมจากความล้มเหลวครั้งแรก ไม่ถูก reset โดยครั้งที่สอง (COALESCE ทำงานถูกต้อง)');
@@ -147,11 +159,42 @@ function fakeEventId() { return 'evt_test_regress_' + Date.now() + '_' + (evtCou
     // ============================================================================================
     // (5) invoice.paid -> เคลียร์ grace period + ต่ออายุ expires_at
     // ============================================================================================
-    console.log('\n=== (5) invoice.paid -> เคลียร์ grace period + ต่ออายุ ===');
-    const paidEvent = { id: fakeEventId(), type: 'invoice.paid', data: { object: { id: 'in_test_fake_3', subscription: stripeSubscription.id } } };
-    await postWebhook(paidEvent);
+    console.log('\n=== (5) invoice.paid -> เคลียร์ grace period + ต่ออายุ + บันทึกใบแจ้งหนี้จริง (สเตจ 5) ===');
+    const paidEventId = fakeEventId();
+    const paidEvent = { id: paidEventId, type: 'invoice.paid', data: { object: realInvoice } };
+    const rPaid = await postWebhook(paidEvent);
+    assert(rPaid.status === 200 && rPaid.json.received === true, `invoice.paid (shape จริง) ประมวลผลสำเร็จ (ได้ status=${rPaid.status})`);
     const companyAfterPaid = (await pool.query('SELECT payment_failed_at FROM customer_companies WHERE id=$1', [companyId])).rows[0];
     assert(companyAfterPaid.payment_failed_at === null, 'payment_failed_at เคลียร์กลับเป็น NULL หลังจ่ายเงินสำเร็จจริง');
+
+    // สเตจ 5 — invoice.paid ต้องเชื่อมเข้า invoices/invoice_payments ledger เดิม (ไม่สร้างตารางคู่ขนานใหม่)
+    const stripeInvoiceRow = (await pool.query('SELECT * FROM invoices WHERE stripe_invoice_id=$1', [realInvoice.id])).rows[0];
+    assert(!!stripeInvoiceRow, 'invoice.paid สร้างแถว invoices จริงใน DB เรา (เชื่อม Stripe invoice เข้า ledger เดิมที่มีอยู่แล้ว)');
+    assert(stripeInvoiceRow.status === 'paid', `สถานะใบแจ้งหนี้เป็น paid ทันที (ได้ ${stripeInvoiceRow.status})`);
+    assert(Number(stripeInvoiceRow.amount) === realInvoice.amount_paid / 100, `amount แปลงจากหน่วยสตางค์ถูกต้อง (Stripe ${realInvoice.amount_paid} satang -> ${stripeInvoiceRow.amount} บาท)`);
+    assert(/^\d+\.\d{2}$/.test(stripeInvoiceRow.amount), `amount ถูก ROUND เหลือ 2 ตำแหน่งทศนิยมจริง ไม่ใช่เศษยาวจากการหารตรงๆ (ได้ "${stripeInvoiceRow.amount}")`);
+    assert(typeof stripeInvoiceRow.stripe_charge_id === 'string' && stripeInvoiceRow.stripe_charge_id.startsWith('ch_'), `stripe_charge_id ถูกดึงมาเก็บไว้จริงผ่าน PaymentIntent.latest_charge (ได้ ${stripeInvoiceRow.stripe_charge_id})`);
+
+    const paymentRow = (await pool.query('SELECT * FROM invoice_payments WHERE invoice_id=$1', [stripeInvoiceRow.id])).rows[0];
+    assert(!!paymentRow, 'มีแถว invoice_payments คู่กันจริง (รับชำระเต็มจำนวนทันทีผ่าน recordInvoicePayment เดิม)');
+    assert(Number(paymentRow.amount) === Number(stripeInvoiceRow.amount), 'ยอดรับชำระตรงกับยอดใบแจ้งหนี้เต็มจำนวน');
+
+    const invoiceJournalCount = (await pool.query(`SELECT count(*)::int AS n FROM journal_entries WHERE source_type='invoice' AND source_id=$1`, [stripeInvoiceRow.id])).rows[0].n;
+    const paymentJournalCount = (await pool.query(`SELECT count(*)::int AS n FROM journal_entries WHERE source_type='payment' AND source_id=$1`, [paymentRow.id])).rows[0].n;
+    assert(invoiceJournalCount === 1 && paymentJournalCount === 1, `โพสต์ journal ครบทั้ง 2 ขา (ออกใบแจ้งหนี้ Dr1200/Cr4100 + รับชำระ Dr1100/Cr1200) (ได้ invoice=${invoiceJournalCount}, payment=${paymentJournalCount})`);
+
+    // ============================================================================================
+    // (5b) retry event.id เดิม (จำลอง Stripe redelivery) -> ต้องไม่สร้างแถว invoices/journal ซ้ำ
+    // (ON CONFLICT (stripe_invoice_id) DO NOTHING เหมือน pattern เดียวกับ subscriptions ในสเตจ 3)
+    // ============================================================================================
+    console.log('\n=== (5b) retry invoice.paid event เดิม -> ไม่สร้างใบแจ้งหนี้/journal ซ้ำ ===');
+    await pool.query(`UPDATE platform_webhook_events SET processing_status='pending' WHERE stripe_event_id=$1`, [paidEventId]);
+    const rPaidRetry = await postWebhook(paidEvent);
+    assert(rPaidRetry.status === 200 && rPaidRetry.json.received === true, `retry invoice.paid ไม่ throw ชน uq_invoices_stripe_invoice_id (ได้ status=${rPaidRetry.status})`);
+    const invoiceCountAfterRetry = (await pool.query('SELECT count(*)::int AS n FROM invoices WHERE stripe_invoice_id=$1', [realInvoice.id])).rows[0].n;
+    assert(invoiceCountAfterRetry === 1, `ยังมีแถว invoices แค่ 1 แถวหลัง retry (ไม่ถูกสร้างซ้ำ) (ได้ ${invoiceCountAfterRetry})`);
+    const journalCountAfterRetry = (await pool.query(`SELECT count(*)::int AS n FROM journal_entries WHERE source_type='invoice' AND source_id=$1`, [stripeInvoiceRow.id])).rows[0].n;
+    assert(journalCountAfterRetry === 1, `ยังมี journal entry (invoice) แค่ 1 รายการหลัง retry (ไม่โพสต์ซ้ำ) (ได้ ${journalCountAfterRetry})`);
 
     // ============================================================================================
     // (6) customer.subscription.deleted -> local subscriptions.status = expired
@@ -205,6 +248,15 @@ function fakeEventId() { return 'evt_test_regress_' + Date.now() + '_' + (evtCou
         await stripe.customers.del(custId).catch(() => {});
       }
       if (cleanup.companyIds.length) {
+        // journal_entries.source_id ไม่มี FK cascade จาก invoices/customer_companies (เป็น polymorphic
+        // reference ธรรมดา) ต้องลบเองก่อน ไม่งั้นจะค้างอยู่ในระบบหลัง DELETE customer_companies (ซึ่ง
+        // cascade ลบ invoices/invoice_payments/invoice_ledger_entries ให้อัตโนมัติอยู่แล้ว)
+        const staleInvoiceIds = (await pool.query('SELECT id FROM invoices WHERE company_id = ANY($1)', [cleanup.companyIds])).rows.map(r => r.id);
+        const stalePaymentIds = staleInvoiceIds.length
+          ? (await pool.query('SELECT id FROM invoice_payments WHERE invoice_id = ANY($1)', [staleInvoiceIds])).rows.map(r => r.id)
+          : [];
+        if (staleInvoiceIds.length) await pool.query(`DELETE FROM journal_entries WHERE source_type='invoice' AND source_id = ANY($1)`, [staleInvoiceIds]);
+        if (stalePaymentIds.length) await pool.query(`DELETE FROM journal_entries WHERE source_type='payment' AND source_id = ANY($1)`, [stalePaymentIds]);
         await pool.query('DELETE FROM subscriptions WHERE company_id = ANY($1)', [cleanup.companyIds]);
         await pool.query('DELETE FROM customer_companies WHERE id = ANY($1)', [cleanup.companyIds]);
       }

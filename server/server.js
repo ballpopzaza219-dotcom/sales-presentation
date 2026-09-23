@@ -187,6 +187,75 @@ function getSubscriptionPeriodEnd(stripeSubscription) {
   return new Date(periodEnd * 1000);
 }
 
+// ⚠️ พบจริงตอนเทสสเตจ 5 (2026-09-23): Stripe API เวอร์ชันปัจจุบัน (2026-08-26.dahlia) ไม่มี
+// invoice.subscription เป็น field บนสุดของ Invoice object แล้ว — ค่าจริงย้ายไปอยู่ที่
+// invoice.parent.subscription_details.subscription แทน (ยืนยันด้วยการสร้าง subscription+invoice จริง
+// ผ่าน API แล้วดู shape ตรงๆ ไม่ใช่เดาจากเอกสาร — bug class เดียวกับ current_period_end ข้างบน) —
+// handleInvoicePaid/handleInvoicePaymentFailed เดิมเช็ค invoice.subscription ตรงๆ ซึ่งเป็น undefined
+// เสมอกับ webhook จริง ทำให้ทั้งสอง handler return ออกทันทีโดยไม่ทำอะไรเลยมาตั้งแต่สเตจ 3 (ไม่ถูกจับได้
+// ตอนนั้นเพราะเทสสเตจ 3 สร้าง event ปลอมใส่ subscription เข้าไปตรงๆ ไม่เคยใช้ invoice object จริงจาก
+// Stripe) — เช็คทั้งสองตำแหน่งไว้ คืน null เมื่อ invoice นี้ไม่ได้ผูกกับ subscription จริงๆ (ไม่ใช่บั๊ก
+// แค่เป็น invoice ประเภทอื่น เช่น one-time charge ซึ่งระบบนี้ไม่เคยสร้างเองแต่เผื่อไว้)
+function getInvoiceSubscriptionId(invoice) {
+  return invoice.subscription
+    || (invoice.parent && invoice.parent.subscription_details && invoice.parent.subscription_details.subscription)
+    || null;
+}
+
+// Stripe API เวอร์ชันนี้ไม่มี invoice.charge ให้ใช้ตรงๆ แล้วเช่นกัน (ยืนยันด้วยการเรียก API จริง) — ต้องไป
+// ทาง stripe.invoicePayments.list({ invoice }) หา payment_intent ของ invoice นี้ก่อน แล้ว expand
+// PaymentIntent.latest_charge ถึงจะได้ charge id จริง — ใช้เก็บลง invoices.stripe_charge_id (migration
+// 0029) สำหรับสเตจ 5 (refund) อ้างอิงตอนเรียก stripe.refunds.create({ charge })
+async function getInvoiceChargeId(invoiceId) {
+  const payments = await stripe.invoicePayments.list({ invoice: invoiceId });
+  const payment = payments.data[0];
+  if (!payment || !payment.payment || payment.payment.type !== 'payment_intent' || !payment.payment.payment_intent) {
+    throw new Error(`ไม่พบ payment_intent ของ invoice ${invoiceId} (ไม่ควรเกิดขึ้นถ้า invoice.paid แล้วจริง)`);
+  }
+  const pi = await stripe.paymentIntents.retrieve(payment.payment.payment_intent, { expand: ['latest_charge'] });
+  if (!pi.latest_charge || !pi.latest_charge.id) {
+    throw new Error(`ไม่พบ charge จริงสำหรับ payment_intent ${pi.id}`);
+  }
+  return pi.latest_charge.id;
+}
+
+// สเตจ 5 — สร้างแถว invoices+invoice_payments จริงทุกครั้งที่ Stripe เก็บเงินสำเร็จ (invoice.paid) โดยใช้
+// generateInvoiceNumber/recordInvoiceRevenueLedger/postInvoiceJournalEntry/recordInvoicePayment ชุด
+// เดียวกับที่ POST /api/admin/invoices ใช้ตอนสร้าง+รับชำระใบแจ้งหนี้ด้วยมือ — ไม่สร้าง ledger คู่ขนานใหม่
+// (กัน bug class เดียวกับที่เพิ่งแก้ในสเตจ 4/lib/auto-suspend.js) ต้อง "ออกใบแจ้งหนี้" (booking
+// Dr 1200/Cr 4100+4200) แล้วค่อย "รับชำระ" (Dr 1100/Cr 1200) ติดกันทันทีในทรานแซกชันเดียว เพื่อให้ผล
+// journal สุทธิเหมือนใบแจ้งหนี้ที่สร้างด้วยมือแล้วรับชำระเต็มจำนวนทันทีเป๊ะ
+// amount หารด้วย 100 ฝั่ง SQL เท่านั้น (ROUND($1::numeric/100,2)) ไม่ผ่าน JS Number เลยแม้แต่ก้าวเดียว
+// (ตามกฎข้อ 3) เพราะ invoice.amount_paid จาก Stripe เป็นหน่วยสตางค์ดิบ (THB ไม่ใช่ zero-decimal currency
+// ใน Stripe) — ROUND(...,2) กันคอลัมน์ invoices.amount (NUMERIC ไม่กำหนด scale) เก็บเศษทศนิยมเกิน 2 ตำแหน่ง
+// จากการหารตรงๆ (เช่น 1500.0000000000000000 แทนที่จะเป็น 1500.00) โดยยังคำนวณในฝั่ง SQL เหมือนเดิม
+// ON CONFLICT (stripe_invoice_id) กัน Stripe webhook retry สร้างแถว/โพสต์ journal ซ้ำ (pattern เดียวกับ
+// uq_subscriptions_stripe_subscription_id สเตจ 3)
+async function recordStripeInvoicePayment(client, { companyId, stripeInvoiceId, stripeChargeId, amountPaidSubunits, stripePriceId }) {
+  const pkgRes = await client.query('SELECT id FROM packages WHERE stripe_price_id=$1', [stripePriceId]);
+  const packageId = pkgRes.rows[0] ? pkgRes.rows[0].id : null;
+  const invoiceNo = await generateInvoiceNumber(client);
+  const issueDate = getBangkokDateStr();
+
+  const insert = await client.query(
+    `INSERT INTO invoices (invoice_no, company_id, package_id, amount, issue_date, note, stripe_invoice_id, stripe_charge_id)
+     VALUES ($1,$2,$3,ROUND($4::numeric/100,2),$5,'ชำระผ่าน Stripe Checkout อัตโนมัติ',$6,$7)
+     ON CONFLICT (stripe_invoice_id) WHERE stripe_invoice_id IS NOT NULL DO NOTHING
+     RETURNING id, amount`,
+    [invoiceNo, companyId, packageId, amountPaidSubunits, issueDate, stripeInvoiceId, stripeChargeId]
+  );
+  if (insert.rowCount === 0) {
+    console.log('[stripe webhook] invoices row for this stripe_invoice_id already exists (retry after a partial success), skipping:', stripeInvoiceId);
+    return;
+  }
+  const invoiceId = insert.rows[0].id;
+  const amount = insert.rows[0].amount;
+
+  await recordInvoiceRevenueLedger(client, invoiceId, companyId, amount);
+  await postInvoiceJournalEntry(client, { invoiceId, invoiceNo, companyId, amount, issueDate, createdBy: null });
+  await recordInvoicePayment(client, { invoiceId, amount, paymentDate: issueDate, note: 'รับชำระผ่าน Stripe', createdBy: null });
+}
+
 // สเตจ 4 — เรียกจาก handleCheckoutSessionCompleted และ handleInvoicePaid ทั้งคู่ (ตกลงไว้แล้วว่า
 // reactivate อัตโนมัติทันทีที่จ่ายเงินสำเร็จจริง ไม่ต้องรอ admin กดเอง) ไม่ว่าจะเป็นการจ่ายครั้งแรกผ่าน
 // checkout ใหม่ (เช่น บริษัทที่เคย suspend แล้วสมัครสัญญาใหม่) หรือจ่ายรอบต่ออายุตามปกติ — เขียน
@@ -264,24 +333,34 @@ async function handleCheckoutSessionCompleted(session) {
 
 // invoice.paid — เก็บเงินรอบต่ออายุสำเร็จ (รวมถึงรอบแรกที่มาพร้อม checkout.session.completed ด้วย แต่ข้อมูล
 // ซ้ำกันไม่เป็นไรเพราะแค่ update expires_at/เคลียร์ grace period ซ้ำเป็นค่าเดิม) — ต่ออายุ subscription จริง
+// + บันทึกใบแจ้งหนี้/รับชำระจริงเข้า invoices ledger (สเตจ 5)
 async function handleInvoicePaid(invoice) {
-  if (!invoice.subscription) return; // ไม่ได้ผูกกับ subscription (เช่น one-time charge) ไม่เกี่ยวกับที่นี่
-  const subRes = await pool.query('SELECT * FROM subscriptions WHERE stripe_subscription_id=$1 ORDER BY id DESC LIMIT 1', [invoice.subscription]);
+  const stripeSubscriptionId = getInvoiceSubscriptionId(invoice);
+  if (!stripeSubscriptionId) return; // ไม่ได้ผูกกับ subscription (เช่น one-time charge) ไม่เกี่ยวกับที่นี่
+  const subRes = await pool.query('SELECT * FROM subscriptions WHERE stripe_subscription_id=$1 ORDER BY id DESC LIMIT 1', [stripeSubscriptionId]);
   if (subRes.rowCount === 0) {
     // อาจมาถึงก่อน checkout.session.completed จะสร้างแถวเสร็จ (Stripe ไม่การันตีลำดับ event ส่งถึงเป๊ะ) —
     // ไม่ throw เพราะ checkout.session.completed เองก็ set expires_at ที่ถูกต้องอยู่แล้วตอนสร้างแถว ไม่มี
     // ข้อมูลอะไรหายไปจริงแม้จะข้าม invoice.paid รอบแรกนี้ไป
-    console.log('[stripe webhook] invoice.paid for a subscription not yet known locally (likely a race with checkout.session.completed):', invoice.subscription);
+    console.log('[stripe webhook] invoice.paid for a subscription not yet known locally (likely a race with checkout.session.completed):', stripeSubscriptionId);
     return;
   }
-  const stripeSubscription = await stripe.subscriptions.retrieve(invoice.subscription);
+  const stripeSubscription = await stripe.subscriptions.retrieve(stripeSubscriptionId);
   const expiresAt = getSubscriptionPeriodEnd(stripeSubscription);
+  const chargeId = await getInvoiceChargeId(invoice.id);
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     await client.query(`UPDATE subscriptions SET expires_at=$1, status='active' WHERE id=$2`, [expiresAt, subRes.rows[0].id]);
     await reactivateCompanyIfSuspended(client, subRes.rows[0].company_id, 'จ่ายเงินสำเร็จ (รอบต่ออายุ) — reactivate อัตโนมัติหลังเคย suspend');
+    await recordStripeInvoicePayment(client, {
+      companyId: subRes.rows[0].company_id,
+      stripeInvoiceId: invoice.id,
+      stripeChargeId: chargeId,
+      amountPaidSubunits: invoice.amount_paid,
+      stripePriceId: subRes.rows[0].stripe_price_id,
+    });
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
@@ -296,8 +375,9 @@ async function handleInvoicePaid(invoice) {
 // ล้มเหลวซ้ำ เพราะ grace period 3 วัน (ตกลงไว้แล้ว) ต้องนับจากความล้มเหลว "ครั้งแรก" ไม่ใช่ "ครั้งล่าสุด" —
 // ถ้า set ใหม่ทุกรอบ retry จะทำให้ grace period ไม่มีวันครบกำหนดจริงตราบใดที่ Stripe ยังคง retry อยู่เรื่อยๆ
 async function handleInvoicePaymentFailed(invoice) {
-  if (!invoice.subscription) return;
-  const subRes = await pool.query('SELECT company_id FROM subscriptions WHERE stripe_subscription_id=$1 ORDER BY id DESC LIMIT 1', [invoice.subscription]);
+  const stripeSubscriptionId = getInvoiceSubscriptionId(invoice);
+  if (!stripeSubscriptionId) return;
+  const subRes = await pool.query('SELECT company_id FROM subscriptions WHERE stripe_subscription_id=$1 ORDER BY id DESC LIMIT 1', [stripeSubscriptionId]);
   if (subRes.rowCount === 0) return;
   await pool.query(
     `UPDATE customer_companies SET payment_failed_at=COALESCE(payment_failed_at, now()) WHERE id=$1`,

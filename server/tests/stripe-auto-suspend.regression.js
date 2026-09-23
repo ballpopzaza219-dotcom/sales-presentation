@@ -158,7 +158,13 @@ async function createRealStripeSubscription(cleanup, priceId) {
        VALUES ($1,'basic',5,'expired',$2,$3)`,
       [overdueCo.id, subForReactivate.id, basicPkg.stripe_price_id]
     );
-    const paidEvent = { id: fakeEventId(), type: 'invoice.paid', data: { object: { id: 'in_test_autosuspend_reactivate', subscription: subForReactivate.id } } };
+    // ต้องใช้ Invoice object จริงจาก Stripe (ไม่ใช่ hand-crafted fake) เพราะ handleInvoicePaid ตอนนี้เรียก
+    // getInvoiceChargeId() จริงเพื่อบันทึกลง invoices ledger (สเตจ 5) — fake invoice id ที่ไม่มีจริงบน
+    // Stripe จะทำให้ handler พังตอนเรียก API จริง (บั๊ก class เดียวกับที่เพิ่งแก้ใน
+    // stripe-webhook.regression.js: invoice.subscription ไม่มี field นี้แล้วในเวอร์ชัน API ปัจจุบัน)
+    const realInvoices = await stripe.invoices.list({ subscription: subForReactivate.id, limit: 1 });
+    const realInvoice = realInvoices.data[0];
+    const paidEvent = { id: fakeEventId(), type: 'invoice.paid', data: { object: realInvoice } };
     const rPaid = await postWebhook(paidEvent);
     assert(rPaid.status === 200 && rPaid.json.received === true, `webhook invoice.paid ประมวลผลสำเร็จ (ได้ status=${rPaid.status})`);
 
@@ -228,8 +234,18 @@ async function createRealStripeSubscription(cleanup, priceId) {
       for (const subId of cleanup.stripeSubscriptionIds) { await stripe.subscriptions.cancel(subId).catch(() => {}); }
       for (const custId of cleanup.stripeCustomerIds) { await stripe.customers.del(custId).catch(() => {}); }
       if (cleanup.companyIds.length) {
+        // journal_entries.source_id ไม่มี FK cascade จาก invoices/customer_companies (polymorphic
+        // reference ธรรมดา) — ต้องลบเองก่อน เพราะ test (2) ตอนนี้ trigger recordStripeInvoicePayment
+        // จริงผ่าน invoice.paid webhook (สร้างแถว invoices/invoice_payments/journal_entries จริง)
+        const staleInvoiceIds = (await pool.query('SELECT id FROM invoices WHERE company_id = ANY($1)', [cleanup.companyIds])).rows.map(r => r.id);
+        const stalePaymentIds = staleInvoiceIds.length
+          ? (await pool.query('SELECT id FROM invoice_payments WHERE invoice_id = ANY($1)', [staleInvoiceIds])).rows.map(r => r.id)
+          : [];
+        if (staleInvoiceIds.length) await pool.query(`DELETE FROM journal_entries WHERE source_type='invoice' AND source_id = ANY($1)`, [staleInvoiceIds]);
+        if (stalePaymentIds.length) await pool.query(`DELETE FROM journal_entries WHERE source_type='payment' AND source_id = ANY($1)`, [stalePaymentIds]);
         await pool.query('DELETE FROM subscriptions WHERE company_id = ANY($1)', [cleanup.companyIds]);
-        // platform_company_status_log มี ON DELETE CASCADE จาก customer_companies อยู่แล้ว ไม่ต้องลบแยก
+        // platform_company_status_log/invoices/invoice_payments/invoice_ledger_entries มี ON DELETE
+        // CASCADE จาก customer_companies อยู่แล้ว ไม่ต้องลบแยก
         await pool.query('DELETE FROM customer_companies WHERE id = ANY($1)', [cleanup.companyIds]);
       }
       await pool.query(`DELETE FROM platform_webhook_events WHERE stripe_event_id LIKE 'evt_test_autosuspend_%'`);
