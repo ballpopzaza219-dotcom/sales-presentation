@@ -96,6 +96,192 @@ app.use((req, res, next) => {
 // slow page loads.
 app.use(compression());
 
+// ---------------- Stripe Billing (migration 0027, stage 3): Webhook handler ----------------
+// ต้องลงทะเบียนก่อน app.use(express.json(...)) ด้านล่างเสมอ (ตำแหน่งในไฟล์มีผลจริง ไม่ใช่แค่จัดกลุ่ม) —
+// Stripe เซ็น signature จาก raw body bytes เป๊ะๆ ก่อนที่จะถูก parse เป็น JSON — ถ้า route นี้ถูกลงทะเบียน
+// หลัง express.json() ทั่วไป raw bytes จะหายไปแล้ว (เหลือแค่ object ที่ parse แล้ว) ทำให้ verify signature
+// ไม่ได้เลย จึงใช้ express.raw() เฉพาะ route นี้ path เดียว แทน — ทุก route อื่นที่ตามมาทีหลังยังใช้
+// express.json() ปกติตามเดิม ไม่กระทบกัน
+app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+  } catch (err) {
+    console.error('[stripe webhook] signature verification failed:', err.message);
+    return res.status(400).json({ error: 'Invalid signature' });
+  }
+
+  // Idempotency ผ่าน platform_webhook_events (migration 0027) — key ด้วย stripe_event_id ที่ Stripe
+  // กำหนดมาเอง ไม่ใช่ client-supplied key แบบ client_idempotency_keys (ดูเหตุผลเต็มในคอมเมนต์ตอนออกแบบ
+  // ตาราง) — ต้องแยกแยะ "duplicate ของ event ที่เคยสำเร็จแล้วจริง" ออกจาก "retry ของ event ที่เคย fail มา
+  // ก่อน" ให้ถูก เพราะ Stripe จะส่ง event เดิมซ้ำทั้งสองกรณีนี้เหมือนกันทุกประการจากภายนอก (เห็นแค่ event.id
+  // ซ้ำ) — ต้องดู processing_status ของแถวเดิมเพื่อตัดสินใจว่าจะข้ามหรือลองประมวลผลใหม่
+  const inserted = await pool.query(
+    `INSERT INTO platform_webhook_events (stripe_event_id, event_type, payload) VALUES ($1,$2,$3)
+     ON CONFLICT (stripe_event_id) DO NOTHING RETURNING id`,
+    [event.id, event.type, JSON.stringify(event)]
+  );
+  let webhookEventRowId;
+  if (inserted.rowCount > 0) {
+    webhookEventRowId = inserted.rows[0].id;
+  } else {
+    const existing = await pool.query('SELECT id, processing_status FROM platform_webhook_events WHERE stripe_event_id=$1', [event.id]);
+    const row = existing.rows[0];
+    if (row.processing_status === 'processed') {
+      console.log('[stripe webhook] duplicate of an already-processed event, skipping:', event.id);
+      return res.json({ received: true, duplicate: true });
+    }
+    webhookEventRowId = row.id;
+    console.log('[stripe webhook] retrying a previously-failed/pending event:', event.id);
+  }
+
+  try {
+    await handleStripeWebhookEvent(event);
+    await pool.query(`UPDATE platform_webhook_events SET processing_status='processed', processed_at=now() WHERE id=$1`, [webhookEventRowId]);
+  } catch (err) {
+    console.error('[stripe webhook] handler failed:', event.type, event.id, err);
+    await pool.query(
+      `UPDATE platform_webhook_events SET processing_status='failed', error_message=$1 WHERE id=$2`,
+      [String(err.message || err).slice(0, 1000), webhookEventRowId]
+    );
+    // ตอบ 500 ตั้งใจ (ไม่ใช่ 200) ให้ Stripe ส่ง event นี้มาซ้ำอีกตามตารางเวลา retry ของ Stripe เอง — รอบถัด
+    // ไปที่ Stripe ส่งมาจะเจอแถวเดิม (conflict ที่ INSERT ด้านบน) แล้ว processing_status ยังไม่ใช่
+    // 'processed' จึงลองประมวลผลใหม่อีกครั้งโดยอัตโนมัติ ไม่ต้องแก้ไขด้วยมือเสมอไป (แก้ไขด้วยมือเฉพาะกรณีที่
+    // Stripe หยุด retry ไปแล้วจริงๆ — ดู error_message ในตารางเพื่อตรวจสอบ)
+    return res.status(500).json({ error: 'internal error processing webhook' });
+  }
+
+  res.json({ received: true });
+});
+
+// รับเฉพาะ 4 event type ที่จำเป็นสำหรับ flow ที่สร้างไว้แล้ว (checkout -> subscription ที่ใช้งานจริง ->
+// เก็บเงินสำเร็จ/ล้มเหลว -> ยกเลิก) — ตั้งใจไม่รวม customer.subscription.updated (สถานะ past_due/unpaid
+// จาก Stripe) เพราะ schema ปัจจุบัน (migration 0027) ยังไม่มีค่าเหล่านี้ใน subscriptions.status CHECK เลย
+// (มีแค่ active/expired) — payment_failed_at บน customer_companies คือสัญญาณที่ตั้งใจแยกไว้สำหรับเรื่องนี้
+// แทน (ดู handleInvoicePaymentFailed/handleInvoicePaid) การ subscribe customer.subscription.updated เพิ่ม
+// เป็นงานของสเตจ 4 (auto-suspend cron) ที่จะออกแบบ status vocabulary ให้ครบถ้วนกว่านี้พร้อมกันไปเลย
+async function handleStripeWebhookEvent(event) {
+  switch (event.type) {
+    case 'checkout.session.completed': return handleCheckoutSessionCompleted(event.data.object);
+    case 'invoice.paid': return handleInvoicePaid(event.data.object);
+    case 'invoice.payment_failed': return handleInvoicePaymentFailed(event.data.object);
+    case 'customer.subscription.deleted': return handleSubscriptionDeleted(event.data.object);
+    default:
+      // event type ที่เราไม่ได้ตั้งใจ subscribe/จัดการ ไม่ใช่ความผิดพลาด — ปล่อยผ่านเป็น processed ปกติ ไม่ throw
+      console.log('[stripe webhook] unhandled event type (ignored):', event.type);
+  }
+}
+
+// ⚠️ พบจริงตอนเทส (2026-09-22): Stripe API เวอร์ชันปัจจุบันย้าย current_period_end/current_period_start
+// จาก subscription object ระดับบนลงไปอยู่ที่ subscription_item แต่ละตัวแทน
+// (subscription.items.data[0].current_period_end) ไม่ใช่ subscription.current_period_end ตรงๆ เหมือนที่
+// เอกสาร/โค้ดตัวอย่างเก่าคุ้นเคยกัน — ถ้าอ่านผิดที่จะได้ undefined แล้ว new Date(undefined*1000) กลายเป็น
+// Invalid Date เงียบๆ ไม่ throw ทันที (ตรวจพบตอนเขียนเทสจริง ไม่ใช่แค่เดาจากเอกสาร) — throw ทันทีถ้าหาไม่เจอ
+// ทั้งสองที่เลย (fail-closed ตาม CLAUDE.md ข้อ 13) แทนที่จะปล่อยผ่านเป็น Invalid Date
+function getSubscriptionPeriodEnd(stripeSubscription) {
+  const item = stripeSubscription.items && stripeSubscription.items.data && stripeSubscription.items.data[0];
+  const periodEnd = (item && item.current_period_end) || stripeSubscription.current_period_end;
+  if (!periodEnd) throw new Error('ไม่พบ current_period_end ทั้งใน subscription item และ subscription เอง (Stripe API shape อาจเปลี่ยนไป): ' + stripeSubscription.id);
+  return new Date(periodEnd * 1000);
+}
+
+// checkout.session.completed — ลูกค้าจ่ายเงินสำเร็จครั้งแรกผ่าน Checkout link (สเตจ 2) — สร้างแถว
+// subscriptions ใหม่จริง (ครั้งแรกที่มี stripe_subscription_id) และเคลียร์ grace period ถ้ามีค้างอยู่
+async function handleCheckoutSessionCompleted(session) {
+  if (session.mode !== 'subscription') return; // เผื่ออนาคตมี Checkout Session โหมดอื่นที่ไม่เกี่ยวกับที่นี่
+  const companyId = parseInt(session.metadata && session.metadata.company_id, 10);
+  const packageId = parseInt(session.metadata && session.metadata.package_id, 10);
+  const additionalSeats = parseInt(session.metadata && session.metadata.additional_seats, 10) || 0;
+  if (!companyId || !packageId) {
+    // metadata หายไป (ไม่ควรเกิดขึ้นเลยถ้า checkout ถูกสร้างผ่าน endpoint ของเราเสมอ) — retry ไม่ช่วยอะไร
+    // เพราะ metadata นี้ผูกกับ session ที่สร้างไปแล้วถาวร ไม่ throw (กัน retry วนซ้ำไม่จบ) แค่ log ไว้ตรวจสอบ
+    console.error('[stripe webhook] checkout.session.completed missing company_id/package_id metadata:', session.id);
+    return;
+  }
+  const pkgRes = await pool.query('SELECT * FROM packages WHERE id=$1', [packageId]);
+  if (pkgRes.rowCount === 0) {
+    console.error('[stripe webhook] checkout.session.completed references unknown package_id:', packageId, session.id);
+    return;
+  }
+  const pkg = pkgRes.rows[0];
+
+  const stripeSubscription = await stripe.subscriptions.retrieve(session.subscription);
+  const expiresAt = getSubscriptionPeriodEnd(stripeSubscription);
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // ⚠️ ON CONFLICT DO NOTHING บน uq_subscriptions_stripe_subscription_id (migration 0027) — จำเป็นสำหรับ
+    // ความเป็น idempotent จริงของ handler นี้ ไม่ใช่แค่ของ webhook endpoint ชั้นนอกเท่านั้น: ถ้า transaction
+    // นี้ commit สำเร็จ (สร้างแถว subscriptions ไปแล้วจริง) แต่โปรแกรมพังก่อนจะกลับไป mark
+    // platform_webhook_events.processing_status='processed' ได้ (เช่น process ถูก kill กลางทาง) รอบ retry
+    // ถัดไปจาก Stripe จะเจอ processing_status ยังไม่ใช่ 'processed' (เป็น pending/failed) แล้วเรียก handler
+    // นี้ซ้ำอีกครั้ง — ถ้า INSERT ธรรมดาไม่มี ON CONFLICT ตรงนี้ จะชน unique constraint แล้ว throw วนซ้ำไม่รู้
+    // จบทุกครั้งที่ Stripe retry (เพราะแถวเดิมมีอยู่แล้วจริงจากความพยายามก่อนหน้าที่สำเร็จแล้ว) พบจากรีวิว
+    // ไม่ใช่จากทดสอบจริง — partial unique index ต้องระบุ WHERE predicate ซ้ำใน ON CONFLICT ด้วย (ข้อกำหนด
+    // ของ Postgres สำหรับ partial index โดยเฉพาะ ต่างจาก unique constraint ทั่วไป)
+    const insertResult = await client.query(
+      `INSERT INTO subscriptions (company_id, tier, max_users, expires_at, status, stripe_subscription_id, stripe_price_id)
+       VALUES ($1,$2,$3,$4,'active',$5,$6)
+       ON CONFLICT (stripe_subscription_id) WHERE stripe_subscription_id IS NOT NULL DO NOTHING
+       RETURNING id`,
+      [companyId, pkg.name.toLowerCase(), pkg.max_users + additionalSeats, expiresAt, stripeSubscription.id, pkg.stripe_price_id]
+    );
+    if (insertResult.rowCount === 0) {
+      console.log('[stripe webhook] subscriptions row for this stripe_subscription_id already exists (retry after a partial success), skipping insert:', stripeSubscription.id);
+    }
+    await client.query(`UPDATE customer_companies SET payment_failed_at=NULL, package_id=$1 WHERE id=$2`, [packageId, companyId]);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// invoice.paid — เก็บเงินรอบต่ออายุสำเร็จ (รวมถึงรอบแรกที่มาพร้อม checkout.session.completed ด้วย แต่ข้อมูล
+// ซ้ำกันไม่เป็นไรเพราะแค่ update expires_at/เคลียร์ grace period ซ้ำเป็นค่าเดิม) — ต่ออายุ subscription จริง
+async function handleInvoicePaid(invoice) {
+  if (!invoice.subscription) return; // ไม่ได้ผูกกับ subscription (เช่น one-time charge) ไม่เกี่ยวกับที่นี่
+  const subRes = await pool.query('SELECT * FROM subscriptions WHERE stripe_subscription_id=$1 ORDER BY id DESC LIMIT 1', [invoice.subscription]);
+  if (subRes.rowCount === 0) {
+    // อาจมาถึงก่อน checkout.session.completed จะสร้างแถวเสร็จ (Stripe ไม่การันตีลำดับ event ส่งถึงเป๊ะ) —
+    // ไม่ throw เพราะ checkout.session.completed เองก็ set expires_at ที่ถูกต้องอยู่แล้วตอนสร้างแถว ไม่มี
+    // ข้อมูลอะไรหายไปจริงแม้จะข้าม invoice.paid รอบแรกนี้ไป
+    console.log('[stripe webhook] invoice.paid for a subscription not yet known locally (likely a race with checkout.session.completed):', invoice.subscription);
+    return;
+  }
+  const stripeSubscription = await stripe.subscriptions.retrieve(invoice.subscription);
+  const expiresAt = getSubscriptionPeriodEnd(stripeSubscription);
+  await pool.query(`UPDATE subscriptions SET expires_at=$1, status='active' WHERE id=$2`, [expiresAt, subRes.rows[0].id]);
+  await pool.query(`UPDATE customer_companies SET payment_failed_at=NULL WHERE id=$1`, [subRes.rows[0].company_id]);
+}
+
+// invoice.payment_failed — เก็บเงินไม่สำเร็จ (Stripe เองมี Smart Retries พยายามซ้ำอัตโนมัติอยู่แล้วก่อนจะ
+// ยอมแพ้จริง) — ⚠️ ใช้ COALESCE ตั้งค่าแค่ครั้งแรกที่ล้มเหลวเท่านั้น ไม่ reset เวลาทุกครั้งที่ retry แล้วยัง
+// ล้มเหลวซ้ำ เพราะ grace period 3 วัน (ตกลงไว้แล้ว) ต้องนับจากความล้มเหลว "ครั้งแรก" ไม่ใช่ "ครั้งล่าสุด" —
+// ถ้า set ใหม่ทุกรอบ retry จะทำให้ grace period ไม่มีวันครบกำหนดจริงตราบใดที่ Stripe ยังคง retry อยู่เรื่อยๆ
+async function handleInvoicePaymentFailed(invoice) {
+  if (!invoice.subscription) return;
+  const subRes = await pool.query('SELECT company_id FROM subscriptions WHERE stripe_subscription_id=$1 ORDER BY id DESC LIMIT 1', [invoice.subscription]);
+  if (subRes.rowCount === 0) return;
+  await pool.query(
+    `UPDATE customer_companies SET payment_failed_at=COALESCE(payment_failed_at, now()) WHERE id=$1`,
+    [subRes.rows[0].company_id]
+  );
+}
+
+// customer.subscription.deleted — subscription ถูกยกเลิก/จบสิ้นสุดจริงฝั่ง Stripe (ไม่ว่าจะยกเลิกเองหรือ
+// unpaid จนหมดรอบ retry ทั้งหมดของ Stripe) — แค่ปิด local subscriptions.status เป็น expired เท่านั้น ยังไม่
+// แตะ customer_companies.status (auto-suspend จริงเป็นงานของสเตจ 4 ที่ยังไม่ทำในสเตจนี้)
+async function handleSubscriptionDeleted(subscription) {
+  const subRes = await pool.query('SELECT id FROM subscriptions WHERE stripe_subscription_id=$1 ORDER BY id DESC LIMIT 1', [subscription.id]);
+  if (subRes.rowCount === 0) return;
+  await pool.query(`UPDATE subscriptions SET status='expired' WHERE id=$1`, [subRes.rows[0].id]);
+}
+
 // Default 100kb is too small for job-application submissions, which embed the applicant's
 // photo as a base64 data URL directly in the JSON body (see photoDataUrl in job_applications).
 app.use(express.json({ limit: '10mb' }));
