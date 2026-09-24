@@ -60,6 +60,22 @@ async function login(username, companyCode) {
     assert(denied.status === 403, `fx_maker (ไม่ใช่ super_user) สร้างลูกค้าไม่ได้ 403 (ได้ ${denied.status})`);
 
     // ============================================================================================
+    // (1b) migration 0032 — super_user มอบสิทธิ์ can_manage_customer_records ให้ fx_maker แล้วสร้างได้จริง
+    // แก้ไข (PUT) ได้จริงด้วย แล้วถอนสิทธิ์คืน -> กลับไปเป็น 403 เหมือนเดิม (round-trip เต็มรูปแบบ)
+    // ============================================================================================
+    console.log('\n=== (1b) มอบสิทธิ์ can_manage_customer_records ให้ fx_maker -> สร้าง/แก้ไขได้จริง แล้วถอนคืน ===');
+    const fxMakerRow = (await pool.query(`SELECT id FROM customers WHERE username='fx_maker' AND company_id=$1`, [COMPANY_A_ID])).rows[0];
+    await call('fx_super', 'PUT', `/api/customer/users/${fxMakerRow.id}/permission-flags`, { column: 'can_manage_customer_records', value: true });
+    const custByGrantedMaker = await call('fx_maker', 'POST', '/api/customer/clients', { name: `ลูกค้า E2E สร้างโดย fx_maker ${Date.now()}` });
+    cleanup.customerIds.push(custByGrantedMaker.customer.id);
+    assert(!!custByGrantedMaker.customer.id, 'fx_maker หลังได้รับสิทธิ์ can_manage_customer_records สร้างลูกค้าได้จริง');
+    const editByGrantedMaker = await call('fx_maker', 'PUT', `/api/customer/clients/${custByGrantedMaker.customer.id}`, { name: `${custByGrantedMaker.customer.name} (แก้ไขแล้ว)` });
+    assert(editByGrantedMaker.customer.name.includes('แก้ไขแล้ว'), 'fx_maker หลังได้รับสิทธิ์แก้ไข (PUT) ได้จริงด้วย (flag เดียวคุมทั้งสอง endpoint)');
+    await call('fx_super', 'PUT', `/api/customer/users/${fxMakerRow.id}/permission-flags`, { column: 'can_manage_customer_records', value: false });
+    const deniedAfterRevoke = await callExpectError('fx_maker', 'POST', '/api/customer/clients', { name: 'y' });
+    assert(deniedAfterRevoke.status === 403, `ถอนสิทธิ์คืนแล้ว fx_maker สร้างลูกค้าไม่ได้อีก 403 เหมือนเดิม (ได้ ${deniedAfterRevoke.status})`);
+
+    // ============================================================================================
     // (2) สร้างลูกค้าจริง + audit log
     // ============================================================================================
     console.log('\n=== (2) สร้างลูกค้า + audit log ===');

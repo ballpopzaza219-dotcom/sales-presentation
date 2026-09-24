@@ -2810,8 +2810,11 @@ app.put('/api/customer/users/:id/budget-approval-permission', requireCustomerAut
 // /approval-permission แยกอยู่แล้วและ frontend เดิมผูกกับ endpoint นั้นตรงๆ ไม่ผ่านทาง column พารามิเตอร์
 // column มาจาก client ตรงๆ (ไม่ hardcode เหมือน endpoint บน) จึงต้องพึ่ง allowedColumns whitelist ใน
 // updateUserPermissionFlag() กัน mass-assignment จริงจัง
+// can_manage_customer_records (migration 0032) เพิ่มเข้ามาทีหลัง — คุมสิทธิ์จัดการ Customer Master
+// (hasCustomerManagePermission() ด้านล่าง, POST+PUT /api/customer/clients) ตาม pattern เดียวกับ
+// can_manage_po/can_manage_petty_cash_fund/can_settle_cash ข้างบนทุกประการ
 const MANAGE_PERMISSION_FLAG_COLUMNS = new Set([
-  'can_manage_po', 'can_manage_petty_cash_fund', 'can_settle_cash',
+  'can_manage_po', 'can_manage_petty_cash_fund', 'can_settle_cash', 'can_manage_customer_records',
   'can_approve_budget', 'can_approve_pr', 'can_approve_po_wo', 'can_approve_petty_cash', 'can_approve_advance', 'can_approve_other',
   'can_certify_progress', 'can_approve_progress', 'can_approve_subcontract_billing',
   'can_submit_goods_receipt', 'can_submit_site_expense',
@@ -11055,11 +11058,15 @@ app.put('/api/customer/departments/:id', requireCustomerAuth, async (req, res) =
 // customer" ของ tenant) ถ้าตั้งชื่อ resource ตรงตามตารางจะได้ /api/customer/customers ซึ่งอ่านสับสนมาก
 // (ดูเหมือนพิมพ์ผิดซ้ำคำ) — ใช้ /clients แทนเพื่อความชัดเจน ไม่กระทบชื่อตาราง/คอลัมน์ใดๆ ในโค้ด (แค่ URL)
 //
-// สิทธิ์จัดการ: super_user เท่านั้น (ยืนยันแล้ว เหมือน branches/departments) — แยกฟังก์ชันเองแม้ body
+// สิทธิ์จัดการ: super_user เสมอ + super_user มอบสิทธิ์ can_manage_customer_records ให้พนักงานคนไหนก็ได้
+// เป็นรายคนได้ (migration 0032) — เดิมล็อกตายตัวไว้แค่ super_user เท่านั้น แก้ตามโมเดลสิทธิ์จริงของระบบนี้
+// (permission flag ที่ super_user มอบให้เองได้ ไม่ใช่การสร้าง role ใหม่แบบ "admin ระดับรอง" ตายตัว) เหมือน
+// can_manage_po/can_manage_petty_cash_fund ทุกประการ — flag เดียวคุมทั้งสร้าง/แก้ไข/ปิดใช้งาน
+// (POST+PUT /api/customer/clients) ไม่แยกสอง flag เพื่อความเรียบง่าย (ตกลงไว้แล้ว) แยกฟังก์ชันเองแม้ body
 // เหมือนกัน ตาม CLAUDE.md ข้อ 14 (แยกสิทธิ์ตั้งค่า/จัดการทรัพยากรออกจากสิทธิ์อนุมัติธุรกรรมเสมอ แม้ตอนนี้
 // ยังไม่มีธุรกรรมที่ผูกกับลูกค้าโดยตรงที่ต้องอนุมัติแยก)
 function hasCustomerManagePermission(customer) {
-  return customer.role === 'super_user';
+  return customer.role === 'super_user' || !!customer.can_manage_customer_records;
 }
 
 // ⚠️ ตั้งชื่อ serializeClientCustomer ไม่ใช่ serializeCustomer โดยตั้งใจ — มีฟังก์ชัน serializeCustomer(row)
