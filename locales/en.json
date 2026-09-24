@@ -1162,6 +1162,7 @@
   "approval_permissions.col_settle_cash": "Advance Settlement Recording Access",
   "approval_permissions.col_submit_goods_receipt": "Goods Receipt Access (site)",
   "approval_permissions.col_submit_site_expense": "Site Expense Submission Access (site)",
+  "approval_permissions.col_manage_customer_records": "Manage Customer Records (Customer Master) Access",
   "approval_permissions.has_permission": "Has Access",
   "approval_permissions.no_permission": "No Access",
   "approval_permissions.revoke": "Revoke",

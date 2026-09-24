@@ -1162,6 +1162,7 @@
   "approval_permissions.col_settle_cash": "สิทธิ์บันทึกชำระส่วนต่างเงินทดรองจ่าย",
   "approval_permissions.col_submit_goods_receipt": "สิทธิ์ตรวจรับของ (หน้างาน)",
   "approval_permissions.col_submit_site_expense": "สิทธิ์ส่งบิลค่าใช้จ่าย (หน้างาน)",
+  "approval_permissions.col_manage_customer_records": "สิทธิ์จัดการข้อมูลลูกค้า (Customer Master)",
   "approval_permissions.has_permission": "มีสิทธิ์",
   "approval_permissions.no_permission": "ไม่มีสิทธิ์",
   "approval_permissions.revoke": "ถอนสิทธิ์",

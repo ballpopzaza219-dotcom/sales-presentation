@@ -8631,7 +8631,7 @@ function pageApprovalPermissions(){
           <th rowspan="2">${tr('common.col_role')}</th>
           <th colspan="2">${tr('approval_permissions.group_other')}</th>
           <th colspan="8">${tr('approval_permissions.group_doc_approval')}</th>
-          <th colspan="5">${tr('approval_permissions.group_execution')}</th>
+          <th colspan="6">${tr('approval_permissions.group_execution')}</th>
         </tr>
         <tr>
           <th>${tr('approval_permissions.col_permission')}</th>
@@ -8649,10 +8649,11 @@ function pageApprovalPermissions(){
           <th>${tr('approval_permissions.col_settle_cash')}</th>
           <th>${tr('approval_permissions.col_submit_goods_receipt')}</th>
           <th>${tr('approval_permissions.col_submit_site_expense')}</th>
+          <th>${tr('approval_permissions.col_manage_customer_records')}</th>
         </tr>
       </thead>
       <tbody>
-        ${rows.length===0 ? `<tr><td colspan="18"><div class="empty" style="padding:20px 0;">${tr('users.no_users_yet')}</div></td></tr>` : rows.map(cu=>{
+        ${rows.length===0 ? `<tr><td colspan="19"><div class="empty" style="padding:20px 0;">${tr('users.no_users_yet')}</div></td></tr>` : rows.map(cu=>{
           // ห้าม self-grant/self-revoke (ตรงกับ backend) — ซ่อนปุ่มบนแถวของตัวเอง แม้จะเป็น super_user
           const canManageThisRow = canManage && S.currentUser.id !== cu.id;
           return `
@@ -8675,6 +8676,7 @@ function pageApprovalPermissions(){
             ${permFlagCell(cu, 'can_settle_cash', canManageThisRow)}
             ${permFlagCell(cu, 'can_submit_goods_receipt', canManageThisRow)}
             ${permFlagCell(cu, 'can_submit_site_expense', canManageThisRow)}
+            ${permFlagCell(cu, 'can_manage_customer_records', canManageThisRow)}
           </tr>`;}).join('')}
       </tbody>
     </table></div>
