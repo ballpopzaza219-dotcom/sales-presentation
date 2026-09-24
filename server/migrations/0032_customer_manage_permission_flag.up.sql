@@ -1,0 +1,13 @@
+-- Customer Master (migration 0025) permission model refinement — เพิ่ม flag ให้ super_user มอบสิทธิ์
+-- "จัดการลูกค้า" (สร้าง/แก้ไข/ปิดใช้งาน client_customers ผ่าน hasCustomerManagePermission ใน server.js)
+-- ให้พนักงานคนไหนก็ได้เป็นรายคน แทนที่จะผูกตายตัวกับ role='super_user' เท่านั้นเหมือนเดิม — ตรงกับโมเดล
+-- สิทธิ์ของระบบนี้ทั้งหมด (permission flag ที่ super_user มอบให้เองได้ต่อคน ไม่ใช่การสร้าง role ใหม่แบบ
+-- "admin ระดับรอง" ตายตัว) เหมือน can_manage_po/can_manage_petty_cash_fund/can_settle_cash
+-- (migration 0007) ทุกประการ — flag เดียวคุมทั้ง POST และ PUT /api/customer/clients (ไม่แยกสอง flag
+-- สำหรับสร้าง vs แก้ไข เพื่อความเรียบง่าย ตกลงไว้แล้ว)
+--
+-- ไม่ต้องแก้ CHECK ของ client_document_audit_log.doc_type เพิ่ม — 'user_permission' ถูกเปิดไว้แล้วตั้งแต่
+-- migration 0007 และใช้ร่วมกันสำหรับทุก permission flag ผ่าน updateUserPermissionFlag()/
+-- PUT /api/customer/users/:id/permission-flags ที่มีอยู่แล้ว (แค่เพิ่มชื่อคอลัมน์นี้เข้า
+-- MANAGE_PERMISSION_FLAG_COLUMNS whitelist ฝั่ง server.js เท่านั้น ไม่ต้องสร้าง endpoint ใหม่)
+ALTER TABLE customers ADD COLUMN can_manage_customer_records BOOLEAN NOT NULL DEFAULT false;
