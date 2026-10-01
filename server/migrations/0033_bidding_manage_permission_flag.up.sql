@@ -1,0 +1,15 @@
+-- Bidding module (Project/Tender/Budget/Quotation) permission model — เพิ่ม flag ให้ super_user มอบ
+-- สิทธิ์ "จัดการงานประมูล/โครงการ" (สร้าง/แก้ไขโครงการ, ประมูลงาน, งบประมาณ, ใบเสนอราคา) ให้พนักงานคนไหน
+-- ก็ได้เป็นรายคน แทนที่จะผูกตายตัวกับ role='super_user' เท่านั้นเหมือนเดิม — ตรงกับโมเดลสิทธิ์ของระบบนี้
+-- ทั้งหมด (permission flag ที่ super_user มอบให้เองได้ต่อคน ไม่ใช่การสร้าง role ใหม่แบบ "admin ระดับรอง"
+-- ตายตัว) เหมือน can_manage_po/can_manage_petty_cash_fund (migration 0007) และ
+-- can_manage_customer_records (migration 0032) ทุกประการ
+--
+-- ⚠️ สำรวจพบระหว่างออกแบบ migration นี้ (2026-10-01): ทุก endpoint เขียน (POST/PUT/DELETE) ภายใต้
+-- /api/customer/projects/*, /api/customer/tenders/*, /api/customer/budgets/*,
+-- /api/customer/quotations/* มีแค่ requireCustomerAuth เป็น middleware เดียวมาตั้งแต่สร้างโมดูลนี้ ไม่เคยมี
+-- การเช็ค role/permission ฝั่งเซิร์ฟเวอร์เลยแม้แต่จุดเดียว (ยกเว้น budgets/:id/approve กับ .../reject ที่มี
+-- requireCanApproveBudget ของตัวเองอยู่แล้วถูกต้อง) — เดิมที "จำกัดเฉพาะ super_user" เป็นแค่การซ่อนปุ่มฝั่ง
+-- frontend (canBidding = role==='super_user') เท่านั้น ไม่ใช่ด่านความปลอดภัยจริง — migration นี้เป็นจุดเริ่ม
+-- ของการปิดช่องโหว่นี้ (เพิ่มคอลัมน์ก่อน โค้ด server.js ที่ใช้คอลัมน์นี้จริงจะตามมาแยกเป็น diff ถัดไป)
+ALTER TABLE customers ADD COLUMN can_manage_bidding BOOLEAN NOT NULL DEFAULT false;
