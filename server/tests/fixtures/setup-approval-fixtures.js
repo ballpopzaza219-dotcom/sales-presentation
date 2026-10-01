@@ -11,7 +11,13 @@ const COMPANY_B_ID = 19; // DIUXPB
 const PASSWORD = 'TestPass123!';
 
 const USERS = [
-  { username: 'fx_maker', companyId: COMPANY_A_ID, role: 'maker', flags: {} },
+  // can_manage_bidding (migration 0033, 2026-10-01): fx_maker ใช้สร้าง project/tender/budget/quotation
+  // เป็น fixture scaffolding ในเทสอื่นๆ อีกนับสิบไฟล์ทั่วทั้ง suite (ไม่ได้ทดสอบสิทธิ์ bidding โดยตรง) —
+  // ก่อนหน้านี้ endpoint เหล่านั้นไม่เคยเช็คสิทธิ์เลยจึงไม่มีปัญหา พอเพิ่ม requireCanManageBidding จริงแล้ว
+  // ทุกไฟล์ที่พึ่ง fx_maker สร้างเอกสารกลุ่มนี้จะพังทันทีถ้าไม่ให้ flag นี้ไว้เป็นค่าเริ่มต้น — fx_maker2 ยังคง
+  // ไม่มี flag นี้โดยตั้งใจ (ไม่เคยถูกใช้สร้างเอกสารกลุ่มนี้ที่ไหนเลย) ไว้ใช้เป็น "คนไม่มีสิทธิ์" สำหรับเทส
+  // สิทธิ์ bidding โดยเฉพาะ (bidding-manage-permission.regression.js)
+  { username: 'fx_maker', companyId: COMPANY_A_ID, role: 'maker', flags: { can_manage_bidding: true } },
   { username: 'fx_maker2', companyId: COMPANY_A_ID, role: 'maker', flags: {} },
   // มีทั้ง certify และ approve เพื่อเทสจงใจ self-block ของ /approve ที่ต้องครอบคลุมถึง certified_by ด้วย
   // (คนที่ certify ไปแล้ว approve ใบเดียวกันเองไม่ได้ แม้จะมีสิทธิ์ approve โดยทั่วไปก็ตาม — ต้องให้คนที่ 3

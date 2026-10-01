@@ -1189,6 +1189,14 @@ async function loadRealEmployees(){
   catch(e){ toast(e.message, 'err'); }
   S.employeesLoaded = true; render();
 }
+// Customer Master (client_customers, migration 0025) — response shape from serializeClientCustomer
+// already matches what the picker needs directly (id/name/taxId/isActive/...), no remapping needed
+// (unlike loadRealProjects/loadRealTenders which rename fields onto an older client-side shape).
+async function loadRealCustomers(){
+  try{ const data = await apiCall('GET', '/api/customer/clients'); DB.customers = data.customers; }
+  catch(e){ toast(e.message, 'err'); }
+  S.customersLoaded = true; render();
+}
 async function loadRealLeaveTypes(){
   try{ const data = await apiCall('GET', '/api/customer/leave-types'); DB.leaveTypes = data.leaveTypes; }
   catch(e){ toast(e.message, 'err'); }
@@ -2941,7 +2949,11 @@ function financeNavFor(u){
   if(docGroupVisible('fin_po', u)) treasuryItems.push({key:'fin_po', label:tr('nav.fin_po'), icon:'fileStack'});
   if(docGroupVisible('fin_wo', u)) treasuryItems.push({key:'fin_wo', label:tr('nav.fin_wo'), icon:'fileStack'});
   if(docGroupVisible('fin_goods_receipts', u)) treasuryItems.push({key:'fin_goods_receipts', label:tr('nav.fin_goods_receipts'), icon:'boxes'});
-  if(u.role==='super_user') treasuryItems.push({key:'fin_quotations', label:tr('nav.fin_quotations'), icon:'fileStack'}, {key:'fin_documents', label:tr('nav.fin_documents'), icon:'fileStack'});
+  // แยก fin_quotations ออกจาก fin_documents โดยตั้งใจ (migration 0033) — ใบเสนอราคาอยู่ในขอบเขตที่
+  // can_manage_bidding เปิดให้ (Project/Tender/Quotation ตามที่ตกลง) ส่วน fin_documents (ศูนย์เอกสาร)
+  // เป็นคนละเรื่อง ไม่ได้อยู่ในขอบเขตงานนี้ ยังคงจำกัดเฉพาะ super_user เหมือนเดิมไปก่อน
+  if(u.role==='super_user' || u.canManageBidding) treasuryItems.push({key:'fin_quotations', label:tr('nav.fin_quotations'), icon:'fileStack'});
+  if(u.role==='super_user') treasuryItems.push({key:'fin_documents', label:tr('nav.fin_documents'), icon:'fileStack'});
   if(treasuryItems.length) items.push({key:'section', label:tr('nav.section_treasury')}, ...treasuryItems);
   if(u.role==='super_user'){
     items.push(
@@ -3108,10 +3120,11 @@ function renderDashboard(){
   // that permission is deliberately not tied to a fixed role (see maybeAutoGrantApprovalPermission
   // in server.js — an admin_maker/checker/etc. can hold it just as much as a super_user).
   const canEmployees = u.role==='super_user' || !!u.canApproveApplications;
-  // Same gate as canFinance for now (only super_user manages either) — kept as its own named
-  // boolean since Bidding is conceptually distinct from Finance even though the permission happens
-  // to coincide today.
-  const canBidding = u.role==='super_user';
+  // migration 0033 — super_user เสมอ + can_manage_bidding ที่ super_user มอบให้เป็นรายคนได้ (เดิมผูกตายตัว
+  // กับ super_user เท่านั้น) ดูคอมเมนต์ migration 0033/canManageBidding ฝั่ง server.js สำหรับรายละเอียด
+  // ช่องโหว่ security ที่พบระหว่างออกแบบ (ทุก endpoint เขียนของ Bidding ไม่เคยเช็ค role ฝั่งเซิร์ฟเวอร์เลย
+  // มาก่อน — nav gate นี้เคยเป็นด่านเดียวที่มีอยู่จริง ตอนนี้มี server-side check คู่กันแล้ว)
+  const canBidding = u.role==='super_user' || !!u.canManageBidding;
   if(S.module==='finance' && !canFinance) S.module='pr';
   if(S.module==='employees' && !canEmployees) S.module='pr';
   if(S.module==='bidding' && !canBidding) S.module='pr';
@@ -3168,6 +3181,7 @@ function renderDashboard(){
     </div>
   </div>
   ${S.modal ? renderModal() : ''}
+  ${S.customerQuickAddForm ? renderCustomerQuickAddForm() : ''}
   ${S.toast ? `<div class="toast ${S.toast.type==='err'?'err':S.toast.type==='warn'?'warn':S.toast.type==='ok'?'ok':''}">${S.toast.msg}</div>` : ''}
   `;
 }
@@ -4365,7 +4379,7 @@ function pageFinTenderAdd(){
       <div class="field"><label>${tr('fin_tender_add.name_label')} *</label><input id="ta-name" value="${esc(f.name||'')}" oninput="S.tenderAddForm.name=this.value;"></div>
     </div>
     <div class="split">
-      <div class="field"><label>${tr('fin_tender_add.owner_label')}</label><input id="ta-owner" value="${esc(f.projectOwner||'')}" oninput="S.tenderAddForm.projectOwner=this.value;"></div>
+      ${renderCustomerPickerField('tenderAddForm', 'ta-owner', 'ta-owner-results', 'fin_tender_add.owner_label')}
       <div class="field"><label>${tr('fin_tender_add.bidding_method_label')}</label><input id="ta-biddingMethod" value="${esc(f.biddingMethod||'')}" oninput="S.tenderAddForm.biddingMethod=this.value;"></div>
     </div>
     <div class="field"><label>${tr('fin_tender_add.tender_no_label')}</label><input id="ta-tenderNo" value="${esc(f.tenderNo||'')}" oninput="S.tenderAddForm.tenderNo=this.value;"><div class="hint">${tr('fin_tender_add.tender_no_hint')}</div></div>
@@ -5201,7 +5215,7 @@ function pageFinProjectAdd(){
       <div class="field"><label>${tr('fin_project_add.code_label')}</label><input id="pa-code" value="${esc(f.code||'')}" placeholder="${tr('fin_project_add.code_ph')}" oninput="S.projectAddForm.code=this.value;"><div class="hint">${tr('fin_project_add.code_hint')}</div></div>
     </div>
     <div class="split">
-      <div class="field"><label>${tr('fin_project_add.client_label')}</label><input id="pa-client" value="${esc(f.client||'')}" placeholder="${tr('fin_project_add.client_ph')}" oninput="S.projectAddForm.client=this.value;"></div>
+      ${renderCustomerPickerField('projectAddForm', 'pa-client', 'pa-client-results', 'fin_project_add.client_label')}
       <div class="field"><label>${tr('fin_project_add.bidding_method_label')}</label><input id="pa-biddingMethod" value="${esc(f.biddingMethod||'')}" oninput="S.projectAddForm.biddingMethod=this.value;"></div>
     </div>
     <div class="field"><label>${tr('fin_project_add.address_label')}</label><input id="pa-address" value="${esc(f.address||'')}" oninput="S.projectAddForm.address=this.value;"></div>
@@ -5340,6 +5354,134 @@ async function onProjectAddTenderChange(tenderIdStr){
     f.installmentCount = f.installments.length;
     render();
   } catch(e){ toast(e.message, 'err'); }
+}
+
+// ---- Customer Master (client_customers) picker — shared across fin_project_add/fin_tender_add/
+// fin_quotation_add, replacing what used to be a free-text client name/project-owner input in each
+// (2026-09-24, Master Blueprint Stage A: Customer Master). Same search-as-you-type mechanics as
+// renderProjectTenderResults/wireProjectTenderResultClicks/onProjectNameInput above (in-memory filter
+// over DB.customers — already guaranteed loaded before these 3 pages render, see
+// CUSTOMER_DEPENDENT_PAGES in loadDataForPage() — same onmousedown-before-blur race handling) but
+// factored into ONE parameterized implementation instead of copy-pasting it a third time: this
+// session's own Stripe Billing work hit real copy-drift bugs twice from triplicated logic, and this
+// picker's mousedown/blur timing is exactly the kind of fiddly interaction that's easy to get subtly
+// wrong in one of three copies and never notice until a user hits that specific one.
+// formKey: 'projectAddForm' | 'tenderAddForm' | 'quotationAddForm' — S.<formKey> gains
+// customerId / customerSearchText / customerResultsOpen alongside its other fields. Selecting a
+// customer is the ONLY way to set customerId (no free-text fallback — confirmed decision: every
+// project/tender/quotation must resolve to a real client_customers row, paving the way for a future
+// migration to drop the old free-text columns entirely once every write path uses customerId).
+// ⚠️ บั๊กจริงที่พบ+แก้ (2026-10-01): เดิมเช็ค u.can_manage_customer_records (snake_case) แต่ S.currentUser
+// ประกอบจากรายชื่อ field แบบ camelCase ที่ระบุไว้ตรงๆ ตอน login เท่านั้น (ดู S.currentUser = {...} ใน
+// do-login handler) — ไม่เคยมี can_manage_customer_records อยู่ในรายการนั้นเลย ทำให้ค่านี้เป็น undefined
+// เสมอสำหรับทุกคน แปลว่าต่อให้ super_user มอบสิทธิ์ให้ใครผ่านหน้า approval_permissions จริง ปุ่ม quick-add
+// ก็จะไม่มีวันปรากฏให้คนนั้นเห็นเลย (เงียบๆ ไม่มี error ให้สังเกต) — เทสเดิมที่เขียนไว้ไม่จับบั๊กนี้เพราะ
+// ทดสอบผ่าน page.evaluate() ที่ set state ตรงๆ (เลี่ยง login flow จริงไปเลย) ไม่ใช่ทดสอบผ่าน flow login จริง
+function customerPickerCanQuickAdd(){
+  const u = S.currentUser;
+  return !!(u && (u.role==='super_user' || u.canManageCustomerRecords));
+}
+function renderCustomerPickerResults(formKey, resultsElementId){
+  const f = S[formKey];
+  if(!f || !f.customerResultsOpen) return '';
+  const q = (f.customerSearchText||'').trim().toLowerCase();
+  const activeCustomers = (DB.customers||[]).filter(c=>c.isActive);
+  const matches = q
+    ? activeCustomers.filter(c=> (c.name||'').toLowerCase().includes(q) || (c.taxId||'').includes(q))
+    : activeCustomers.slice(0, 20);
+  const rows = matches.map(c=>`
+    <button type="button" data-act="select-customer" data-form-key="${formKey}" data-results-id="${resultsElementId}" data-id="${c.id}" style="display:block; width:100%; padding:10px 12px; border:none; border-bottom:1px solid var(--border); background:#fff; cursor:pointer; text-align:left; font:inherit;">
+      <div style="font-weight:600; color:var(--navy); font-size:13.5px;">${esc(c.name)}</div>
+      ${c.taxId ? `<div class="mono" style="font-size:11.5px; color:var(--text-muted); margin-top:2px;">${esc(c.taxId)}</div>` : ''}
+    </button>`).join('');
+  const noMatchHint = matches.length===0 ? `<div class="hint" style="padding:10px 12px;">${tr('customer_picker.no_match')}</div>` : '';
+  // quick-add แสดงเฉพาะคนที่มีสิทธิ์จัดการ Customer Master จริง (super_user หรือ can_manage_customer_records)
+  // — คนอื่นที่หาไม่เจอจะเห็นแค่ข้อความบอกให้ติดต่อผู้ดูแลระบบ ไม่มีปุ่มให้กดเลย (ตรงตามที่ตกลงไว้)
+  const quickAddRow = customerPickerCanQuickAdd()
+    ? `<button type="button" data-act="open-customer-quick-add" data-form-key="${formKey}" data-results-id="${resultsElementId}" style="display:block; width:100%; padding:10px 12px; border:none; border-top:${matches.length?'2px solid var(--border-strong)':'none'}; background:var(--surface-alt); cursor:pointer; text-align:left; font:inherit; color:var(--navy); font-weight:600;">${ICN.plus} ${tr('customer_picker.quick_add')}${f.customerSearchText && f.customerSearchText.trim() ? ` "${esc(f.customerSearchText.trim())}"` : ''}</button>`
+    : (matches.length===0 ? `<div class="hint" style="padding:10px 12px;">${tr('customer_picker.no_match_no_permission')}</div>` : '');
+  return rows + noMatchHint + quickAddRow;
+}
+function wireCustomerPickerResultClicks(resultsElementId){
+  const el = document.getElementById(resultsElementId);
+  if(!el) return;
+  el.querySelectorAll('[data-act="select-customer"], [data-act="open-customer-quick-add"]').forEach(btn=>{
+    // onmousedown (not onclick) fires BEFORE the search input's onblur — a click alone would lose the
+    // race, since blur closes+clears the results div first and the click never lands (same reasoning
+    // as wireProjectTenderResultClicks above).
+    btn.onmousedown = (ev)=>{ ev.preventDefault(); handleAction(btn.dataset.act, btn); };
+  });
+}
+function onCustomerSearchInput(formKey, resultsElementId, value){
+  const f = S[formKey];
+  f.customerSearchText = value;
+  f.customerId = ''; // typing invalidates whatever was previously selected until picked again
+  f.customerResultsOpen = true;
+  const el = document.getElementById(resultsElementId);
+  if(el){ el.innerHTML = renderCustomerPickerResults(formKey, resultsElementId); wireCustomerPickerResultClicks(resultsElementId); }
+}
+function onCustomerSearchFocus(formKey, resultsElementId){
+  const f = S[formKey];
+  if(!f) return;
+  f.customerResultsOpen = true;
+  const el = document.getElementById(resultsElementId);
+  if(el){ el.innerHTML = renderCustomerPickerResults(formKey, resultsElementId); wireCustomerPickerResultClicks(resultsElementId); }
+}
+function onCustomerSearchBlur(formKey, resultsElementId){
+  // Delayed so a mousedown on a result row (see wireCustomerPickerResultClicks) still gets to run first.
+  setTimeout(()=>{
+    const f = S[formKey];
+    if(!f) return;
+    f.customerResultsOpen = false;
+    const el = document.getElementById(resultsElementId);
+    if(el) el.innerHTML = '';
+  }, 200);
+}
+function selectCustomerForForm(formKey, customerIdStr){
+  const f = S[formKey];
+  if(!f) return;
+  const customer = (DB.customers||[]).find(c=>String(c.id)===String(customerIdStr));
+  if(!customer) return;
+  f.customerId = customer.id;
+  f.customerSearchText = customer.name;
+  f.customerResultsOpen = false;
+  render();
+}
+// labelKey: i18n key for the field's <label> text (each form's own "ชื่อลูกค้า/เจ้าของโครงการ" wording).
+function renderCustomerPickerField(formKey, inputId, resultsElementId, labelKey){
+  const f = S[formKey];
+  const typedButNotSelected = !f.customerId && f.customerSearchText && f.customerSearchText.trim();
+  return `
+  <div class="field" style="position:relative;">
+    <label>${tr(labelKey)} *</label>
+    <input id="${inputId}" autocomplete="off" value="${esc(f.customerSearchText||'')}" placeholder="${tr('customer_picker.search_ph')}"
+      oninput="onCustomerSearchInput('${formKey}','${resultsElementId}',this.value)"
+      onfocus="onCustomerSearchFocus('${formKey}','${resultsElementId}')"
+      onblur="onCustomerSearchBlur('${formKey}','${resultsElementId}')">
+    <div id="${resultsElementId}" style="position:absolute; z-index:20; left:0; right:0; top:100%; margin-top:4px; background:#fff; border:1px solid var(--border-strong); border-radius:var(--radius-sm); box-shadow:0 6px 18px rgba(0,0,0,.08); max-height:260px; overflow-y:auto;">${renderCustomerPickerResults(formKey, resultsElementId)}</div>
+    ${typedButNotSelected ? `<div class="hint" style="color:var(--red);">${tr('customer_picker.must_select_hint')}</div>` : ''}
+  </div>`;
+}
+// Quick-add — เปิดจาก results list (ดู renderCustomerPickerResults) ไม่ใช่ผ่าน S.modal/close-modal
+// generic mechanism (พบระหว่างสำรวจว่า data-act="close-modal" ไม่มี handler จริงใน handleAction() เลย —
+// ปัญหาเดิมที่มีอยู่ก่อนแล้ว ไม่เกี่ยวกับงานนี้ ไม่ไปแตะ/ไล่แก้ตรงนี้ แค่เลี่ยงพึ่งพามันสำหรับ state ใหม่นี้)
+// ใช้ pattern เดียวกับ S.addRuleForm/cancel-add-rule ที่ยืนยันแล้วว่าทำงานได้จริงแทน
+function renderCustomerQuickAddForm(){
+  const f = S.customerQuickAddForm;
+  if(!f) return '';
+  return `<div class="modal-overlay">
+    <div class="modal" data-stop="1" style="max-width:420px;">
+      <h3>${tr('customer_picker.quick_add_title')}</h3>
+      <div class="field"><label>${tr('customer_picker.field_name')} *</label><input id="cqa-name" value="${esc(f.name)}" oninput="S.customerQuickAddForm.name=this.value;"></div>
+      <div class="field"><label>${tr('customer_picker.field_tax_id')}</label><input id="cqa-taxId" value="${esc(f.taxId)}" oninput="S.customerQuickAddForm.taxId=this.value;"></div>
+      <div class="field"><label>${tr('customer_picker.field_phone')}</label><input id="cqa-phone" value="${esc(f.phone)}" oninput="S.customerQuickAddForm.phone=this.value;"></div>
+      <div class="field"><label>${tr('customer_picker.field_contact_person')}</label><input id="cqa-contactPerson" value="${esc(f.contactPerson)}" oninput="S.customerQuickAddForm.contactPerson=this.value;"></div>
+      <div class="small-btn-row" style="justify-content:flex-end; margin-top:10px;">
+        <button class="btn btn-ghost" data-act="cancel-customer-quick-add">${tr('common.cancel')}</button>
+        <button class="btn btn-primary" data-act="save-customer-quick-add" ${f.saving?'disabled':''}>${f.saving?tr('leave_public.submitting'):tr('common.save')}</button>
+      </div>
+    </div>
+  </div>`;
 }
 
 // Mirrors the budget summary block on pageFinTenderDetail() — same S.selectedXBudget
@@ -8006,7 +8148,7 @@ function pageFinQuotations(){
 }
 function pageFinQuotationAdd(){
   if(!S.quotationAddForm) S.quotationAddForm = {
-    clientName:'', projectId:'', issueDate:new Date().toISOString().slice(0,10), validUntil:'',
+    customerId:'', customerSearchText:'', projectId:'', issueDate:new Date().toISOString().slice(0,10), validUntil:'',
     amount:'', status:'draft', note:'',
   };
   const f = S.quotationAddForm;
@@ -8019,7 +8161,7 @@ function pageFinQuotationAdd(){
   </div>
   <div class="card" style="padding:20px 22px; max-width:720px;">
     <div class="split">
-      <div class="field"><label>${tr('fin_quotations.client_label')} *</label><input id="qt-client" value="${esc(f.clientName)}" oninput="S.quotationAddForm.clientName=this.value;"></div>
+      ${renderCustomerPickerField('quotationAddForm', 'qt-client', 'qt-client-results', 'fin_quotations.client_label')}
       <div class="field"><label>${tr('ledger.col_project')}</label><select id="qt-project" onchange="S.quotationAddForm.projectId=this.value;">${projectSelectOptions(f.projectId, true)}</select></div>
     </div>
     <div class="split">
@@ -8631,7 +8773,7 @@ function pageApprovalPermissions(){
           <th rowspan="2">${tr('common.col_role')}</th>
           <th colspan="2">${tr('approval_permissions.group_other')}</th>
           <th colspan="8">${tr('approval_permissions.group_doc_approval')}</th>
-          <th colspan="6">${tr('approval_permissions.group_execution')}</th>
+          <th colspan="7">${tr('approval_permissions.group_execution')}</th>
         </tr>
         <tr>
           <th>${tr('approval_permissions.col_permission')}</th>
@@ -8650,10 +8792,11 @@ function pageApprovalPermissions(){
           <th>${tr('approval_permissions.col_submit_goods_receipt')}</th>
           <th>${tr('approval_permissions.col_submit_site_expense')}</th>
           <th>${tr('approval_permissions.col_manage_customer_records')}</th>
+          <th>${tr('approval_permissions.col_manage_bidding')}</th>
         </tr>
       </thead>
       <tbody>
-        ${rows.length===0 ? `<tr><td colspan="19"><div class="empty" style="padding:20px 0;">${tr('users.no_users_yet')}</div></td></tr>` : rows.map(cu=>{
+        ${rows.length===0 ? `<tr><td colspan="20"><div class="empty" style="padding:20px 0;">${tr('users.no_users_yet')}</div></td></tr>` : rows.map(cu=>{
           // ห้าม self-grant/self-revoke (ตรงกับ backend) — ซ่อนปุ่มบนแถวของตัวเอง แม้จะเป็น super_user
           const canManageThisRow = canManage && S.currentUser.id !== cu.id;
           return `
@@ -8677,6 +8820,7 @@ function pageApprovalPermissions(){
             ${permFlagCell(cu, 'can_submit_goods_receipt', canManageThisRow)}
             ${permFlagCell(cu, 'can_submit_site_expense', canManageThisRow)}
             ${permFlagCell(cu, 'can_manage_customer_records', canManageThisRow)}
+            ${permFlagCell(cu, 'can_manage_bidding', canManageThisRow)}
           </tr>`;}).join('')}
       </tbody>
     </table></div>
@@ -12370,6 +12514,10 @@ async function loadDataForPage(){
   // pageFinProjectAdd()'s PM/foreman dropdowns are sourced from DB.employees, same as pageFinLabor()'s.
   if(S.page==='fin_project_add' && S.dataMode!=='demo' && !S.employeesLoaded) await loadRealEmployees();
   if(S.page==='fin_project_add' && S.dataMode!=='demo' && !S.tendersLoaded) await loadRealTenders();
+  // Customer Master (client_customers) — picker บนฟอร์มสร้าง Project/Tender/Quotation ทั้ง 3 หน้า
+  // (fin_tender_add ไม่เคยอยู่ใน PROJECT_DEPENDENT_PAGES ข้างบนมาก่อน เพราะไม่เคยต้องใช้ DB.projects เลย)
+  const CUSTOMER_DEPENDENT_PAGES = ['fin_project_add', 'fin_tender_add', 'fin_quotation_add'];
+  if(CUSTOMER_DEPENDENT_PAGES.includes(S.page) && S.dataMode!=='demo' && !S.customersLoaded) await loadRealCustomers();
   if(S.page==='users' && S.dataMode!=='demo' && !S.customerUsersLoaded) await loadCustomerUsers();
   if(S.page==='conditions' && S.dataMode!=='demo' && !S.approvalConditionsLoaded) await loadApprovalConditions();
   if(S.page==='job_positions' && S.dataMode!=='demo' && !S.jobPositionsLoaded) await loadRealJobPositions();
@@ -12668,6 +12816,8 @@ async function handleAction(act, el){
         canApproveSubcontractBilling: !!data.customer.can_approve_subcontract_billing,
         canSubmitGoodsReceipt: !!data.customer.can_submit_goods_receipt,
         canSubmitSiteExpense: !!data.customer.can_submit_site_expense,
+        canManageCustomerRecords: !!data.customer.can_manage_customer_records,
+        canManageBidding: !!data.customer.can_manage_bidding,
       };
       S.view='dashboard';
       await goToPage('overview');
@@ -14265,11 +14415,12 @@ async function handleAction(act, el){
     const f = S.tenderAddForm;
     const name = (f.name||'').trim();
     if(!name){ toast(tr('common.fill_required_fields'),'err'); return; }
+    if(!f.customerId){ toast(tr('customer_picker.must_select_err'),'err'); return; }
     if(!f.sectorType){ toast(tr('fin_tender_add.sector_type_required_err'),'err'); return; }
     S.tenderSaving = true; render();
     try{
       const data = await apiCall('POST', '/api/customer/tenders', {
-        tenderNo: (f.tenderNo||'').trim(), name, projectOwner: (f.projectOwner||'').trim(),
+        tenderNo: (f.tenderNo||'').trim(), name, customerId: parseInt(f.customerId,10),
         submissionDeadline: f.submissionDeadline||null, estimatedValue: parseFloat(f.estimatedValue)||0,
         note: (f.note||'').trim(),
         projectNo: (f.projectNo||'').trim(), biddingMethod: (f.biddingMethod||'').trim(),
@@ -14679,6 +14830,40 @@ async function handleAction(act, el){
     return;
   }
 
+  // ---- Customer Master picker (fin_project_add/fin_tender_add/fin_quotation_add) ----
+  if(act==='select-customer'){
+    selectCustomerForForm(el.dataset.formKey, el.dataset.id);
+    return;
+  }
+  if(act==='open-customer-quick-add'){
+    const f = S[el.dataset.formKey];
+    S.customerQuickAddForm = {
+      formKey: el.dataset.formKey, resultsElementId: el.dataset.resultsId,
+      name: (f && f.customerSearchText || '').trim(), taxId: '', phone: '', contactPerson: '', saving: false,
+    };
+    render();
+    return;
+  }
+  if(act==='cancel-customer-quick-add'){ S.customerQuickAddForm = null; render(); return; }
+  if(act==='save-customer-quick-add'){
+    const qf = S.customerQuickAddForm;
+    if(qf.saving) return;
+    const name = (qf.name||'').trim();
+    if(!name){ toast(tr('common.fill_required_fields'),'err'); return; }
+    qf.saving = true; render();
+    try{
+      const data = await apiCall('POST', '/api/customer/clients', {
+        name, taxId: (qf.taxId||'').trim(), phone: (qf.phone||'').trim(), contactPerson: (qf.contactPerson||'').trim(),
+      });
+      DB.customers.push(data.customer);
+      selectCustomerForForm(qf.formKey, data.customer.id);
+      toast(tr('customer_picker.quick_add_saved_toast'));
+      S.customerQuickAddForm = null;
+      render();
+    } catch(e){ qf.saving = false; toast(e.message, 'err'); render(); }
+    return;
+  }
+
   if(act==='select-project-tender'){
     S.projectAddForm.tenderResultsOpen = false;
     await onProjectAddTenderChange(el.dataset.id);
@@ -14693,12 +14878,13 @@ async function handleAction(act, el){
     const f = S.projectAddForm;
     const name = (f.name||'').trim();
     if(!name){ toast(tr('common.fill_required_fields'),'err'); return; }
+    if(!f.customerId){ toast(tr('customer_picker.must_select_err'),'err'); return; }
     if(!f.sectorType){ toast(tr('fin_project_add.sector_type_required_err'),'err'); return; }
     if(f.startDate && f.endDate && f.endDate < f.startDate){ toast(tr('fin_project_add.date_order_err'),'err'); return; }
     S.projectSaving = true; render();
     try{
       const project = await apiCall('POST', '/api/customer/projects', {
-        code: (f.code||'').trim(), name, clientName: (f.client||'').trim(),
+        code: (f.code||'').trim(), name, customerId: parseInt(f.customerId,10),
         tenderId: f.tenderId ? parseInt(f.tenderId,10) : null, siteAddress: (f.address||'').trim(),
         startDate: f.startDate||null, expectedEndDate: f.endDate||null,
         budgetAmount: parseFloat(f.sectorType==='government' ? f.budgetAmount : f.budget)||0,
@@ -15439,11 +15625,11 @@ async function handleAction(act, el){
   // ---- Finance: ใบเสนอราคา (Quotations) ----
   if(act==='save-quotation-full'){
     const f = S.quotationAddForm;
-    if(!f.clientName.trim()){ toast(tr('fin_quotations.client_required_err'),'err'); return; }
+    if(!f.customerId){ toast(tr('customer_picker.must_select_err'),'err'); return; }
     if(!f.amount || parseFloat(f.amount)<=0){ toast(tr('fin_quotations.amount_required_err'),'err'); return; }
     try{
       const data = await apiCall('POST', '/api/customer/quotations', {
-        projectId: f.projectId?parseInt(f.projectId,10):null, clientName:f.clientName, issueDate:f.issueDate||null,
+        projectId: f.projectId?parseInt(f.projectId,10):null, customerId: parseInt(f.customerId,10), issueDate:f.issueDate||null,
         validUntil:f.validUntil||null, amount:parseFloat(f.amount), status:f.status, note:f.note,
       });
       DB.quotations.push(mapRealQuotation(data.quotation));

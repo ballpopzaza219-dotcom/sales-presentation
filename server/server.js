@@ -1682,6 +1682,22 @@ function requireCanApproveBudget(req, res, next) {
   next();
 }
 
+// migration 0033 — เดิมทุก endpoint เขียน (POST/PUT/DELETE) ของ Project/Tender/Budget/Quotation มีแค่
+// requireCustomerAuth เท่านั้น ไม่เคยเช็ค role/permission เลย (การจำกัดเฉพาะ super_user เป็นแค่การซ่อนปุ่ม
+// ฝั่ง frontend — ดูคอมเมนต์ใน migration 0033) — ต่างจาก canApproveBudget ข้างบนที่ไม่มี super_user
+// shortcut (ออกแบบแยกต่างหากเพื่อบังคับ segregation-of-duties แม้กับ super_user) ฟังก์ชันนี้ตั้งใจให้มี
+// super_user shortcut ตรงตามโมเดลสิทธิ์ที่ตกลงไว้ (super_user ทำได้ทุกอย่างเสมอ, flag เป็นตัวเสริมให้คนอื่น)
+// เหมือน can_manage_po/can_manage_customer_records ทุกประการ
+function canManageBidding(customer) {
+  return customer.role === 'super_user' || customer.can_manage_bidding === true;
+}
+function requireCanManageBidding(req, res, next) {
+  if (!canManageBidding(req.customer)) {
+    return res.status(403).json({ error: 'เฉพาะผู้ที่ได้รับสิทธิ์จัดการงานประมูล/โครงการเท่านั้นที่ทำรายการนี้ได้' });
+  }
+  next();
+}
+
 // Lazily built once — createTransport itself doesn't touch the network, so this is cheap to defer
 // until the first notification actually needs sending, and it lets the server boot fine even when
 // GMAIL_USER/GMAIL_APP_PASSWORD aren't set (email just gets skipped, in-app notifications still work).
@@ -2814,7 +2830,7 @@ app.put('/api/customer/users/:id/budget-approval-permission', requireCustomerAut
 // (hasCustomerManagePermission() ด้านล่าง, POST+PUT /api/customer/clients) ตาม pattern เดียวกับ
 // can_manage_po/can_manage_petty_cash_fund/can_settle_cash ข้างบนทุกประการ
 const MANAGE_PERMISSION_FLAG_COLUMNS = new Set([
-  'can_manage_po', 'can_manage_petty_cash_fund', 'can_settle_cash', 'can_manage_customer_records',
+  'can_manage_po', 'can_manage_petty_cash_fund', 'can_settle_cash', 'can_manage_customer_records', 'can_manage_bidding',
   'can_approve_budget', 'can_approve_pr', 'can_approve_po_wo', 'can_approve_petty_cash', 'can_approve_advance', 'can_approve_other',
   'can_certify_progress', 'can_approve_progress', 'can_approve_subcontract_billing',
   'can_submit_goods_receipt', 'can_submit_site_expense',
@@ -6414,7 +6430,7 @@ app.get('/api/customer/projects/:id', requireCustomerAuth, async (req, res) => {
   res.json({ project: serializeProject(r.rows[0]), installments: installments.rows.map(serializeProjectInstallment) });
 });
 
-app.post('/api/customer/projects', requireCustomerAuth, async (req, res) => {
+app.post('/api/customer/projects', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const companyId = req.customer.company_id;
   const {
     code, name, clientName, customerId, siteAddress, startDate, expectedEndDate, budgetAmount,
@@ -6886,7 +6902,7 @@ app.get('/api/customer/projects/:projectId/tasks', requireCustomerAuth, async (r
 // Per-task sum validation (แต่ละแถวรวมกันได้ไม่เกิน 100%) happens here, across ALL rows for that task in
 // the submitted payload — not per-row — since a single cell is never over 100 on its own (the CHECK
 // constraint on the column already guards that), it's the SUM across a task's period row that matters.
-app.put('/api/customer/projects/:projectId/tasks/periods', requireCustomerAuth, async (req, res) => {
+app.put('/api/customer/projects/:projectId/tasks/periods', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const companyId = req.customer.company_id;
   const projectId = parseInt(req.params.projectId, 10);
   if (!(await requireOwnedProject(companyId, projectId))) return res.status(404).json({ error: 'ไม่พบโครงการ' });
@@ -6990,7 +7006,7 @@ app.get('/api/customer/projects/:projectId/available-boq-items-for-task', requir
   });
 });
 
-app.post('/api/customer/projects/:projectId/tasks', requireCustomerAuth, async (req, res) => {
+app.post('/api/customer/projects/:projectId/tasks', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const companyId = req.customer.company_id;
   const projectId = parseInt(req.params.projectId, 10);
   if (!(await requireOwnedProject(companyId, projectId))) return res.status(404).json({ error: 'ไม่พบโครงการ' });
@@ -7047,7 +7063,7 @@ app.post('/api/customer/projects/:projectId/tasks', requireCustomerAuth, async (
 // { tasks: [{ sourceBoqItemId, durationDays }, ...] }. All rows insert as top-level (no parentTaskId —
 // the batch table has no parent picker) in one transaction, with wbs_code/CPM schedule recomputed once
 // at the end rather than per-row.
-app.post('/api/customer/projects/:projectId/tasks/batch', requireCustomerAuth, async (req, res) => {
+app.post('/api/customer/projects/:projectId/tasks/batch', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const companyId = req.customer.company_id;
   const projectId = parseInt(req.params.projectId, 10);
   if (!(await requireOwnedProject(companyId, projectId))) return res.status(404).json({ error: 'ไม่พบโครงการ' });
@@ -7138,7 +7154,7 @@ app.post('/api/customer/projects/:projectId/tasks/batch', requireCustomerAuth, a
 // order, so ":taskId" would otherwise greedily match the literal path segment "reorder" too (this
 // was a real bug caught by project-tasks-crud.regression.js: PUT .../tasks/reorder was hitting the
 // :taskId handler with taskId="reorder", which then failed parseInt("reorder") as invalid input).
-app.put('/api/customer/projects/:projectId/tasks/reorder', requireCustomerAuth, async (req, res) => {
+app.put('/api/customer/projects/:projectId/tasks/reorder', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const companyId = req.customer.company_id;
   const projectId = parseInt(req.params.projectId, 10);
   if (!(await requireOwnedProject(companyId, projectId))) return res.status(404).json({ error: 'ไม่พบโครงการ' });
@@ -7169,7 +7185,7 @@ app.put('/api/customer/projects/:projectId/tasks/reorder', requireCustomerAuth, 
   }
 });
 
-app.put('/api/customer/projects/:projectId/tasks/:taskId', requireCustomerAuth, async (req, res) => {
+app.put('/api/customer/projects/:projectId/tasks/:taskId', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const companyId = req.customer.company_id;
   const projectId = parseInt(req.params.projectId, 10);
   const taskId = parseInt(req.params.taskId, 10);
@@ -7233,7 +7249,7 @@ app.put('/api/customer/projects/:projectId/tasks/:taskId', requireCustomerAuth, 
   }
 });
 
-app.delete('/api/customer/projects/:projectId/tasks/:taskId', requireCustomerAuth, async (req, res) => {
+app.delete('/api/customer/projects/:projectId/tasks/:taskId', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const companyId = req.customer.company_id;
   const projectId = parseInt(req.params.projectId, 10);
   const taskId = parseInt(req.params.taskId, 10);
@@ -7260,7 +7276,7 @@ app.delete('/api/customer/projects/:projectId/tasks/:taskId', requireCustomerAut
   }
 });
 
-app.post('/api/customer/projects/:projectId/tasks/dependencies', requireCustomerAuth, async (req, res) => {
+app.post('/api/customer/projects/:projectId/tasks/dependencies', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const companyId = req.customer.company_id;
   const projectId = parseInt(req.params.projectId, 10);
   if (!(await requireOwnedProject(companyId, projectId))) return res.status(404).json({ error: 'ไม่พบโครงการ' });
@@ -7308,7 +7324,7 @@ app.post('/api/customer/projects/:projectId/tasks/dependencies', requireCustomer
   }
 });
 
-app.delete('/api/customer/projects/:projectId/tasks/dependencies/:depId', requireCustomerAuth, async (req, res) => {
+app.delete('/api/customer/projects/:projectId/tasks/dependencies/:depId', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const companyId = req.customer.company_id;
   const projectId = parseInt(req.params.projectId, 10);
   const depId = parseInt(req.params.depId, 10);
@@ -7350,7 +7366,7 @@ app.delete('/api/customer/projects/:projectId/tasks/dependencies/:depId', requir
 // UPSERTs baseline_start/baseline_end = current start_date/end_date for every task in the project —
 // a later call always overwrites the previous baseline (see schema.sql Phase-1 decision #4), not an
 // append-only history.
-app.post('/api/customer/projects/:projectId/tasks/set-baseline', requireCustomerAuth, async (req, res) => {
+app.post('/api/customer/projects/:projectId/tasks/set-baseline', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const companyId = req.customer.company_id;
   const projectId = parseInt(req.params.projectId, 10);
   if (!(await requireOwnedProject(companyId, projectId))) return res.status(404).json({ error: 'ไม่พบโครงการ' });
@@ -7611,7 +7627,7 @@ app.get('/api/customer/tender-overview', requireCustomerAuth, async (req, res) =
   });
 });
 
-app.post('/api/customer/tenders', requireCustomerAuth, async (req, res) => {
+app.post('/api/customer/tenders', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const companyId = req.customer.company_id;
   const {
     tenderNo, name, projectOwner, customerId, submissionDeadline, estimatedValue, note,
@@ -7699,7 +7715,7 @@ app.post('/api/customer/tenders', requireCustomerAuth, async (req, res) => {
   }
 });
 
-app.put('/api/customer/tenders/:id', requireCustomerAuth, async (req, res) => {
+app.put('/api/customer/tenders/:id', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const companyId = req.customer.company_id;
   const own = await pool.query('SELECT 1 FROM client_tenders WHERE id=$1 AND company_id=$2', [id, companyId]);
@@ -7734,7 +7750,7 @@ app.put('/api/customer/tenders/:id', requireCustomerAuth, async (req, res) => {
 // specifically triggers business rule #1 — the BD -> PM budget carry-forward — for every project
 // already linked to this tender. That side effect belongs with an explicit state-change action,
 // not something that could fire from an unrelated field edit.
-app.post('/api/customer/tenders/:id/status', requireCustomerAuth, async (req, res) => {
+app.post('/api/customer/tenders/:id/status', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const companyId = req.customer.company_id;
   const { status } = req.body || {};
@@ -7917,7 +7933,7 @@ app.get('/api/customer/budgets/:id/revisions/:revisionId', requireCustomerAuth, 
 // via import-boq or the items PUT below, then submitted for approval — matches ข้อ 5 (BD Initial
 // Budget) / ข้อ 6 (PM Initial Project Budget) as two separate calls to this same endpoint, keyed by
 // whichever of tenderId/projectId is given.
-app.post('/api/customer/budgets', requireCustomerAuth, async (req, res) => {
+app.post('/api/customer/budgets', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const companyId = req.customer.company_id;
   const { tenderId, projectId } = req.body || {};
   if (!tenderId && !projectId) return res.status(400).json({ error: 'กรุณาระบุ tenderId หรือ projectId' });
@@ -8448,7 +8464,7 @@ app.get('/api/customer/boq-template', requireCustomerAuth, async (req, res) => {
 
 // Tab A preview — parses and validates but writes nothing yet (see requireDraftBudgetRevision +
 // the unified confirm route below for the actual write).
-app.post('/api/customer/budgets/:id/boq-preview', requireCustomerAuth, uploadBoqMiddleware, async (req, res) => {
+app.post('/api/customer/budgets/:id/boq-preview', requireCustomerAuth, requireCanManageBidding, uploadBoqMiddleware, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const companyId = req.customer.company_id;
   if (!req.file) return res.status(400).json({ error: 'กรุณาเลือกไฟล์ Excel BOQ (.xlsx ขนาดไม่เกิน 5MB)' });
@@ -8467,7 +8483,7 @@ app.post('/api/customer/budgets/:id/boq-preview', requireCustomerAuth, uploadBoq
 // raw rows, so the frontend can show a delete-rows/delete-columns/delete-sheets grid per sheet before
 // the user ever gets to mapping (Step 2), then populate the column-mapping dropdowns (Step 3) from
 // whatever survives.
-app.post('/api/customer/budgets/:id/boq-inspect', requireCustomerAuth, uploadBoqMiddleware, async (req, res) => {
+app.post('/api/customer/budgets/:id/boq-inspect', requireCustomerAuth, requireCanManageBidding, uploadBoqMiddleware, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const companyId = req.customer.company_id;
   if (!req.file) return res.status(400).json({ error: 'กรุณาเลือกไฟล์ Excel BOQ (.xlsx ขนาดไม่เกิน 5MB)' });
@@ -8492,7 +8508,7 @@ app.post('/api/customer/budgets/:id/boq-inspect', requireCustomerAuth, uploadBoq
 // returns a preview (same shape as Tab A's boq-preview: items[] carrying auto-detected isGroup/
 // isSummaryRow flags the user can still check/uncheck before confirming, plus summaryRowWarnings —
 // see computeBoqSummaryRowWarnings) before confirming.
-app.post('/api/customer/budgets/:id/boq-preview-mapped', requireCustomerAuth, uploadBoqMiddleware, async (req, res) => {
+app.post('/api/customer/budgets/:id/boq-preview-mapped', requireCustomerAuth, requireCanManageBidding, uploadBoqMiddleware, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const companyId = req.customer.company_id;
   if (!req.file) return res.status(400).json({ error: 'กรุณาเลือกไฟล์ Excel BOQ (.xlsx ขนาดไม่เกิน 5MB)' });
@@ -8548,7 +8564,7 @@ async function insertFreshBoqItems(client, companyId, revisionId, built, opts) {
 // checkboxes the user adjusted afterward) — never a raw file — so there is exactly one write path
 // regardless of which tab the user started from. Still re-validates every row server-side via the
 // same buildBoqRow used by both parsers (never trusts the client's numbers/flags at face value).
-app.post('/api/customer/budgets/:id/import-boq', requireCustomerAuth, async (req, res) => {
+app.post('/api/customer/budgets/:id/import-boq', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const companyId = req.customer.company_id;
   const { items } = req.body || {};
@@ -8600,7 +8616,7 @@ app.post('/api/customer/budgets/:id/import-boq', requireCustomerAuth, async (req
 // must stay editable before submit, same restriction as import: draft only). Runs every row through
 // the same buildBoqRow validator as the two import modes, so a manually-added row is held to the
 // same "every row needs a name (รายการงาน); qty/unit price default to 0 when blank" standard.
-app.put('/api/customer/budgets/:id/items', requireCustomerAuth, async (req, res) => {
+app.put('/api/customer/budgets/:id/items', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const companyId = req.customer.company_id;
   const { items } = req.body || {};
@@ -8672,7 +8688,7 @@ app.post('/api/customer/boq-import-profiles', requireCustomerAuth, async (req, r
 
 // ข้อ 8: draft -> pending_approval. Requires at least one BOQ line so nothing empty ever reaches
 // an approver.
-app.post('/api/customer/budgets/:id/submit', requireCustomerAuth, async (req, res) => {
+app.post('/api/customer/budgets/:id/submit', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const companyId = req.customer.company_id;
   const budgetRes = await pool.query('SELECT 1 FROM client_budgets WHERE id=$1 AND company_id=$2', [id, companyId]);
@@ -8764,7 +8780,7 @@ async function copyBoqItems(client, companyId, newRevisionId, sourceItems) {
 // approved one) and always requires a reason — no auto-approve regardless of how small the change.
 // Branches off client_budgets.current_revision_id (the last APPROVED revision), never off a
 // rejected one, matching rule #2's "rejected revisions are a dead end" rule exactly.
-app.post('/api/customer/budgets/:id/revise', requireCustomerAuth, async (req, res) => {
+app.post('/api/customer/budgets/:id/revise', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const companyId = req.customer.company_id;
   const { reason } = req.body || {};
@@ -15593,7 +15609,7 @@ app.get('/api/customer/quotations/:id', requireCustomerAuth, async (req, res) =>
   res.json({ quotation: serializeQuotation(r.rows[0]) });
 });
 
-app.post('/api/customer/quotations', requireCustomerAuth, async (req, res) => {
+app.post('/api/customer/quotations', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const companyId = req.customer.company_id;
   const { quotationNo, projectId, clientName, customerId, issueDate, validUntil, amount, status, note } = req.body || {};
   // customerId ใหม่ (migration 0025) — เหตุผลเดียวกับ POST /api/customer/projects/tenders: optional เพื่อ
@@ -15644,7 +15660,7 @@ app.post('/api/customer/quotations', requireCustomerAuth, async (req, res) => {
   }
 });
 
-app.put('/api/customer/quotations/:id/status', requireCustomerAuth, async (req, res) => {
+app.put('/api/customer/quotations/:id/status', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const companyId = req.customer.company_id;
   const { status } = req.body || {};
@@ -15659,7 +15675,7 @@ app.put('/api/customer/quotations/:id/status', requireCustomerAuth, async (req, 
   res.json({ quotation: serializeQuotation(full.rows[0]) });
 });
 
-app.delete('/api/customer/quotations/:id', requireCustomerAuth, async (req, res) => {
+app.delete('/api/customer/quotations/:id', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const r = await pool.query('DELETE FROM client_quotations WHERE id=$1 AND company_id=$2', [id, req.customer.company_id]);
   if (r.rowCount === 0) return res.status(404).json({ error: 'ไม่พบใบเสนอราคา' });
