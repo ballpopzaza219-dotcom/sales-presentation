@@ -94,8 +94,9 @@ function daysFromNow(n) {
     // one in 10 — outside the 7-day window), then a budget on the near-deadline tender, submitted for
     // approval.
     const tenderNear = await page.evaluate(async (deadline) => {
+      const cust = await apiCall('POST', '/api/customer/clients', { name: 'ลูกค้าทดสอบ ใกล้ปิดซอง' });
       const data = await apiCall('POST', '/api/customer/tenders', {
-        tenderNo: '', name: 'ทดสอบ dashboard ใกล้ปิดซอง', projectOwner: '', submissionDeadline: deadline,
+        tenderNo: '', name: 'ทดสอบ dashboard ใกล้ปิดซอง', customerId: cust.customer.id, submissionDeadline: deadline,
         estimatedValue: 1000000, note: '', projectNo: '', biddingMethod: '', sectorType: 'private',
         budgetAmount: 0, referencePrice: 0, location: '', phoneNumber: '', siteCoordinates: '',
         submissionOpenDate: null, submissionConditions: '', installments: [],
@@ -103,8 +104,9 @@ function daysFromNow(n) {
       return data.tender;
     }, daysFromNow(3));
     const tenderFar = await page.evaluate(async (deadline) => {
+      const cust = await apiCall('POST', '/api/customer/clients', { name: 'ลูกค้าทดสอบ ไกลเกิน 7 วัน' });
       const data = await apiCall('POST', '/api/customer/tenders', {
-        tenderNo: '', name: 'ทดสอบ dashboard ไกลเกิน 7 วัน', projectOwner: '', submissionDeadline: deadline,
+        tenderNo: '', name: 'ทดสอบ dashboard ไกลเกิน 7 วัน', customerId: cust.customer.id, submissionDeadline: deadline,
         estimatedValue: 500000, note: '', projectNo: '', biddingMethod: '', sectorType: 'private',
         budgetAmount: 0, referencePrice: 0, location: '', phoneNumber: '', siteCoordinates: '',
         submissionOpenDate: null, submissionConditions: '', installments: [],

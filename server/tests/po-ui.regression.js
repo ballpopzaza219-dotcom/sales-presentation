@@ -52,7 +52,7 @@ async function makeApprovedPrWithItem(companyId, projectId, material, qty, unitP
   const createdPoIds = [];
   try {
     console.log('Ensuring fixtures...');
-    await setup();
+    const { clientCustomerId } = await setup();
     const companyRes = await pool.query('SELECT code FROM customer_companies WHERE id=$1', [COMPANY_A_ID]);
     const companyCode = companyRes.rows[0].code;
 
@@ -63,7 +63,7 @@ async function makeApprovedPrWithItem(companyId, projectId, material, qty, unitP
     await httpLogin('fx_procurement', companyCode);
 
     console.log('Creating prerequisite project + approved PR (with a real remaining qty to consume) via HTTP...');
-    const proj = await call('fx_maker', 'POST', '/api/customer/projects', { name: 'E2E PO โครงการ', sectorType: 'private', status: 'in_progress' });
+    const proj = await call('fx_maker', 'POST', '/api/customer/projects', { name: 'E2E PO โครงการ', customerId: clientCustomerId, sectorType: 'private', status: 'in_progress' });
     createdProjectIds.push(proj.project.id);
     const approvedPr = await makeApprovedPrWithItem(COMPANY_A_ID, proj.project.id, 'ปูนซีเมนต์ ถุง 50 กก.', 100, 165);
     createdPrIds.push(approvedPr.id);

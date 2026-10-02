@@ -6343,10 +6343,9 @@ app.post('/api/customer/labor-costs/:id/mark-paid', requireCustomerAuth, async (
 // ---------------- Customer: client ledger — โครงการ (projects) ----------------
 function serializeProject(row) {
   return {
-    id: row.id, code: row.code, name: row.name, clientName: row.client_name,
-    // customerId/customerName ใหม่ (migration 0025, blueprint ข้อ 9) — clientName (free text เดิม) ยังอยู่
-    // คู่กันไปก่อนจนกว่า migration 0026 จะ DROP ทิ้ง (ดู pr-module-known-limitations.md) — ถ้ามี customerId
-    // ผูกอยู่ clientName จะถูก sync ให้ตรงกับชื่อจริงใน client_customers เสมอตอนบันทึก (ดู POST ด้านล่าง)
+    id: row.id, code: row.code, name: row.name,
+    // customerId/customerName (migration 0025) — client_name free-text เดิมถูก DROP ไปแล้วใน migration
+    // 0034 (customer_id บังคับ required ตั้งแต่นั้น) customerName มาจาก join client_customers เสมอ
     customerId: row.customer_id, customerName: row.customer_name || null,
     siteAddress: row.site_address,
     startDate: row.start_date, expectedEndDate: row.expected_end_date,
@@ -6364,7 +6363,7 @@ function serializeProject(row) {
 }
 
 const CLIENT_PROJECT_SELECT = `
-  SELECT cp.id, cp.code, cp.name, cp.client_name, cp.customer_id, cc.name AS customer_name, cp.site_address,
+  SELECT cp.id, cp.code, cp.name, cp.customer_id, cc.name AS customer_name, cp.site_address,
     to_char(cp.start_date,'YYYY-MM-DD') AS start_date, to_char(cp.expected_end_date,'YYYY-MM-DD') AS expected_end_date,
     cp.budget_amount, cp.default_retention_percent,
     cp.project_manager_employee_id, pm.full_name AS pm_name,
@@ -6433,7 +6432,7 @@ app.get('/api/customer/projects/:id', requireCustomerAuth, async (req, res) => {
 app.post('/api/customer/projects', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const companyId = req.customer.company_id;
   const {
-    code, name, clientName, customerId, siteAddress, startDate, expectedEndDate, budgetAmount,
+    code, name, customerId, siteAddress, startDate, expectedEndDate, budgetAmount,
     defaultRetentionPercent, projectManagerEmployeeId, foremanEmployeeId, tenderId, status, note,
     biddingMethod, sectorType, referencePrice, phoneNumber, siteCoordinates,
     submissionOpenDate, submissionConditions, installments,
@@ -6442,19 +6441,17 @@ app.post('/api/customer/projects', requireCustomerAuth, requireCanManageBidding,
   if (startDate && expectedEndDate && expectedEndDate < startDate) {
     return res.status(400).json({ error: 'วันที่คาดว่าจะแล้วเสร็จต้องไม่มาก่อนวันที่เริ่มโครงการ' });
   }
-  // customerId ใหม่ (migration 0025) — optional เพื่อไม่ทุบ frontend เดิมที่ยังส่งแค่ clientName (free text)
-  // อยู่ ถ้าระบุมา ต้องเป็นลูกค้าจริงของบริษัทนี้ และ client_name จะถูก sync ให้ตรงกับชื่อจริงเสมอ (ไม่ใช้
-  // ค่า clientName ที่อาจส่งมาคู่กันแบบไม่ตรงกัน — customerId คือ source of truth เมื่อระบุมา)
-  let safeCustomerId = null;
-  let finalClientName = (clientName || '').trim();
-  if (customerId !== undefined && customerId !== null && customerId !== '') {
-    const parsedCustomerId = parseInt(customerId, 10);
-    if (!Number.isInteger(parsedCustomerId)) return res.status(400).json({ error: 'รหัสลูกค้าไม่ถูกต้อง' });
-    const custCheck = await pool.query('SELECT name FROM client_customers WHERE id=$1 AND company_id=$2', [parsedCustomerId, companyId]);
-    if (custCheck.rowCount === 0) return res.status(400).json({ error: 'ไม่พบลูกค้านี้ในบริษัทของคุณ' });
-    safeCustomerId = parsedCustomerId;
-    finalClientName = custCheck.rows[0].name;
+  // customerId บังคับเสมอตั้งแต่ migration 0034 (DROP client_name เดิม) — ก่อนหน้านี้ optional เพื่อไม่ทุบ
+  // frontend เก่าที่ยังส่งแค่ clientName (free text) อยู่ ตอนนี้ pr-system.html บังคับเลือกผ่าน Customer
+  // Master picker ครบทุกจุดแล้ว จึงต้อง validate เป็น required ที่ชั้น API ด้วย ไม่พึ่ง frontend ฝ่ายเดียว
+  if (customerId === undefined || customerId === null || customerId === '') {
+    return res.status(400).json({ error: 'กรุณาเลือกลูกค้า/เจ้าของโครงการ' });
   }
+  const parsedCustomerId = parseInt(customerId, 10);
+  if (!Number.isInteger(parsedCustomerId)) return res.status(400).json({ error: 'รหัสลูกค้าไม่ถูกต้อง' });
+  const custCheck = await pool.query('SELECT 1 FROM client_customers WHERE id=$1 AND company_id=$2', [parsedCustomerId, companyId]);
+  if (custCheck.rowCount === 0) return res.status(400).json({ error: 'ไม่พบลูกค้านี้ในบริษัทของคุณ' });
+  const safeCustomerId = parsedCustomerId;
   // เหมือน client_tenders เป๊ะ: sector_type ตัดสินว่า reference_price มีผลหรือไม่ (budget_amount ใช้
   // เป็นค่าเดียวกันทั้งสองกรณีอยู่แล้ว ไม่ต้องมี field มูลค่างานแยกต่างหากแบบ estimated_value ของ tender)
   if (!PROJECT_SECTOR_TYPES.includes(sectorType)) {
@@ -6487,11 +6484,11 @@ app.post('/api/customer/projects', requireCustomerAuth, requireCanManageBidding,
     // several near-identical projects. Hand back the existing one instead of inserting a duplicate.
     const recentDup = await client.query(
       `SELECT id FROM client_projects
-       WHERE company_id=$1 AND created_by=$2 AND name=$3 AND client_name=$4
+       WHERE company_id=$1 AND created_by=$2 AND name=$3 AND customer_id=$4
          AND budget_amount=$5 AND tender_id IS NOT DISTINCT FROM $6 AND note=$7
          AND created_at > now() - interval '10 seconds'
        ORDER BY id ASC LIMIT 1`,
-      [companyId, req.customer.id, name.trim(), finalClientName,
+      [companyId, req.customer.id, name.trim(), safeCustomerId,
         Number(budgetAmount) || 0, tenderId || null, (note || '').trim()]
     );
     if (recentDup.rowCount > 0) {
@@ -6504,12 +6501,12 @@ app.post('/api/customer/projects', requireCustomerAuth, requireCanManageBidding,
     const dup = await client.query('SELECT 1 FROM client_projects WHERE company_id=$1 AND code=$2', [companyId, finalCode]);
     if (dup.rowCount > 0) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'รหัสโครงการนี้มีอยู่แล้ว' }); }
     const insert = await client.query(
-      `INSERT INTO client_projects (company_id, code, name, client_name, customer_id, site_address, start_date, expected_end_date,
+      `INSERT INTO client_projects (company_id, code, name, customer_id, site_address, start_date, expected_end_date,
          budget_amount, default_retention_percent, project_manager_employee_id, foreman_employee_id, tender_id, status, note, created_by,
          bidding_method, sector_type, reference_price, phone_number, site_coordinates,
          submission_open_date, submission_conditions, installment_count)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) RETURNING id`,
-      [companyId, finalCode, name.trim(), finalClientName, safeCustomerId, (siteAddress || '').trim(),
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) RETURNING id`,
+      [companyId, finalCode, name.trim(), safeCustomerId, (siteAddress || '').trim(),
        startDate || null, expectedEndDate || null, Number(budgetAmount) || 0,
        (defaultRetentionPercent !== undefined && defaultRetentionPercent !== null && defaultRetentionPercent !== '') ? Number(defaultRetentionPercent) : null,
        projectManagerEmployeeId || null, foremanEmployeeId || null, tenderId || null, safeStatus, (note || '').trim(), req.customer.id,
@@ -7405,8 +7402,9 @@ app.post('/api/customer/projects/:projectId/tasks/set-baseline', requireCustomer
 // ---------------- BD: Tender ----------------
 function serializeTender(row) {
   return {
-    id: row.id, tenderNo: row.tender_no, name: row.name, projectOwner: row.project_owner,
-    // customerId/customerName ใหม่ (migration 0025) — ดูคอมเมนต์เดียวกันที่ serializeProject
+    id: row.id, tenderNo: row.tender_no, name: row.name,
+    // customerId/customerName (migration 0025) — project_owner free-text เดิมถูก DROP ไปแล้วใน
+    // migration 0034 — ดูคอมเมนต์เดียวกันที่ serializeProject
     customerId: row.customer_id, customerName: row.customer_name || null,
     submissionDeadline: row.submission_deadline, estimatedValue: Number(row.estimated_value),
     status: row.status, note: row.note, createdBy: row.created_by, createdAt: row.created_at,
@@ -7419,7 +7417,7 @@ function serializeTender(row) {
   };
 }
 const CLIENT_TENDER_SELECT = `
-  SELECT t.id, t.tender_no, t.name, t.project_owner, t.customer_id, cc.name AS customer_name,
+  SELECT t.id, t.tender_no, t.name, t.customer_id, cc.name AS customer_name,
     to_char(t.submission_deadline,'YYYY-MM-DD') AS submission_deadline,
     t.estimated_value, t.status, t.note, t.created_by, t.created_at,
     t.project_no, t.bidding_method, t.sector_type, t.budget_amount, t.reference_price, t.location, t.phone_number,
@@ -7630,24 +7628,22 @@ app.get('/api/customer/tender-overview', requireCustomerAuth, async (req, res) =
 app.post('/api/customer/tenders', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const companyId = req.customer.company_id;
   const {
-    tenderNo, name, projectOwner, customerId, submissionDeadline, estimatedValue, note,
+    tenderNo, name, customerId, submissionDeadline, estimatedValue, note,
     projectNo, biddingMethod, sectorType, budgetAmount, referencePrice,
     location, phoneNumber, siteCoordinates, submissionOpenDate, submissionConditions, installments,
     initialRetentionPercent,
   } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'กรุณากรอกชื่อ Tender' });
-  // customerId ใหม่ (migration 0025) — ดูเหตุผลเดียวกับ POST /api/customer/projects (optional, sync
-  // project_owner ให้ตรงกับชื่อจริงเสมอเมื่อระบุ customerId มา)
-  let safeCustomerId = null;
-  let finalProjectOwner = (projectOwner || '').trim();
-  if (customerId !== undefined && customerId !== null && customerId !== '') {
-    const parsedCustomerId = parseInt(customerId, 10);
-    if (!Number.isInteger(parsedCustomerId)) return res.status(400).json({ error: 'รหัสลูกค้าไม่ถูกต้อง' });
-    const custCheck = await pool.query('SELECT name FROM client_customers WHERE id=$1 AND company_id=$2', [parsedCustomerId, companyId]);
-    if (custCheck.rowCount === 0) return res.status(400).json({ error: 'ไม่พบลูกค้านี้ในบริษัทของคุณ' });
-    safeCustomerId = parsedCustomerId;
-    finalProjectOwner = custCheck.rows[0].name;
+  // customerId บังคับเสมอตั้งแต่ migration 0034 (DROP project_owner เดิม) — ดูเหตุผลเดียวกับ POST
+  // /api/customer/projects
+  if (customerId === undefined || customerId === null || customerId === '') {
+    return res.status(400).json({ error: 'กรุณาเลือกลูกค้า/หน่วยงานเจ้าของโครงการ' });
   }
+  const parsedCustomerId = parseInt(customerId, 10);
+  if (!Number.isInteger(parsedCustomerId)) return res.status(400).json({ error: 'รหัสลูกค้าไม่ถูกต้อง' });
+  const custCheck = await pool.query('SELECT 1 FROM client_customers WHERE id=$1 AND company_id=$2', [parsedCustomerId, companyId]);
+  if (custCheck.rowCount === 0) return res.status(400).json({ error: 'ไม่พบลูกค้านี้ในบริษัทของคุณ' });
+  const safeCustomerId = parsedCustomerId;
   // ภาครัฐ/เอกชน decides which of budget_amount/reference_price vs estimated_value actually applies
   // (see the schema.sql comment on why there's no separate contract_value column) — required so the
   // form's conditional fields always have somewhere unambiguous to go.
@@ -7674,11 +7670,11 @@ app.post('/api/customer/tenders', requireCustomerAuth, requireCanManageBidding, 
     // last 10 seconds, hand back that existing one instead of inserting a duplicate.
     const recentDup = await client.query(
       `SELECT id FROM client_tenders
-       WHERE company_id=$1 AND created_by=$2 AND name=$3 AND project_owner=$4
+       WHERE company_id=$1 AND created_by=$2 AND name=$3 AND customer_id=$4
          AND estimated_value=$5 AND submission_deadline IS NOT DISTINCT FROM $6 AND note=$7
          AND created_at > now() - interval '10 seconds'
        ORDER BY id ASC LIMIT 1`,
-      [companyId, req.customer.id, name.trim(), finalProjectOwner,
+      [companyId, req.customer.id, name.trim(), safeCustomerId,
         finalEstimatedValue, submissionDeadline || null, (note || '').trim()]
     );
     if (recentDup.rowCount > 0) {
@@ -7691,11 +7687,11 @@ app.post('/api/customer/tenders', requireCustomerAuth, requireCanManageBidding, 
     const dup = await client.query('SELECT 1 FROM client_tenders WHERE company_id=$1 AND tender_no=$2', [companyId, finalNo]);
     if (dup.rowCount > 0) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'เลขที่ Tender นี้มีอยู่แล้ว' }); }
     const insert = await client.query(
-      `INSERT INTO client_tenders (company_id, tender_no, name, project_owner, customer_id, submission_deadline, estimated_value, note, created_by,
+      `INSERT INTO client_tenders (company_id, tender_no, name, customer_id, submission_deadline, estimated_value, note, created_by,
          project_no, bidding_method, sector_type, budget_amount, reference_price, location, phone_number, site_coordinates,
          submission_open_date, submission_conditions, installment_count, initial_retention_percent)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING id`,
-      [companyId, finalNo, name.trim(), finalProjectOwner, safeCustomerId, submissionDeadline || null, finalEstimatedValue, (note || '').trim(), req.customer.id,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id`,
+      [companyId, finalNo, name.trim(), safeCustomerId, submissionDeadline || null, finalEstimatedValue, (note || '').trim(), req.customer.id,
         (projectNo || '').trim(), (biddingMethod || '').trim(), sectorType, finalBudgetAmount, finalReferencePrice,
         (location || '').trim(), (phoneNumber || '').trim(), (siteCoordinates || '').trim(),
         submissionOpenDate || null, (submissionConditions || '').trim(), Array.isArray(installments) ? installments.length : 0,
@@ -7720,25 +7716,23 @@ app.put('/api/customer/tenders/:id', requireCustomerAuth, requireCanManageBiddin
   const companyId = req.customer.company_id;
   const own = await pool.query('SELECT 1 FROM client_tenders WHERE id=$1 AND company_id=$2', [id, companyId]);
   if (own.rowCount === 0) return res.status(404).json({ error: 'ไม่พบ Tender' });
-  const { name, projectOwner, customerId, submissionDeadline, estimatedValue, note } = req.body || {};
+  const { name, customerId, submissionDeadline, estimatedValue, note } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'กรุณากรอกชื่อ Tender' });
-  // customerId ใหม่ (migration 0025) — เหตุผลเดียวกับ POST ด้านบน
-  let safeCustomerId = null;
-  let finalProjectOwner = (projectOwner || '').trim();
-  if (customerId !== undefined && customerId !== null && customerId !== '') {
-    const parsedCustomerId = parseInt(customerId, 10);
-    if (!Number.isInteger(parsedCustomerId)) return res.status(400).json({ error: 'รหัสลูกค้าไม่ถูกต้อง' });
-    const custCheck = await pool.query('SELECT name FROM client_customers WHERE id=$1 AND company_id=$2', [parsedCustomerId, companyId]);
-    if (custCheck.rowCount === 0) return res.status(400).json({ error: 'ไม่พบลูกค้านี้ในบริษัทของคุณ' });
-    safeCustomerId = parsedCustomerId;
-    finalProjectOwner = custCheck.rows[0].name;
+  // customerId บังคับเสมอตั้งแต่ migration 0034 — เหตุผลเดียวกับ POST ด้านบน
+  if (customerId === undefined || customerId === null || customerId === '') {
+    return res.status(400).json({ error: 'กรุณาเลือกลูกค้า/หน่วยงานเจ้าของโครงการ' });
   }
+  const parsedCustomerId = parseInt(customerId, 10);
+  if (!Number.isInteger(parsedCustomerId)) return res.status(400).json({ error: 'รหัสลูกค้าไม่ถูกต้อง' });
+  const custCheck = await pool.query('SELECT 1 FROM client_customers WHERE id=$1 AND company_id=$2', [parsedCustomerId, companyId]);
+  if (custCheck.rowCount === 0) return res.status(400).json({ error: 'ไม่พบลูกค้านี้ในบริษัทของคุณ' });
+  const safeCustomerId = parsedCustomerId;
   // defense-in-depth ตาม CLAUDE.md ข้อ 10 (ก.5 ใน pr-module-known-limitations.md) — เติม company_id เข้า
   // WHERE ของ UPDATE นี้ไปด้วยเลยเพราะกำลังแก้ statement นี้อยู่แล้วพอดี (ต้นทุนเพิ่มแทบเป็นศูนย์ ต่างจากการ
   // เปิด audit ก.5 ทั้ง 36 จุดพร้อมกันซึ่งยังไม่ได้เริ่ม)
   await pool.query(
-    `UPDATE client_tenders SET name=$1, project_owner=$2, customer_id=$3, submission_deadline=$4, estimated_value=$5, note=$6 WHERE id=$7 AND company_id=$8`,
-    [name.trim(), finalProjectOwner, safeCustomerId, submissionDeadline || null, Number(estimatedValue) || 0, (note || '').trim(), id, companyId]
+    `UPDATE client_tenders SET name=$1, customer_id=$2, submission_deadline=$3, estimated_value=$4, note=$5 WHERE id=$6 AND company_id=$7`,
+    [name.trim(), safeCustomerId, submissionDeadline || null, Number(estimatedValue) || 0, (note || '').trim(), id, companyId]
   );
   // Re-query ผ่าน CLIENT_TENDER_SELECT แทนการใช้ RETURNING * ตรงๆ — RETURNING * คืนคอลัมน์ DATE ดิบ
   // (submission_deadline) ที่ยังไม่ผ่าน to_char() เหมือนที่ SELECT นี้ทำ ดู CLAUDE.md ข้อ 22
@@ -15568,8 +15562,8 @@ app.post('/api/customer/petty-cash-replenishments/:id/cancel', requireCustomerAu
 function serializeQuotation(row) {
   return {
     id: row.id, quotationNo: row.quotation_no, projectId: row.project_id, projectName: row.project_name || null,
-    clientName: row.client_name,
-    // customerId/customerName ใหม่ (migration 0025) — ดูคอมเมนต์เดียวกันที่ serializeProject
+    // customerId/customerName (migration 0025) — client_name free-text เดิมถูก DROP ไปแล้วใน migration
+    // 0034 — ดูคอมเมนต์เดียวกันที่ serializeProject
     customerId: row.customer_id, customerName: row.customer_name || null,
     issueDate: row.issue_date, validUntil: row.valid_until,
     amount: Number(row.amount), status: row.status, note: row.note,
@@ -15578,7 +15572,7 @@ function serializeQuotation(row) {
 }
 const CLIENT_QUOTATION_SELECT = `
   SELECT q.id, q.quotation_no, q.project_id, cp.name AS project_name,
-    q.client_name, q.customer_id, cc.name AS customer_name,
+    q.customer_id, cc.name AS customer_name,
     to_char(q.issue_date,'YYYY-MM-DD') AS issue_date, to_char(q.valid_until,'YYYY-MM-DD') AS valid_until,
     q.amount, q.status, q.note, q.created_by, q.created_at
   FROM client_quotations q
@@ -15611,20 +15605,17 @@ app.get('/api/customer/quotations/:id', requireCustomerAuth, async (req, res) =>
 
 app.post('/api/customer/quotations', requireCustomerAuth, requireCanManageBidding, async (req, res) => {
   const companyId = req.customer.company_id;
-  const { quotationNo, projectId, clientName, customerId, issueDate, validUntil, amount, status, note } = req.body || {};
-  // customerId ใหม่ (migration 0025) — เหตุผลเดียวกับ POST /api/customer/projects/tenders: optional เพื่อ
-  // ไม่ทุบ frontend เดิม ถ้าระบุ customerId มาไม่ต้องกรอก clientName เองอีกต่อไป (sync จากชื่อจริงให้เลย)
-  let safeCustomerId = null;
-  let finalClientName = (clientName || '').trim();
-  if (customerId !== undefined && customerId !== null && customerId !== '') {
-    const parsedCustomerId = parseInt(customerId, 10);
-    if (!Number.isInteger(parsedCustomerId)) return res.status(400).json({ error: 'รหัสลูกค้าไม่ถูกต้อง' });
-    const custCheck = await pool.query('SELECT name FROM client_customers WHERE id=$1 AND company_id=$2', [parsedCustomerId, companyId]);
-    if (custCheck.rowCount === 0) return res.status(400).json({ error: 'ไม่พบลูกค้านี้ในบริษัทของคุณ' });
-    safeCustomerId = parsedCustomerId;
-    finalClientName = custCheck.rows[0].name;
+  const { quotationNo, projectId, customerId, issueDate, validUntil, amount, status, note } = req.body || {};
+  // customerId บังคับเสมอตั้งแต่ migration 0034 (DROP client_name เดิม) — เหตุผลเดียวกับ POST
+  // /api/customer/projects/tenders
+  if (customerId === undefined || customerId === null || customerId === '') {
+    return res.status(400).json({ error: 'กรุณาเลือกลูกค้า' });
   }
-  if (!finalClientName) return res.status(400).json({ error: 'กรุณากรอกชื่อลูกค้า' });
+  const parsedCustomerId = parseInt(customerId, 10);
+  if (!Number.isInteger(parsedCustomerId)) return res.status(400).json({ error: 'รหัสลูกค้าไม่ถูกต้อง' });
+  const custCheck = await pool.query('SELECT 1 FROM client_customers WHERE id=$1 AND company_id=$2', [parsedCustomerId, companyId]);
+  if (custCheck.rowCount === 0) return res.status(400).json({ error: 'ไม่พบลูกค้านี้ในบริษัทของคุณ' });
+  const safeCustomerId = parsedCustomerId;
   if (!amount || Number(amount) <= 0) return res.status(400).json({ error: 'กรุณากรอกยอดเสนอราคา' });
   const allowedStatus = ['draft', 'sent', 'accepted', 'declined'];
   const safeStatus = allowedStatus.includes(status) ? status : 'draft';
@@ -15642,9 +15633,9 @@ app.post('/api/customer/quotations', requireCustomerAuth, requireCanManageBiddin
     const dup = await client.query('SELECT 1 FROM client_quotations WHERE company_id=$1 AND quotation_no=$2', [companyId, finalNo]);
     if (dup.rowCount > 0) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'เลขที่ใบเสนอราคานี้มีอยู่แล้ว' }); }
     const insert = await client.query(
-      `INSERT INTO client_quotations (company_id, quotation_no, project_id, client_name, customer_id, issue_date, valid_until, amount, status, note, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
-      [companyId, finalNo, projectId || null, finalClientName, safeCustomerId, issueDate || new Date().toISOString().slice(0, 10),
+      `INSERT INTO client_quotations (company_id, quotation_no, project_id, customer_id, issue_date, valid_until, amount, status, note, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+      [companyId, finalNo, projectId || null, safeCustomerId, issueDate || new Date().toISOString().slice(0, 10),
        validUntil || null, Number(amount), safeStatus, (note || '').trim(), req.customer.id]
     );
     const qId = insert.rows[0].id;

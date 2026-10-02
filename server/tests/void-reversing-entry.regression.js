@@ -113,7 +113,7 @@ async function backdateToLastMonth(sourceTypes, sourceId) {
   const cleanup = { fundIds: [], voucherIds: [], clearanceIds: [], projectIds: [], subcontractorIds: [], termIds: [], billingIds: [], claimIds: [], budgetIds: [], payeeIds: [] };
   try {
     console.log('Ensuring fixtures...');
-    await setup();
+    const { clientCustomerId } = await setup();
     const companyARes = await pool.query('SELECT code FROM customer_companies WHERE id=$1', [COMPANY_A_ID]);
     const companyBRes = await pool.query('SELECT code FROM customer_companies WHERE id=$1', [COMPANY_B_ID]);
     const codeA = companyARes.rows[0].code;
@@ -330,7 +330,7 @@ async function backdateToLastMonth(sourceTypes, sourceId) {
     // (C) client_subcontract_billings (progress) — 1160 recovery / 2140 retention / 2120 WHT ต้องกลับ
     // ============================================================================================
     console.log('\n=== (C) subcontract_billing (progress) ===');
-    const proj = await call('fx_maker', 'POST', '/api/customer/projects', { name: 'E2E void subcontract โครงการ', sectorType: 'private', status: 'in_progress' });
+    const proj = await call('fx_maker', 'POST', '/api/customer/projects', { name: 'E2E void subcontract โครงการ', customerId: clientCustomerId, sectorType: 'private', status: 'in_progress' });
     cleanup.projectIds.push(proj.project.id);
     const subTaxId = String(1000000000000 + (Date.now() % 1000000000000)).padStart(13, '0').slice(0, 13);
     const sub = await call('fx_procurement', 'POST', '/api/customer/subcontractors', { name: 'E2E void ผู้รับเหมาช่วง ' + Date.now(), taxpayerType: 'individual', taxId: subTaxId });
@@ -389,7 +389,7 @@ async function backdateToLastMonth(sourceTypes, sourceId) {
     // ============================================================================================
     console.log('\n=== (D) progress_claim ===');
     const projInst = await call('fx_maker', 'POST', '/api/customer/projects', {
-      name: 'E2E void progress โครงการ', sectorType: 'private', status: 'in_progress', defaultRetentionPercent: 5,
+      name: 'E2E void progress โครงการ', customerId: clientCustomerId, sectorType: 'private', status: 'in_progress', defaultRetentionPercent: 5,
       installments: [{ description: 'งวดที่ 1', amount: 40000, daysToComplete: 30 }],
     });
     cleanup.projectIds.push(projInst.project.id);
@@ -447,7 +447,7 @@ async function backdateToLastMonth(sourceTypes, sourceId) {
     assert(advVoidNowOk.progressClaim.status === 'voided', `void ใบ advance สำเร็จได้แล้วหลัง applied_amount กลับเป็น 0 (พิสูจน์ว่า block ทำงานถูกต้องทั้งสองทิศทาง) (ได้ ${advVoidNowOk.progressClaim.status})`);
 
     // ---- D2: BOQ mode -> claimed_percent ต้องกลับ ----
-    const projBoq = await call('fx_maker', 'POST', '/api/customer/projects', { name: 'E2E void BOQ โครงการ', sectorType: 'private', status: 'in_progress', defaultRetentionPercent: 5 });
+    const projBoq = await call('fx_maker', 'POST', '/api/customer/projects', { name: 'E2E void BOQ โครงการ', customerId: clientCustomerId, sectorType: 'private', status: 'in_progress', defaultRetentionPercent: 5 });
     cleanup.projectIds.push(projBoq.project.id);
     const budgetCreated = await call('fx_maker', 'POST', '/api/customer/budgets', { projectId: projBoq.project.id });
     cleanup.budgetIds.push(budgetCreated.budget.id);

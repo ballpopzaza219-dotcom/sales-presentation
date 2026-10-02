@@ -41,12 +41,12 @@ function bangkokToday() { return new Date().toLocaleDateString('en-CA', { timeZo
   const cleanup = { voucherIds: [], clearanceIds: [], fundIds: [], replenishmentIds: [], projectIds: [] };
   try {
     console.log('Ensuring fixtures...');
-    await setup();
+    const { clientCustomerId } = await setup();
     const companyARes = await pool.query('SELECT code FROM customer_companies WHERE id=$1', [COMPANY_A_ID]);
     const codeA = companyARes.rows[0].code;
     for (const u of ['fx_maker', 'fx_approver_mid', 'fx_settler', 'fx_super']) await login(u, codeA);
 
-    const proj = await call('fx_maker', 'POST', '/api/customer/projects', { name: 'E2E project_id-journal-linkage ' + Date.now(), sectorType: 'private', status: 'in_progress' });
+    const proj = await call('fx_maker', 'POST', '/api/customer/projects', { name: 'E2E project_id-journal-linkage ' + Date.now(), customerId: clientCustomerId, sectorType: 'private', status: 'in_progress' });
     cleanup.projectIds.push(proj.project.id);
 
     // ============================================================================================

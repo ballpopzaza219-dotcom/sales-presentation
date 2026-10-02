@@ -62,7 +62,7 @@ async function journalLinesFor(sourceId) {
 
   try {
     console.log('Ensuring fixtures...');
-    await setup();
+    const { clientCustomerId } = await setup();
     const companyRes = await pool.query('SELECT code FROM customer_companies WHERE id=$1', [COMPANY_A_ID]);
     const companyCode = companyRes.rows[0].code;
 
@@ -73,7 +73,7 @@ async function journalLinesFor(sourceId) {
     await httpLogin('fx_procurement', companyCode);
 
     console.log('Creating prerequisite project + subcontractor + approved contract (contract_value=1,000,000, advance 15%, retention 5%)...');
-    const proj = await call('fx_maker', 'POST', '/api/customer/projects', { name: 'E2E เบิกเงินผู้รับเหมาช่วง โครงการ', sectorType: 'private', status: 'in_progress' });
+    const proj = await call('fx_maker', 'POST', '/api/customer/projects', { name: 'E2E เบิกเงินผู้รับเหมาช่วง โครงการ', customerId: clientCustomerId, sectorType: 'private', status: 'in_progress' });
     createdProjectIds.push(proj.project.id);
     const subTaxId = String(1000000000000 + (Date.now() % 1000000000000)).padStart(13, '0').slice(0, 13);
     const sub = await call('fx_procurement', 'POST', '/api/customer/subcontractors', { name: 'ผู้รับเหมาช่วง E2E เบิกเงิน ' + Date.now(), taxpayerType: 'individual', taxId: subTaxId });

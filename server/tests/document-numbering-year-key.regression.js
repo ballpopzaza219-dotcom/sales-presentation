@@ -45,7 +45,7 @@ function bangkokYearBE() { return parseInt(new Intl.DateTimeFormat('en-US', { ti
   const cleanup = { tenderIds: [], projectIds: [], voucherIds: [] };
   try {
     console.log('Ensuring fixtures...');
-    await setup();
+    const { clientCustomerId } = await setup();
     const companyARes = await pool.query('SELECT code FROM customer_companies WHERE id=$1', [COMPANY_A_ID]);
     const codeA = companyARes.rows[0].code;
     for (const u of ['fx_maker', 'fx_approver_mid', 'fx_settler', 'fx_super']) await login(u, codeA);
@@ -83,7 +83,7 @@ function bangkokYearBE() { return parseInt(new Intl.DateTimeFormat('en-US', { ti
     // ============================================================================================
     console.log('\n=== (2) ออกเลขพร้อมกันหลาย request ต้องไม่ซ้ำ ===');
     const concurrentResults = await Promise.all(
-      Array.from({ length: 8 }, (_, i) => call('fx_maker', 'POST', '/api/customer/tenders', { name: `E2E concurrent numbering ${i}`, sectorType: 'private' }))
+      Array.from({ length: 8 }, (_, i) => call('fx_maker', 'POST', '/api/customer/tenders', { name: `E2E concurrent numbering ${i}`, customerId: clientCustomerId, sectorType: 'private' }))
     );
     for (const r of concurrentResults) cleanup.tenderIds.push(r.tender.id);
     const tenderNos = concurrentResults.map(r => r.tender.tenderNo);
@@ -124,7 +124,7 @@ function bangkokYearBE() { return parseInt(new Intl.DateTimeFormat('en-US', { ti
     console.log('\n=== (4) project/quotation ต่อจากเลขเดิมจริง ไม่ reset ===');
     const projBaseline = await pool.query(`SELECT next_seq FROM company_document_counters WHERE company_id=$1 AND doc_type='project' AND year=$2`, [COMPANY_A_ID, currentYear]);
     const baselineSeq = projBaseline.rows[0] ? projBaseline.rows[0].next_seq : 0;
-    const newProject = await call('fx_maker', 'POST', '/api/customer/projects', { name: 'E2E doc-numbering project continuity ' + Date.now(), sectorType: 'private', status: 'in_progress' });
+    const newProject = await call('fx_maker', 'POST', '/api/customer/projects', { name: 'E2E doc-numbering project continuity ' + Date.now(), customerId: clientCustomerId, sectorType: 'private', status: 'in_progress' });
     cleanup.projectIds.push(newProject.project.id);
     const newProjectSeq = parseInt(newProject.project.code.split('-')[2], 10);
     assert(newProjectSeq === baselineSeq + 1, `โครงการใหม่ได้เลขต่อจาก baseline เดิมพอดี (baseline=${baselineSeq}, คาดหวัง=${baselineSeq + 1}, ได้=${newProjectSeq})`);

@@ -27,7 +27,7 @@ function assert(cond, msg) {
 }
 
 (async () => {
-  let testCustomerId = null, tenderId = null, browser;
+  let testCustomerId = null, clientCustomerId = null, tenderId = null, browser;
   try {
     const companyRes = await pool.query('SELECT id, code FROM customer_companies WHERE id=$1', [FIXTURE_COMPANY_ID]);
     const company = companyRes.rows[0];
@@ -55,10 +55,28 @@ function assert(cond, msg) {
     await page.click('[data-act="do-login"]');
     await page.waitForTimeout(800);
 
+    // Customer Master (migration 0025/0034) — ta-owner is a forced-selection picker now, not free text.
+    const testCustomer = await page.evaluate(async () => {
+      const data = await apiCall('POST', '/api/customer/clients', { name: 'ลูกค้าทดสอบ Tender ขยาย' });
+      return data.customer;
+    });
+    clientCustomerId = testCustomer.id;
+    // This test sets S.page directly (bypassing goToPage()/loadDataForPage()), so DB.customers is
+    // never auto-loaded — populate it manually so the picker's in-memory filter has a match.
+    await page.evaluate((cust) => { DB.customers = [cust]; S.customersLoaded = true; }, testCustomer);
+    async function pickOwner(searchText) {
+      await page.click('#ta-owner');
+      await page.fill('#ta-owner', searchText);
+      await page.waitForTimeout(200);
+      await page.click(`[data-act="select-customer"][data-id="${testCustomer.id}"]`);
+      await page.waitForTimeout(100);
+    }
+
     await page.evaluate(() => { S.module = 'bidding'; S.page = 'fin_tender_add'; S.tenderAddForm = null; render(); });
     await page.waitForTimeout(200);
 
     await page.fill('#ta-name', 'ทดสอบฟอร์ม Tender ขยาย');
+    await pickOwner(testCustomer.name);
     await page.fill('#ta-projectNo', 'PRJ-2026-999');
     await page.fill('#ta-biddingMethod', 'e-bidding');
     await page.fill('#ta-location', '123 ถ.ทดสอบ กรุงเทพฯ');
@@ -176,6 +194,7 @@ function assert(cond, msg) {
         await pool.query('DELETE FROM client_tender_installments WHERE tender_id=$1', [tenderId]);
         await pool.query('DELETE FROM client_tenders WHERE id=$1', [tenderId]);
       }
+      if (clientCustomerId) await pool.query('DELETE FROM client_customers WHERE id=$1', [clientCustomerId]);
       if (testCustomerId) await pool.query('DELETE FROM customers WHERE id=$1', [testCustomerId]);
     } catch (cleanupErr) { console.error('CLEANUP FAILED (manual cleanup needed):', cleanupErr.message); }
     await pool.end();

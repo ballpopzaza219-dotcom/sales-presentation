@@ -65,7 +65,7 @@ function assert(cond, msg) {
 }
 
 (async () => {
-  let testCustomerId = null, tenderId = null, budgetId = null;
+  let testCustomerId = null, clientCustomerId = null, tenderId = null, budgetId = null;
   try {
     const companyRes = await pool.query('SELECT id, code FROM customer_companies WHERE id=$1', [FIXTURE_COMPANY_ID]);
     const company = companyRes.rows[0];
@@ -78,10 +78,13 @@ function assert(cond, msg) {
     );
     testCustomerId = custIns.rows[0].id;
     await call('POST', '/api/customer-login', { companyCode: company.code, username: '_boq_regression_', password: 'TestPass123!' });
+    // Customer Master (migration 0025/0034) — customer_id is mandatory on client_tenders now.
+    const custForTender = await call('POST', '/api/customer/clients', { name: 'ลูกค้าทดสอบ BOQ import' });
+    clientCustomerId = custForTender.customer.id;
 
     const tenderIns = await pool.query(
-      `INSERT INTO client_tenders (company_id, tender_no, name, status, created_by) VALUES ($1,'BOQ-REGRESSION-001','BOQ regression test tender','preparing',$2) RETURNING id`,
-      [company.id, testCustomerId]
+      `INSERT INTO client_tenders (company_id, tender_no, name, status, created_by, customer_id) VALUES ($1,'BOQ-REGRESSION-001','BOQ regression test tender','preparing',$2,$3) RETURNING id`,
+      [company.id, testCustomerId, clientCustomerId]
     );
     tenderId = tenderIns.rows[0].id;
     const budgetData = await call('POST', '/api/customer/budgets', { tenderId });
@@ -296,6 +299,7 @@ function assert(cond, msg) {
         await pool.query('DELETE FROM client_budgets WHERE id=$1', [budgetId]);
       }
       if (tenderId) await pool.query('DELETE FROM client_tenders WHERE id=$1', [tenderId]);
+      if (clientCustomerId) await pool.query('DELETE FROM client_customers WHERE id=$1', [clientCustomerId]);
       if (testCustomerId) await pool.query('DELETE FROM customers WHERE id=$1', [testCustomerId]);
     } catch (cleanupErr) { console.error('CLEANUP FAILED (manual cleanup needed):', cleanupErr.message); }
     await pool.end();

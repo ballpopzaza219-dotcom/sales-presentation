@@ -39,7 +39,7 @@ function assert(cond, msg) {
 function seqOf(tenderNo) { return parseInt(tenderNo.match(/(\d+)$/)[1], 10); }
 
 (async () => {
-  let testCustomerId = null;
+  let testCustomerId = null, clientCustomerId = null;
   const createdTenderIds = [];
   try {
     const companyRes = await pool.query('SELECT id, code FROM customer_companies WHERE id=$1', [FIXTURE_COMPANY_ID]);
@@ -53,11 +53,16 @@ function seqOf(tenderNo) { return parseInt(tenderNo.match(/(\d+)$/)[1], 10); }
     );
     testCustomerId = custIns.rows[0].id;
     await call('POST', '/api/customer-login', { companyCode: company.code, username: '_tender_noseq_', password: 'TestPass123!' });
+    // Customer Master (migration 0025/0034) — customerId is mandatory now; one throwaway customer
+    // covers every tender this test creates.
+    const custForTenders = await call('POST', '/api/customer/clients', { name: 'ลูกค้าทดสอบ no-sequence' });
+    const customerId = custForTenders.customer.id;
+    clientCustomerId = customerId;
 
     // Tender A, then Tender B — B's sequence number must be strictly greater than A's.
-    const tenderA = await call('POST', '/api/customer/tenders', { name: 'no-sequence test A', sectorType: 'private' });
+    const tenderA = await call('POST', '/api/customer/tenders', { name: 'no-sequence test A', customerId, sectorType: 'private' });
     createdTenderIds.push(tenderA.tender.id);
-    const tenderB = await call('POST', '/api/customer/tenders', { name: 'no-sequence test B', sectorType: 'private' });
+    const tenderB = await call('POST', '/api/customer/tenders', { name: 'no-sequence test B', customerId, sectorType: 'private' });
     createdTenderIds.push(tenderB.tender.id);
     assert(seqOf(tenderB.tender.tenderNo) > seqOf(tenderA.tender.tenderNo), `B (${tenderB.tender.tenderNo}) comes after A (${tenderA.tender.tenderNo})`);
 
@@ -67,7 +72,7 @@ function seqOf(tenderNo) { return parseInt(tenderNo.match(/(\d+)$/)[1], 10); }
 
     // Tender C, created after A was deleted — must NOT reuse A's number (the bug) and must still be
     // strictly after B (proving the counter, not the row count, drives the sequence).
-    const tenderC = await call('POST', '/api/customer/tenders', { name: 'no-sequence test C', sectorType: 'private' });
+    const tenderC = await call('POST', '/api/customer/tenders', { name: 'no-sequence test C', customerId, sectorType: 'private' });
     createdTenderIds.push(tenderC.tender.id);
     assert(tenderC.tender.tenderNo !== tenderA.tender.tenderNo, `C (${tenderC.tender.tenderNo}) does not reuse A's now-deleted number (${tenderA.tender.tenderNo})`);
     assert(seqOf(tenderC.tender.tenderNo) > seqOf(tenderB.tender.tenderNo), `C (${tenderC.tender.tenderNo}) comes after B (${tenderB.tender.tenderNo}), unaffected by A's deletion`);
@@ -80,7 +85,7 @@ function seqOf(tenderNo) { return parseInt(tenderNo.match(/(\d+)$/)[1], 10); }
     const counterBefore = await pool.query(`SELECT next_seq FROM company_document_counters WHERE company_id=$1 AND doc_type='tender' AND year=$2`, [company.id, bangkokYear]);
     await pool.query('DELETE FROM client_tenders WHERE id = ANY($1)', [createdTenderIds]);
     createdTenderIds.length = 0;
-    const tenderD = await call('POST', '/api/customer/tenders', { name: 'no-sequence test D', sectorType: 'private' });
+    const tenderD = await call('POST', '/api/customer/tenders', { name: 'no-sequence test D', customerId, sectorType: 'private' });
     createdTenderIds.push(tenderD.tender.id);
     const counterAfter = await pool.query(`SELECT next_seq FROM company_document_counters WHERE company_id=$1 AND doc_type='tender' AND year=$2`, [company.id, bangkokYear]);
     assert(counterAfter.rows[0].next_seq > counterBefore.rows[0].next_seq, `company_document_counters.next_seq strictly increased (${counterBefore.rows[0].next_seq} -> ${counterAfter.rows[0].next_seq}) even after every tender created during this test was deleted`);
@@ -93,6 +98,7 @@ function seqOf(tenderNo) { return parseInt(tenderNo.match(/(\d+)$/)[1], 10); }
   } finally {
     try {
       if (createdTenderIds.length) await pool.query('DELETE FROM client_tenders WHERE id = ANY($1)', [createdTenderIds]);
+      if (clientCustomerId) await pool.query('DELETE FROM client_customers WHERE id=$1', [clientCustomerId]);
       if (testCustomerId) await pool.query('DELETE FROM customers WHERE id=$1', [testCustomerId]);
     } catch (cleanupErr) { console.error('CLEANUP FAILED (manual cleanup needed):', cleanupErr.message); }
     await pool.end();

@@ -87,7 +87,30 @@ async function setup(log = false) {
     );
     if (log) console.log(`  rule ${username}/${docType} created (#${r.rows[0].id})`);
   }
-  return { ids, companyAId: COMPANY_A_ID, companyBId: COMPANY_B_ID, password: PASSWORD };
+  // Shared Customer Master fixture row (migration 0025) — customer_id became mandatory on
+  // client_projects/client_tenders/client_quotations in migration 0034 (DROP of the old client_name/
+  // project_owner free-text columns). Many regression files across the suite create a project/tender/
+  // quotation purely as scaffolding for an unrelated feature and never cared which customer it belongs
+  // to — those calls all need a valid customerId now. Upserted by normalized name (same unique index
+  // the real /api/customer/clients endpoint relies on) so repeated setup() calls stay idempotent.
+  const FIXTURE_CUSTOMER_NAME = 'ลูกค้า Fixture (ใช้ร่วมกันทั้ง suite)';
+  const existingCust = await pool.query(
+    `SELECT id FROM client_customers WHERE company_id=$1 AND normalize_payee_name(name) = normalize_payee_name($2)`,
+    [COMPANY_A_ID, FIXTURE_CUSTOMER_NAME]
+  );
+  let clientCustomerId;
+  if (existingCust.rowCount > 0) {
+    clientCustomerId = existingCust.rows[0].id;
+  } else {
+    const custIns = await pool.query(
+      `INSERT INTO client_customers (company_id, name) VALUES ($1,$2) RETURNING id`,
+      [COMPANY_A_ID, FIXTURE_CUSTOMER_NAME]
+    );
+    clientCustomerId = custIns.rows[0].id;
+  }
+  if (log) console.log(`  client_customers fixture -> id ${clientCustomerId}`);
+
+  return { ids, companyAId: COMPANY_A_ID, companyBId: COMPANY_B_ID, password: PASSWORD, clientCustomerId };
 }
 
 module.exports = { setup, COMPANY_A_ID, COMPANY_B_ID, PASSWORD };

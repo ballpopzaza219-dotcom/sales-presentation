@@ -1259,7 +1259,7 @@ async function loadRealLaborCosts(){
 }
 function mapRealTender(t){
   return {
-    id:t.id, tenderNo:t.tenderNo, name:t.name, projectOwner:t.projectOwner,
+    id:t.id, tenderNo:t.tenderNo, name:t.name, projectOwner:t.customerName,
     submissionDeadline:t.submissionDeadline, estimatedValue:t.estimatedValue,
     status:t.status, note:t.note, createdAt:t.createdAt,
     projectNo:t.projectNo, biddingMethod:t.biddingMethod, sectorType:t.sectorType,
@@ -1379,7 +1379,7 @@ async function loadRealProjects(){
 }
 function mapRealProject(p){
   return {
-    id:p.id, code:p.code, name:p.name, client:p.clientName, siteAddress:p.siteAddress,
+    id:p.id, code:p.code, name:p.name, client:p.customerName, siteAddress:p.siteAddress,
     startDate:p.startDate, expectedEndDate:p.expectedEndDate, budget:p.budgetAmount,
     defaultRetentionPercent:p.defaultRetentionPercent,
     projectManagerEmployeeId:p.projectManagerEmployeeId, pmName:p.projectManagerName,
@@ -1674,7 +1674,7 @@ async function loadPrItemsForPoPicker(prId){
 function mapRealQuotation(q){
   return {
     id:q.id, quotationNo:q.quotationNo, projectId:q.projectId, projectName:q.projectName,
-    clientName:q.clientName, issueDate:q.issueDate, validUntil:q.validUntil,
+    clientName:q.customerName, issueDate:q.issueDate, validUntil:q.validUntil,
     amount:q.amount, status:q.status, note:q.note, createdAt:q.createdAt,
   };
 }

@@ -44,7 +44,7 @@ function idemKey(label) { return `${label}-${Date.now()}-${idemCounter++}`; }
   const createdPrIds = [];
   try {
     console.log('Ensuring fixtures...');
-    await setup();
+    const { clientCustomerId } = await setup();
     // budget approval ต้องใช้ can_approve_budget (คนละ flag จาก can_approve_pr) — fixture กลางไม่มีใครตั้งไว้
     // ตั้งตรงนี้เฉพาะ fx_super (idempotent, SET ค่าเดิมซ้ำได้ปลอดภัย)
     await pool.query(`UPDATE customers SET can_approve_budget=true WHERE username='fx_super'`);
@@ -58,13 +58,13 @@ function idemKey(label) { return `${label}-${Date.now()}-${idemCounter++}`; }
 
     console.log('Creating prerequisite project (manual-source PR target) via HTTP...');
     const projManual = await call('fx_maker', 'POST', '/api/customer/projects', {
-      name: 'E2E PR โครงการ manual', sectorType: 'private', status: 'in_progress',
+      name: 'E2E PR โครงการ manual', customerId: clientCustomerId, sectorType: 'private', status: 'in_progress',
     });
     createdProjectIds.push(projManual.project.id);
 
     console.log('Creating prerequisite project + approved budget (BOQ-source PR target) via HTTP...');
     const projBoq = await call('fx_maker', 'POST', '/api/customer/projects', {
-      name: 'E2E PR โครงการ BOQ', sectorType: 'private', status: 'in_progress',
+      name: 'E2E PR โครงการ BOQ', customerId: clientCustomerId, sectorType: 'private', status: 'in_progress',
     });
     createdProjectIds.push(projBoq.project.id);
     const budgetCreated = await call('fx_maker', 'POST', '/api/customer/budgets', { projectId: projBoq.project.id });

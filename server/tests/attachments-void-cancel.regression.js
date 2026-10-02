@@ -94,7 +94,7 @@ async function createSiteExpenseSubmission(username, projectId, vendorName) {
   const cleanup = { voucherIds: [], siteExpenseSubmissionIds: [], projectIds: [] };
   try {
     console.log('Ensuring fixtures...');
-    await setup();
+    const { clientCustomerId } = await setup();
 
     // อ่านรายการ doc_type ที่ CHECK อนุญาตจริงตอนนี้จาก DB โดยตรง (ไม่ hardcode) กัน constraint ที่เพิ่งถูก
     // migration ล่าสุดขยายไว้ถูกไฟล์นี้ทำให้แคบกลับไปโดยไม่ตั้งใจตอน "คืนค่า" หลังเทสจบ
@@ -225,7 +225,7 @@ async function createSiteExpenseSubmission(username, projectId, vendorName) {
     // (ปิดเรื่องแล้วแปลว่ามีเอกสารการเงินจริงอ้างอิงรูปนี้อยู่ ต้องเก็บไว้เป็นหลักฐาน ไม่ใช่ทิ้งเอกสาร)
     // ============================================================================================
     console.log('\n=== (5) site-expense-submissions /reject ลบไฟล์แนบจริง ===');
-    const proj5 = await call('fx_maker', 'POST', '/api/customer/projects', { name: 'E2E attachment-cleanup site-expense project ' + Date.now(), sectorType: 'private', status: 'in_progress' });
+    const proj5 = await call('fx_maker', 'POST', '/api/customer/projects', { name: 'E2E attachment-cleanup site-expense project ' + Date.now(), customerId: clientCustomerId, sectorType: 'private', status: 'in_progress' });
     cleanup.projectIds.push(proj5.project.id);
 
     const se1 = await createSiteExpenseSubmission('fx_sitework', proj5.project.id, 'ร้าน E2E เทสลบไฟล์แนบ 1');

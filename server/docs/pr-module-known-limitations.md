@@ -5,7 +5,9 @@
 endpoint/migration ที่ [`module-status-overview.md`](./module-status-overview.md) และประวัติที่
 `git log`) เรียงตามความสำคัญ: **บล็อกการใช้งานจริง** ก่อน แล้วตามด้วย **แค่ไม่สะดวก/ทำใจได้ชั่วคราว**
 
-อัปเดตล่าสุด: 2026-09-12 — **ก.1 (`/void`) และ ก.2 (นำส่งภาษีหัก ณ ที่จ่าย) ทั้งคู่ทำเสร็จและปิดไปแล้ว**
+อัปเดตล่าสุด: 2026-10-02 — เพิ่ม **ข.15** (เทส 12 ไฟล์ hardcode port 3000 ชน production จริง พบระหว่าง
+migration 0034 — แก้ด้วยการ restart service แล้ว) และ **ข.14** (`data-act="close-modal"` ไม่มี handler
+เลย พบระหว่างงาน Customer Master picker) ของเดิม: 2026-09-12 — **ก.1 (`/void`) และ ก.2 (นำส่งภาษีหัก ณ ที่จ่าย) ทั้งคู่ทำเสร็จและปิดไปแล้ว**
 (migration 0021/0022, commit `c572aa4`/`33bec5d`) **พบจุดบล็อกใหม่ 2 จุด: ก.3** (`client_subcontractors` PUT
 ไม่ scope UPDATE ด้วย `company_id` — กระทบข้อมูลธนาคารจริง) เป็นงานถัดไปทันทีหลัง `client_customers` **และ ก.4**
 (`fx_maker2` เห็นปุ่มอนุมัติเงินสดย่อยทั้งที่ไม่มีสิทธิ์ — เจอระหว่างทดสอบ `client_customers`, ยืนยันแล้วว่า
@@ -349,6 +351,67 @@ migration) เพื่อไม่ให้ชนกับ heuristic นี้ 
 ยอมรับความเสี่ยงนี้แล้วตอนออกแบบ (สถานการณ์ปกติที่จะ trigger migration นี้ rollback คือทันทีหลัง apply ก่อน
 มีข้อมูลจริงเกิดขึ้นเลย ซึ่ง heuristic นี้ครอบคลุมถูกต้อง 100%)
 
+### ข.14 `data-act="close-modal"` ไม่มี handler ใน `handleAction()` เลยสักจุด — ปุ่มยกเลิก/คลิกนอก modal ของ `S.modal` ทุกตัวไม่ทำงาน
+
+**พบ 2026-10-01** ระหว่างสำรวจ `pr-system.html` สำหรับงาน Customer Master picker — ตอนแรกตั้งใจจะเปิด
+quick-add modal ผ่าน `S.modal` (กลไกกลางของ modal ทั่วไปในระบบ) แต่สังเกตว่าไม่มีจุดไหนใน `handleAction()`
+ที่เช็ค `act==='close-modal'` เลย จึงไล่ grep `data-act="close-modal"` ทั้งไฟล์เพื่อยืนยัน — **ทุกจุดที่เจอเป็น
+แค่ attribute `data-act="close-modal"` บน `<div class="modal-overlay">`/ปุ่ม "ยกเลิก" เท่านั้น ไม่มีจุดไหนเลยที่
+`handleAction(act, el)` มี branch รับค่านี้แล้วสั่ง `S.modal=null; render();`** — ยืนยันซ้ำด้วย Playwright จริง
+(เปิด modal แล้วคลิกปุ่ม/พื้นที่นอก modal ที่มี `data-act="close-modal"` — modal ไม่ปิด)
+
+**ผลกระทบจริง**: กระทบ**ทุก modal ที่ใช้กลไก `S.modal` กลาง** ทั่วทั้งแอป (เช่น add-user, add-project (demo),
+add-stock, reject-admin-req, ledger-add ฯลฯ) — ปุ่ม "ยกเลิก"/คลิกพื้นที่นอก modal ที่ตั้งใจให้ปิดโดยไม่บันทึก
+ใช้งานไม่ได้จริง ผู้ใช้ต้องกดปุ่ม action อื่นที่ตั้ง `S.modal=null` เอง (เช่นปุ่มบันทึกสำเร็จ) หรือ refresh หน้า
+เพื่อออกจาก modal แทน — **ไม่กระทบความถูกต้องของข้อมูล** (ไม่มี modal ไหนบันทึกอะไรเองตอนปิด) เป็นแค่ UX ที่
+ผู้ใช้ค้างอยู่ใน modal นานกว่าที่ตั้งใจ
+
+**ทางเลี่ยงที่ใช้ในงาน Customer Master picker**: quick-add modal ของ picker (`S.customerQuickAddForm`,
+`renderCustomerQuickAddForm()`) **จงใจไม่ใช้ `S.modal`/`close-modal` เลย** — ใช้ state object แยกของตัวเองกับ
+action เฉพาะ `cancel-customer-quick-add` แทน (มี handler จริงใน `handleAction()`) ตาม pattern เดียวกับ
+`S.addRuleForm`/`cancel-add-rule` ที่ยืนยันแล้วว่าทำงานถูกต้อง — เป็นทางเลี่ยงเฉพาะจุดของ feature ใหม่
+เท่านั้น ไม่ได้แก้บั๊กนี้ที่ต้นตอ
+
+**ยังไม่แก้ตามที่ตกลงไว้** (นอก scope งาน Customer Master/Bidding permission) — วิธีแก้ที่ตรงไปตรงมาที่สุด
+คือเพิ่ม `if(act==='close-modal'){ S.modal=null; render(); return; }` เข้า `handleAction()` จุดเดียว (กลไก
+กลาง แก้จุดเดียวได้ผลทุก modal ที่ใช้ `S.modal` ทันที ไม่ต้องไล่แก้ทีละหน้า) — ยังไม่ได้ทำเพราะต้องตรวจสอบ
+ก่อนว่า modal บางตัวที่ตั้งใจ "ปิดแล้วเสียข้อมูลฟอร์มที่กรอกค้างไว้" (เช่น `ledger-add` ที่มีฟอร์มยาว) มีผล
+ข้างเคียงอะไรที่ต้องระวังเพิ่มหรือไม่ก่อนเปิดใช้งานกลไกปิดแบบทั่วไปจริง
+
+### ข.15 เทส Playwright 12 ไฟล์ hardcode `BASE = 'http://localhost:3000'` ตรงๆ ไม่อ่าน `BOQ_TEST_BASE_URL` — แอบรันชน production service แทน sandbox โดยไม่มีใครรู้ตัว
+
+**พบ 2026-10-01** ระหว่างตรวจ regression suite รอบ migration 0034 (DROP `client_name`/`project_owner`) —
+ตั้งใจรัน server ทดสอบแยกบนพอร์ตอื่น (เช่น 3913) แล้วชี้ด้วย `BOQ_TEST_BASE_URL` เพื่อไม่แตะ production
+service จริง (`SiteReqServer`, NSSM, port 3000) ตามมาตรฐานทั้งเซสชัน — แต่ `test:petty-cash-vouchers-ui`
+พังด้วย 500 error ที่ไม่เคยมีมาก่อน สืบจนพบว่าไฟล์นี้ `const BASE = 'http://localhost:3000';`
+**hardcode ตรงๆ ไม่มี `process.env.BOQ_TEST_BASE_URL ||` เหมือนไฟล์ส่วนใหญ่เลย** — grep ทั้ง `tests/`
+พบอีก 11 ไฟล์ที่เป็นแบบเดียวกัน (hardcode + ไม่มี fallback จาก env var):
+
+```
+advance-clearance-settle-ui, advance-clearance-ui, advance-vouchers-ui, dual-module-nav,
+external-payment-ui, petty-cash-vouchers-ui, po-ui, pr-ui, progress-claims-ui, site-work-ui,
+subcontract-billings-ui, wo-ui
+```
+
+**ผลกระทบจริงที่เกิดขึ้นแล้ว**: ทั้ง 12 ไฟล์นี้วิ่งชน **production service ตัวจริงบน port 3000 มาตลอด**
+ทุกครั้งที่รัน ไม่ว่าจะตั้งใจชี้ `BOQ_TEST_BASE_URL` ไปที่ sandbox หรือไม่ก็ตาม — คืนวันที่พบ migration
+0034 เพิ่งถูก apply เข้า DB จริง (DROP คอลัมน์) ขณะที่ production service ยังรันโค้ด server.js เก่า
+(ก่อนแก้วันนี้) ค้างอยู่ในหน่วยความจำ (ไม่ได้ restart มาพร้อมกับตอน apply migration) ทำให้โค้ดเก่าที่ยัง
+`SELECT`/`INSERT` คอลัมน์ที่เพิ่งถูก DROP พังทันทีด้วย 500 จริง — ยืนยันตรงๆ ด้วย `GET
+/api/customer/projects` บน port 3000 ได้ 500 ก่อน restart, ได้ 200 หลัง restart service
+(`Restart-Service -Name SiteReqServer -Force` ผ่าน `Start-Process -Verb RunAs` ตามที่เคยบันทึกไว้ว่า
+ต้อง elevate) — **production service ใช้งาน Project/Tender/Quotation ไม่ได้เลยช่วงสั้นๆ ระหว่างนั้นจริง**
+(ไม่มีลูกค้าจริงใช้งานอยู่ตอนนี้ ยังอยู่ช่วงพัฒนา แต่ถ้าเกิดเหตุการณ์เดียวกันหลัง launch จริงจะกระทบผู้ใช้จริง)
+
+**บทเรียนสำคัญ**: การรันเทสชี้ sandbox ด้วย `BOQ_TEST_BASE_URL` **ไม่ได้แปลว่าปลอดภัยจาก production
+จริง 100%** ถ้ามีไฟล์ไหนลืมรองรับ env var นี้ไว้ — ต้องตรวจสอบว่าทุกไฟล์ใน `tests/*.js` ที่ประกาศ `BASE`
+ใช้ pattern `process.env.BOQ_TEST_BASE_URL || 'http://localhost:3000'` ให้ครบจริงก่อนเชื่อว่าการแยก
+sandbox ได้ผลครบทุกไฟล์
+
+**ยังไม่แก้** (นอกขอบเขตงาน migration 0034 นี้) — วิธีแก้ตรงไปตรงมาคือแก้ทั้ง 12 ไฟล์ให้ใช้ pattern เดียวกับ
+ไฟล์อื่น (`const BASE = process.env.BOQ_TEST_BASE_URL || 'http://localhost:3000';`) ควรทำเป็น sprint
+แยกต่างหากที่ไล่แก้ทีละไฟล์แล้วยืนยันว่ายังรันผ่านปกติ ไม่ใช่แก้เร่งด่วนกลางงานอื่น
+
 ---
 
 ## ตารางสรุปด่วน
@@ -374,3 +437,5 @@ migration) เพื่อไม่ให้ชนกับ heuristic นี้ 
 | ข.11 | generateInvoiceNumber/generateQuotationNumber (platform, ไม่ใช่ tenant) เจอบั๊ก timezone+reuse-after-delete เดียวกับที่เพิ่งแก้ในฝั่ง client — ยังไม่แก้ | ไม่บล็อก (กระทบแค่บัญชี SiteReq เอง ยังไม่ deploy UTC host) |
 | ข.12 | down.sql migration 0023 ส่วน guard >1 ปี ยืนยันด้วยมือแล้ว แต่ยังไม่มี automated test — ควรเพิ่มเมื่อมีโอกาส | ไม่บล็อก (SQL logic ตรวจแล้วถูกต้อง ความเสี่ยงต่ำ) |
 | ข.13 | down.sql migration 0024 guard แยกข้อมูล backfill เป็น heuristic (`code NOT LIKE 'DEPT-%'`) ยืนยันด้วยมือแล้วว่าถูกต้อง | ไม่บล็อก (ครอบคลุมสถานการณ์จริงถูก 100% ตอนนี้) |
+| ข.14 | `data-act="close-modal"` ไม่มี handler เลย — ปุ่มยกเลิก/คลิกนอก modal ของ `S.modal` ทุกตัวไม่ปิด (พบ 2026-10-01 ระหว่างงาน Customer Master picker) | ไม่บล็อก (ไม่กระทบความถูกต้องข้อมูล แค่ UX ค้างใน modal) |
+| ข.15 | เทส 12 ไฟล์ hardcode `BASE=localhost:3000` ไม่อ่าน `BOQ_TEST_BASE_URL` — แอบชน production service จริงแทน sandbox (พบ 2026-10-01 ระหว่าง migration 0034, ทำให้ production ใช้ Project/Tender/Quotation ไม่ได้ชั่วคราวจนกว่าจะ restart service) | ไม่บล็อก (แก้แล้วด้วยการ restart service — ยังไม่ได้แก้ root cause ที่ไฟล์เทส) |

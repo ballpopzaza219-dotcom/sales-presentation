@@ -25,7 +25,7 @@ function assert(cond, msg) {
 }
 
 (async () => {
-  let testCustomerId = null, manualProjectId = null, linkedProjectId = null, sourceTenderId = null, doubleSubmitProjectId = null, browser;
+  let testCustomerId = null, clientCustomerId = null, manualProjectId = null, linkedProjectId = null, sourceTenderId = null, doubleSubmitProjectId = null, browser;
   try {
     const companyRes = await pool.query('SELECT id, code FROM customer_companies WHERE id=$1', [FIXTURE_COMPANY_ID]);
     const company = companyRes.rows[0];
@@ -54,13 +54,37 @@ function assert(cond, msg) {
     await page.click('[data-act="do-login"]');
     await page.waitForTimeout(800);
 
+    // Customer Master (migration 0025/0034) — pa-client is now a forced-selection picker, not free
+    // text, so every scenario below that saves a project must actually pick this real customer via
+    // the picker's dropdown rather than typing a name directly into the field.
+    const testCustomer = await page.evaluate(async () => {
+      const data = await apiCall('POST', '/api/customer/clients', { name: 'บริษัท ทดสอบ จำกัด' });
+      return data.customer;
+    });
+    clientCustomerId = testCustomer.id;
+    // This test sets S.page directly (bypassing goToPage()/loadDataForPage()) throughout, so
+    // DB.customers is never auto-loaded the way a real nav click would — populate it manually once so
+    // the picker's in-memory filter has something to match against.
+    await page.evaluate((cust) => { DB.customers = [cust]; S.customersLoaded = true; }, testCustomer);
+    async function pickClient(searchText) {
+      // #pa-name's own tender-search-suggestion hint div can still be covering #pa-client right after
+      // typing into #pa-name — blur it first by clicking a neutral field (#pa-code), same workaround
+      // this session already established for the original project-tender picker.
+      await page.click('#pa-code');
+      await page.click('#pa-client');
+      await page.fill('#pa-client', searchText);
+      await page.waitForTimeout(200);
+      await page.click(`[data-act="select-customer"][data-id="${testCustomer.id}"]`);
+      await page.waitForTimeout(100);
+    }
+
     // ================= Scenario A: manual project (no tender link) =================
     console.log('\n--- Scenario A: manual project ---');
     await page.evaluate(() => { S.module = 'bidding'; S.page = 'fin_project_add'; S.projectAddForm = null; render(); });
     await page.waitForTimeout(200);
 
     await page.fill('#pa-name', 'ทดสอบโครงการด้วยตนเอง');
-    await page.fill('#pa-client', 'บริษัท ทดสอบ จำกัด');
+    await pickClient(testCustomer.name);
     await page.fill('#pa-biddingMethod', 'e-bidding');
     await page.fill('#pa-address', '123 ถ.ทดสอบ กรุงเทพฯ');
     await page.fill('#pa-phoneNumber', '02-123-4567');
@@ -129,9 +153,9 @@ function assert(cond, msg) {
 
     // ================= Scenario C: tender-linked auto-fill =================
     console.log('\n--- Scenario C: tender-linked auto-fill ---');
-    sourceTenderId = await page.evaluate(async () => {
+    sourceTenderId = await page.evaluate(async (customerId) => {
       const data = await apiCall('POST', '/api/customer/tenders', {
-        tenderNo: '', name: 'ทดสอบ auto-fill source tender', projectOwner: 'หน่วยงานทดสอบ',
+        tenderNo: '', name: 'ทดสอบ auto-fill source tender', customerId,
         submissionDeadline: '2026-09-01', estimatedValue: 0, note: '', projectNo: 'PRJ-SRC-001', biddingMethod: 'ประกวดราคาอิเล็กทรอนิกส์',
         sectorType: 'government', budgetAmount: 5000000, referencePrice: 4900000,
         location: '99 ถ.ต้นทาง กรุงเทพฯ', phoneNumber: '02-999-8888', siteCoordinates: '13.75,100.50',
@@ -144,7 +168,7 @@ function assert(cond, msg) {
       });
       DB.tenders.push(mapRealTender(data.tender));
       return data.tender.id;
-    });
+    }, testCustomer.id);
     const sourceTenderNo = await page.evaluate((id) => DB.tenders.find(t=>t.id===id).tenderNo, sourceTenderId);
 
     await page.evaluate(() => { S.page = 'fin_project_add'; S.projectAddForm = null; render(); });
@@ -200,6 +224,9 @@ function assert(cond, msg) {
     // Prove nothing is locked: edit one auto-filled field before saving.
     await page.waitForSelector('#pa-budgetAmount');
     await page.fill('#pa-budgetAmount', '5500000');
+    // onProjectAddTenderChange never auto-fills customerId from the source tender (see its own
+    // comment list in pr-system.html) — the picker still needs an explicit real selection before save.
+    await pickClient(testCustomer.name);
 
     await page.click('[data-act="save-project-full"]');
     await page.waitForTimeout(700);
@@ -258,6 +285,7 @@ function assert(cond, msg) {
     await page.check('input[name="pa-sectorType"][value="private"]');
     await page.waitForSelector('#pa-budget');
     await page.fill('#pa-budget', '1000000');
+    await pickClient(testCustomer.name);
     const saveBtn = page.locator('[data-act="save-project-full"]');
     for (let i = 0; i < 10; i++) { await saveBtn.click({ force: true }).catch(() => {}); }
     await page.waitForTimeout(1000);
@@ -280,6 +308,7 @@ function assert(cond, msg) {
         if (id) await pool.query('DELETE FROM client_projects WHERE id=$1', [id]);
       }
       if (sourceTenderId) await pool.query('DELETE FROM client_tenders WHERE id=$1', [sourceTenderId]);
+      if (clientCustomerId) await pool.query('DELETE FROM client_customers WHERE id=$1', [clientCustomerId]);
       if (testCustomerId) await pool.query('DELETE FROM customers WHERE id=$1', [testCustomerId]);
     } catch (cleanupErr) { console.error('CLEANUP FAILED (manual cleanup needed):', cleanupErr.message); }
     await pool.end();

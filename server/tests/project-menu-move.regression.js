@@ -32,7 +32,7 @@ function assert(cond, msg) {
 }
 
 (async () => {
-  let testCustomerId = null, projectId = null, tenderId = null, browser;
+  let testCustomerId = null, clientCustomerId = null, projectId = null, tenderId = null, browser;
   try {
     const companyRes = await pool.query('SELECT id, code FROM customer_companies WHERE id=$1', [FIXTURE_COMPANY_ID]);
     const company = companyRes.rows[0];
@@ -59,6 +59,22 @@ function assert(cond, msg) {
     await page.fill('#f-loginPass', 'TestPass123!');
     await page.click('[data-act="do-login"]');
     await page.waitForTimeout(800);
+
+    // Customer Master (migration 0025/0034) — pa-client is a forced-selection picker now, not free
+    // text; create one real customer up front and reuse it everywhere this test needs to save a
+    // project through the actual form.
+    const testCustomer = await page.evaluate(async () => {
+      const data = await apiCall('POST', '/api/customer/clients', { name: 'ลูกค้าทดสอบ ย้ายเมนูโครงการ' });
+      return data.customer;
+    });
+    clientCustomerId = testCustomer.id;
+    async function pickClient(searchText) {
+      await page.click('#pa-client');
+      await page.fill('#pa-client', searchText);
+      await page.waitForTimeout(200);
+      await page.click(`[data-act="select-customer"][data-id="${testCustomer.id}"]`);
+      await page.waitForTimeout(100);
+    }
 
     // ---- 1. Finance sidebar no longer lists Projects.
     await page.click('[data-act="switch-module"][data-module="finance"]');
@@ -120,6 +136,7 @@ function assert(cond, msg) {
     await page.check('input[name="pa-sectorType"][value="private"]');
     await page.waitForSelector('#pa-budget');
     await page.fill('#pa-budget', '1000000');
+    await pickClient(testCustomer.name);
     await page.click('[data-act="save-project-full"]');
     await page.waitForTimeout(600);
     s = await page.evaluate(() => ({ page: S.page, module: S.module, id: S.selectedProjectId }));
@@ -153,16 +170,16 @@ function assert(cond, msg) {
     // real tender via the API, then simulate (client-side only) the budget-summary state a won-tender
     // budget-copy would have produced — this tests the FRONTEND link/module fix made during the menu
     // move, not the (already-covered-elsewhere) won-tender budget-copy business logic itself.
-    tenderId = await page.evaluate(async () => {
+    tenderId = await page.evaluate(async (customerId) => {
       const data = await apiCall('POST', '/api/customer/tenders', {
-        tenderNo: '', name: 'ทดสอบ source tender link', projectOwner: '', submissionDeadline: null,
+        tenderNo: '', name: 'ทดสอบ source tender link', customerId, submissionDeadline: null,
         estimatedValue: 1000000, note: '', projectNo: '', biddingMethod: '', sectorType: 'private',
         budgetAmount: 0, referencePrice: 0, location: '', phoneNumber: '', siteCoordinates: '',
         submissionOpenDate: null, submissionConditions: '', installments: [],
       });
       DB.tenders.push(mapRealTender(data.tender));
       return data.tender.id;
-    });
+    }, testCustomer.id);
     await page.evaluate((args) => {
       S.module = 'finance'; // deliberately wrong/stale, to prove the link's own data-module fixes it
       S.page = 'fin_project_detail'; S.selectedProjectId = args.pid;
@@ -188,6 +205,7 @@ function assert(cond, msg) {
     try {
       if (projectId) await pool.query('DELETE FROM client_projects WHERE id=$1', [projectId]);
       if (tenderId) await pool.query('DELETE FROM client_tenders WHERE id=$1', [tenderId]);
+      if (clientCustomerId) await pool.query('DELETE FROM client_customers WHERE id=$1', [clientCustomerId]);
       if (testCustomerId) await pool.query('DELETE FROM customers WHERE id=$1', [testCustomerId]);
     } catch (cleanupErr) { console.error('CLEANUP FAILED (manual cleanup needed):', cleanupErr.message); }
     await pool.end();

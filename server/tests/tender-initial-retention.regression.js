@@ -36,7 +36,7 @@ function assert(cond, msg) {
 }
 
 (async () => {
-  let testCustomerId = null, tenderId = null, projectId = null, budgetId = null, browser;
+  let testCustomerId = null, clientCustomerId = null, tenderId = null, projectId = null, budgetId = null, browser;
   try {
     const companyRes = await pool.query('SELECT id, code FROM customer_companies WHERE id=$1', [FIXTURE_COMPANY_ID]);
     const company = companyRes.rows[0];
@@ -64,11 +64,29 @@ function assert(cond, msg) {
     await page.click('[data-act="do-login"]');
     await page.waitForTimeout(800);
 
+    // Customer Master (migration 0025/0034) — ta-owner is a forced-selection picker now, not free text.
+    const testCustomer = await page.evaluate(async () => {
+      const data = await apiCall('POST', '/api/customer/clients', { name: 'ลูกค้าทดสอบ เงินประกันผลงาน' });
+      return data.customer;
+    });
+    clientCustomerId = testCustomer.id;
+    // This test sets S.page directly (bypassing goToPage()/loadDataForPage()), so DB.customers is
+    // never auto-loaded — populate it manually so the picker's in-memory filter has a match.
+    await page.evaluate((cust) => { DB.customers = [cust]; S.customersLoaded = true; }, testCustomer);
+    async function pickOwner(searchText) {
+      await page.click('#ta-owner');
+      await page.fill('#ta-owner', searchText);
+      await page.waitForTimeout(200);
+      await page.click(`[data-act="select-customer"][data-id="${testCustomer.id}"]`);
+      await page.waitForTimeout(100);
+    }
+
     // ---- Add form: percent is editable, (บาท) is always a static readonly placeholder (a new tender
     // can't possibly have an approved project budget yet — no fallback to estimated_value).
     await page.evaluate(() => { S.module = 'bidding'; S.page = 'fin_tender_add'; S.tenderAddForm = null; render(); });
     await page.waitForTimeout(200);
     await page.fill('#ta-name', 'ทดสอบเงินประกันผลงานเริ่มต้น (v2)');
+    await pickOwner(testCustomer.name);
     await page.check('input[name="ta-sectorType"][value="private"]');
     await page.waitForSelector('#ta-estimatedValue');
     await page.fill('#ta-estimatedValue', '9999999');
@@ -105,9 +123,9 @@ function assert(cond, msg) {
 
     // ---- Link a project to this tender directly (equivalent to "ผูกเอง" / the won-tender auto-copy).
     const projIns = await pool.query(
-      `INSERT INTO client_projects (company_id, code, name, tender_id, created_by)
-       VALUES ($1, $2, 'ทดสอบโครงการผูก Tender', $3, $4) RETURNING id`,
-      [company.id, 'TEST-RETENTION-' + Date.now(), tenderId, testCustomerId]
+      `INSERT INTO client_projects (company_id, code, name, tender_id, created_by, customer_id)
+       VALUES ($1, $2, 'ทดสอบโครงการผูก Tender', $3, $4, $5) RETURNING id`,
+      [company.id, 'TEST-RETENTION-' + Date.now(), tenderId, testCustomerId, clientCustomerId]
     );
     projectId = projIns.rows[0].id;
 
@@ -188,6 +206,7 @@ function assert(cond, msg) {
         await pool.query('DELETE FROM client_tender_installments WHERE tender_id=$1', [tenderId]);
         await pool.query('DELETE FROM client_tenders WHERE id=$1', [tenderId]);
       }
+      if (clientCustomerId) await pool.query('DELETE FROM client_customers WHERE id=$1', [clientCustomerId]);
       if (testCustomerId) await pool.query('DELETE FROM customers WHERE id=$1', [testCustomerId]);
     } catch (cleanupErr) { console.error('CLEANUP FAILED (manual cleanup needed):', cleanupErr.message); }
     await pool.end();

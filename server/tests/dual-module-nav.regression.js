@@ -52,7 +52,7 @@ async function assertNavItem(page, key, shouldShow, label) {
   const createdVoucherIds = [];
   try {
     console.log('Ensuring fixtures...');
-    await setup();
+    const { clientCustomerId } = await setup();
     const companyRes = await pool.query('SELECT code FROM customer_companies WHERE id=$1', [COMPANY_A_ID]);
     const companyCode = companyRes.rows[0].code;
 
@@ -62,7 +62,7 @@ async function assertNavItem(page, key, shouldShow, label) {
     await httpLogin('fx_approver_mid', companyCode);
 
     console.log('Creating prerequisite project + approved PO (for the cross-module same-page check)...');
-    const proj = await call('fx_maker', 'POST', '/api/customer/projects', { name: 'E2E dual-module nav โครงการ', sectorType: 'private', status: 'in_progress' });
+    const proj = await call('fx_maker', 'POST', '/api/customer/projects', { name: 'E2E dual-module nav โครงการ', customerId: clientCustomerId, sectorType: 'private', status: 'in_progress' });
     createdProjectIds.push(proj.project.id);
     const po = await call('fx_maker', 'POST', '/api/customer/purchase-orders', {
       projectId: proj.project.id, supplierName: 'ร้าน dual-module nav E2E',

@@ -46,7 +46,7 @@ const testFile = (name) => ({ name, mimeType: 'image/jpeg', buffer: Buffer.from(
   const createdSiteExpenseIds = [];
   try {
     console.log('Ensuring fixtures...');
-    await setup();
+    const { clientCustomerId } = await setup();
     const companyRes = await pool.query('SELECT code FROM customer_companies WHERE id=$1', [COMPANY_A_ID]);
     const companyCode = companyRes.rows[0].code;
 
@@ -58,7 +58,7 @@ const testFile = (name) => ({ name, mimeType: 'image/jpeg', buffer: Buffer.from(
     await httpLogin('fx_approver_mid', companyCode);
 
     console.log('Creating prerequisite project + approved PO (qty=20)...');
-    const proj = await call('fx_maker', 'POST', '/api/customer/projects', { name: 'E2E งานหน้างาน โครงการ', sectorType: 'private', status: 'in_progress' });
+    const proj = await call('fx_maker', 'POST', '/api/customer/projects', { name: 'E2E งานหน้างาน โครงการ', customerId: clientCustomerId, sectorType: 'private', status: 'in_progress' });
     createdProjectIds.push(proj.project.id);
     const po = await call('fx_maker', 'POST', '/api/customer/purchase-orders', {
       projectId: proj.project.id, supplierName: 'ร้าน E2E งานหน้างาน',

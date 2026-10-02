@@ -43,7 +43,7 @@ function idemKey(label) { return `${label}-${Date.now()}-${idemCounter++}`; }
   const createdWoIds = [];
   try {
     console.log('Ensuring fixtures...');
-    await setup();
+    const { clientCustomerId } = await setup();
     const companyRes = await pool.query('SELECT code FROM customer_companies WHERE id=$1', [COMPANY_A_ID]);
     const companyCode = companyRes.rows[0].code;
 
@@ -54,7 +54,7 @@ function idemKey(label) { return `${label}-${Date.now()}-${idemCounter++}`; }
     await httpLogin('fx_procurement', companyCode);
 
     console.log('Creating prerequisite project + 2 subcontractors via HTTP...');
-    const proj = await call('fx_maker', 'POST', '/api/customer/projects', { name: 'E2E WO โครงการ', sectorType: 'private', status: 'in_progress' });
+    const proj = await call('fx_maker', 'POST', '/api/customer/projects', { name: 'E2E WO โครงการ', customerId: clientCustomerId, sectorType: 'private', status: 'in_progress' });
     createdProjectIds.push(proj.project.id);
     const subA = await call('fx_procurement', 'POST', '/api/customer/subcontractors', { name: 'ผู้รับเหมาช่วง E2E A ' + Date.now(), taxpayerType: 'individual' });
     createdSubcontractorIds.push(subA.subcontractor.id);

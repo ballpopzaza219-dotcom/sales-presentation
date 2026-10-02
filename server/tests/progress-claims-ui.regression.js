@@ -46,7 +46,7 @@ function idemKey(label) { return `${label}-${Date.now()}-${idemCounter++}`; }
 
   try {
     console.log('Ensuring fixtures...');
-    await setup();
+    const { clientCustomerId } = await setup();
     await pool.query(`UPDATE customers SET can_approve_budget=true WHERE username='fx_super'`); // ต้องใช้อนุมัติ BOQ ก่อนอ้างอิงได้
     const companyRes = await pool.query('SELECT code FROM customer_companies WHERE id=$1', [COMPANY_A_ID]);
     const companyCode = companyRes.rows[0].code;
@@ -60,7 +60,7 @@ function idemKey(label) { return `${label}-${Date.now()}-${idemCounter++}`; }
     console.log('Creating prerequisite project (installment mode) + project with approved BOQ (boq mode)...');
     // installments ระบุตอนสร้างโครงการได้เลย (POST เดียว — ไม่มี PUT endpoint สำหรับ project แยกต่างหาก)
     const projInst = await call('fx_maker', 'POST', '/api/customer/projects', {
-      name: 'E2E ความคืบหน้า โครงการงวดงาน', sectorType: 'private', status: 'in_progress', defaultRetentionPercent: 5,
+      name: 'E2E ความคืบหน้า โครงการงวดงาน', customerId: clientCustomerId, sectorType: 'private', status: 'in_progress', defaultRetentionPercent: 5,
       // งวดที่ 2 เตรียมไว้ให้เทส gate test (ข้อ 9) ใช้แยกต่างหาก — งวดที่ 1 จะถูกใบขอเบิกที่อนุมัติแล้ว
       // "จับจอง" ไปเต็มๆ ในข้อ 2-5 (guard กันขอเบิกซ้อนอ้างอิงงวดเดียวกันขณะยังไม่จบ จะบล็อกถ้าใช้ซ้ำ)
       installments: [{ description: 'งวดที่ 1', amount: 40000, daysToComplete: 30 }, { description: 'งวดที่ 2', amount: 15000, daysToComplete: 60 }],
@@ -71,7 +71,7 @@ function idemKey(label) { return `${label}-${Date.now()}-${idemCounter++}`; }
     const installment2 = projInstDetail.installments[1];
 
     const projBoq = await call('fx_maker', 'POST', '/api/customer/projects', {
-      name: 'E2E ความคืบหน้า โครงการ BOQ', sectorType: 'private', status: 'in_progress', defaultRetentionPercent: 5,
+      name: 'E2E ความคืบหน้า โครงการ BOQ', customerId: clientCustomerId, sectorType: 'private', status: 'in_progress', defaultRetentionPercent: 5,
     });
     createdProjectIds.push(projBoq.project.id);
     const budgetCreated = await call('fx_maker', 'POST', '/api/customer/budgets', { projectId: projBoq.project.id });

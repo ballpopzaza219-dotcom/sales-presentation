@@ -70,8 +70,9 @@ async function pageIsAlive(page) {
     await page.waitForTimeout(800);
 
     projectId = await page.evaluate(async () => {
+      const cust = await apiCall('POST', '/api/customer/clients', { name: 'ลูกค้าทดสอบ' });
       const data = await apiCall('POST', '/api/customer/projects', {
-        code: '', name: 'ทดสอบวันเริ่มพังหน้า', clientName: '', tenderId: null, siteAddress: '',
+        code: '', name: 'ทดสอบวันเริ่มพังหน้า', customerId: cust.customer.id, tenderId: null, siteAddress: '',
         startDate: null, expectedEndDate: null, budgetAmount: 0, defaultRetentionPercent: null,
         projectManagerEmployeeId: null, foremanEmployeeId: null, status: 'in_progress', note: '',
         biddingMethod: '', sectorType: 'private', referencePrice: 0, phoneNumber: '', siteCoordinates: '',

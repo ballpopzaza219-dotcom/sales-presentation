@@ -4,8 +4,15 @@
 `idempotent-forging-wave.md` (แผนที่อนุมัติแล้ว 2026-09-10) ต่างจากแผนตรงที่ไฟล์นี้อยู่ใน repo และจะอัปเดต
 ต่อเนื่องไปเรื่อยๆ ตลอดโปรเจกต์ ไม่ใช่ snapshot ครั้งเดียวตอนวางแผน
 
-อัปเดตล่าสุด: 2026-09-11 — หลังปิดงาน Stage A ข้อ 1-2 (document numbering migration 0023; Branch/Department
-migration 0024 + CRUD endpoints) — เทสถาวรรวม 27 ไฟล์/752 checks ผ่านหมด
+อัปเดตล่าสุด: 2026-10-02 — **Stage A ปิดครบจริง 100% รวม migration 0034**: ข้อ 3 (Customer Master)
+เสร็จสมบูรณ์ทั้งการสร้าง (migration 0025) และการเก็บกวาดทิ้งท้าย (migration 0034 — DROP `client_name`/
+`project_owner` เดิม, บังคับ `customer_id NOT NULL`, apply จริงแล้ว ยืนยัน up→down→up ครบ) —
+customer picker บังคับเลือกใน Project/Tender/Quotation add form ทั้ง 3 หน้า, permission flag
+`can_manage_customer_records`/`can_manage_bidding`, ปิดช่องโหว่ความปลอดภัยที่มีมาก่อนเซสชันนี้ (24
+endpoint ไม่เคยเช็คสิทธิ์ฝั่งเซิร์ฟเวอร์) — ระหว่างทาง apply migration 0034 พบเหตุการณ์จริง: production
+service (`SiteReqServer`) ค้างรันโค้ดเก่าจนพังชั่วคราวเพราะเทส 12 ไฟล์ hardcode ชน production แทน
+sandbox (ดู ข.15 ใน `pr-module-known-limitations.md`) — แก้ด้วยการ restart service แล้ว — เทสถาวรรวม
+34 ไฟล์/932 checks ผ่านหมด (verify หลัง migration + restart service ครบแล้ว)
 
 ---
 
@@ -37,7 +44,7 @@ migration 0024 + CRUD endpoints) — เทสถาวรรวม 27 ไฟล
 | 3-6 | Multi-tenant/Platform/Company | **~75%** ⬆️ | tenant provisioning จริงผ่าน admin-panel แล้ว **Branch/Department เสร็จแล้ว 2026-09-11** (migration 0024, CRUD 6 endpoints, composite FK isolation, audit log) — เหลือขาด default currency/VAT ระดับบริษัท |
 | 7 | Module Architecture (เปิด/ปิดต่อบริษัท) | ~10% | โมดูลมีจริงแต่ hardcode ทั้งหมด ไม่มี toggle ต่อบริษัทเลย |
 | 8 | Dashboard | ~40% | มี overview แยกตามโมดูล ไม่มี dashboard รวมศูนย์ |
-| 9 | CRM/Sales | 0% | ไม่มี Customer master/opportunity pipeline เลย |
+| 9 | CRM/Sales | **~15%** ⬆️ | **Customer Master เสร็จแล้ว 2026-10-01** (migration 0025, `client_customers` + CRUD, ผูกเข้า Project/Tender/Quotation ครบผ่าน picker บังคับเลือก) — เป็นฐานข้อมูลลูกค้าที่ถูกต้องแล้ว แต่ opportunity/lead pipeline สำหรับลูกค้าก่อสร้างยังไม่มี (Stage F ตามแผน) |
 | 10 | Quotation | ~25% | มีแต่ record แบนบรรทัดเดียว ไม่เชื่อม Tender |
 | 11 | Contract | ~10% | ไม่มีตาราง Contract จริง มีแค่ไฟล์แนบ |
 | 12 | Project Management | ~85% | ✅ ใกล้เคียง blueprint มาก |
@@ -100,7 +107,7 @@ migration 0024 + CRUD endpoints) — เทสถาวรรวม 27 ไฟล
 |---|---|
 | 1. แก้บั๊ก document numbering (ปี/สาขาใน key) | ✅ **เสร็จแล้ว 2026-09-10** — migration 0023, commit `dc20a4f`/`b4198a9`, เทส 26 ไฟล์/733 checks ผ่านหมด |
 | 2. Branch/Department ของบริษัทเอง | ✅ **เสร็จแล้ว 2026-09-11** — migration 0024, CRUD 6 endpoints (`server.js`), commit `6d4bea6`/`b4942a7`/`45db393`, เทส 27 ไฟล์/752 checks ผ่านหมด |
-| 3. Customer Master จริง | ⏳ ยังไม่เริ่ม (ลำดับถัดไปตามแผน) |
+| 3. Customer Master จริง | ✅ **เสร็จสมบูรณ์ 100% 2026-10-02** — migration 0025 (`client_customers` + CRUD) + migration 0034 (DROP `client_name`/`project_owner` เดิม, `customer_id` บังคับ NOT NULL — apply จริงแล้ว ยืนยัน up→down→up ครบ), customer picker บังคับเลือกใน Project/Tender/Quotation add form ทั้ง 3 หน้า, permission flags `can_manage_customer_records`/`can_manage_bidding`, เทส 34 ไฟล์/932 checks ผ่านหมด |
 
 ## จุดที่ต้องติดตามต่อ (จากงาน Stage A ข้อ 1-2)
 

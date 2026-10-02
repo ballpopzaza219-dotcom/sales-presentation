@@ -69,7 +69,7 @@ const PROTECTED_ENDPOINTS = [
   const cleanup = { projectIds: [], tenderIds: [], budgetIds: [], quotationIds: [] };
   try {
     console.log('Ensuring fixtures...');
-    await setup();
+    const { clientCustomerId } = await setup();
     const companyARes = await pool.query('SELECT code FROM customer_companies WHERE id=$1', [COMPANY_A_ID]);
     const codeA = companyARes.rows[0].code;
     await login('fx_super', codeA);
@@ -103,13 +103,13 @@ const PROTECTED_ENDPOINTS = [
     await call('fx_super', 'PUT', `/api/customer/users/${fxMaker2Row.id}/permission-flags`, { column: 'can_manage_bidding', value: true });
 
     const project = await call('fx_maker2', 'POST', '/api/customer/projects', {
-      name: `โครงการทดสอบ can_manage_bidding ${Date.now()}`, sectorType: 'private', budget: 100000,
+      name: `โครงการทดสอบ can_manage_bidding ${Date.now()}`, customerId: clientCustomerId, sectorType: 'private', budget: 100000,
     });
     assert(project.status === 200 && project.json.project && project.json.project.id, `fx_maker2 สร้างโครงการได้จริงหลังได้รับสิทธิ์ (ได้ status=${project.status}, body=${JSON.stringify(project.json)})`);
     cleanup.projectIds.push(project.json.project.id);
 
     const tender = await call('fx_maker2', 'POST', '/api/customer/tenders', {
-      name: `ประมูลทดสอบ can_manage_bidding ${Date.now()}`, sectorType: 'private', estimatedValue: 50000,
+      name: `ประมูลทดสอบ can_manage_bidding ${Date.now()}`, customerId: clientCustomerId, sectorType: 'private', estimatedValue: 50000,
     });
     assert(tender.status === 200 && tender.json.tender && tender.json.tender.id, `fx_maker2 สร้างประมูลงานได้จริง (ได้ status=${tender.status}, body=${JSON.stringify(tender.json)})`);
     cleanup.tenderIds.push(tender.json.tender.id);
@@ -160,7 +160,7 @@ const PROTECTED_ENDPOINTS = [
     // ============================================================================================
     console.log('\n=== (6) super_user ทำได้เสมอโดยไม่ต้องมี flag ===');
     const superProject = await call('fx_super', 'POST', '/api/customer/projects', {
-      name: `โครงการทดสอบ super_user ${Date.now()}`, sectorType: 'private', budget: 100000,
+      name: `โครงการทดสอบ super_user ${Date.now()}`, customerId: clientCustomerId, sectorType: 'private', budget: 100000,
     });
     assert(superProject.status === 200, `fx_super (super_user) สร้างโครงการได้โดยไม่ต้องมี can_manage_bidding (ได้ status=${superProject.status})`);
     if (superProject.status === 200) cleanup.projectIds.push(superProject.json.project.id);

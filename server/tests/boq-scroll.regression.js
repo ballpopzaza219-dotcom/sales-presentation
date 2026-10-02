@@ -21,7 +21,7 @@ const BASE = process.env.BOQ_TEST_BASE_URL || 'http://localhost:3000';
 const FIXTURE_COMPANY_ID = 13;
 
 (async () => {
-  let testCustomerId = null, tenderId = null, budgetId = null, browser;
+  let testCustomerId = null, clientCustomerId = null, tenderId = null, budgetId = null, browser;
   try {
     const companyRes = await pool.query('SELECT id, code FROM customer_companies WHERE id=$1', [FIXTURE_COMPANY_ID]);
     const company = companyRes.rows[0];
@@ -33,9 +33,15 @@ const FIXTURE_COMPANY_ID = 13;
       [company.id, hash]
     );
     testCustomerId = custIns.rows[0].id;
+    // Customer Master (migration 0025/0034) — customer_id is mandatory on client_tenders now.
+    const clientCustIns = await pool.query(
+      `INSERT INTO client_customers (company_id, name) VALUES ($1,'ลูกค้าทดสอบ BOQ scroll') RETURNING id`,
+      [company.id]
+    );
+    clientCustomerId = clientCustIns.rows[0].id;
     const tenderIns = await pool.query(
-      `INSERT INTO client_tenders (company_id, tender_no, name, status, created_by) VALUES ($1,'BOQ-SCROLL-001','BOQ scroll regression tender','preparing',$2) RETURNING id`,
-      [company.id, testCustomerId]
+      `INSERT INTO client_tenders (company_id, tender_no, name, status, created_by, customer_id) VALUES ($1,'BOQ-SCROLL-001','BOQ scroll regression tender','preparing',$2,$3) RETURNING id`,
+      [company.id, testCustomerId, clientCustomerId]
     );
     tenderId = tenderIns.rows[0].id;
 
@@ -139,6 +145,7 @@ const FIXTURE_COMPANY_ID = 13;
         await pool.query('DELETE FROM client_budgets WHERE id=$1', [budgetId]);
       }
       if (tenderId) await pool.query('DELETE FROM client_tenders WHERE id=$1', [tenderId]);
+      if (clientCustomerId) await pool.query('DELETE FROM client_customers WHERE id=$1', [clientCustomerId]);
       if (testCustomerId) await pool.query('DELETE FROM customers WHERE id=$1', [testCustomerId]);
     } catch (cleanupErr) { console.error('CLEANUP FAILED (manual cleanup needed):', cleanupErr.message); }
     await pool.end();
