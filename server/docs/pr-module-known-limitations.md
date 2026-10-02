@@ -5,9 +5,10 @@
 endpoint/migration ที่ [`module-status-overview.md`](./module-status-overview.md) และประวัติที่
 `git log`) เรียงตามความสำคัญ: **บล็อกการใช้งานจริง** ก่อน แล้วตามด้วย **แค่ไม่สะดวก/ทำใจได้ชั่วคราว**
 
-อัปเดตล่าสุด: 2026-10-02 — เพิ่ม **ข.15** (เทส 12 ไฟล์ hardcode port 3000 ชน production จริง พบระหว่าง
-migration 0034 — แก้ด้วยการ restart service แล้ว) และ **ข.14** (`data-act="close-modal"` ไม่มี handler
-เลย พบระหว่างงาน Customer Master picker) ของเดิม: 2026-09-12 — **ก.1 (`/void`) และ ก.2 (นำส่งภาษีหัก ณ ที่จ่าย) ทั้งคู่ทำเสร็จและปิดไปแล้ว**
+อัปเดตล่าสุด: 2026-10-02 — **ข.15 ปิดแล้ว** (เทส 12 ไฟล์ hardcode port 3000 ชน production จริง พบระหว่าง
+migration 0034 — แก้ root cause เปลี่ยนให้อ่าน `BOQ_TEST_BASE_URL` ครบทั้ง 12 ไฟล์แล้ว ยืนยันผ่านหมด) และ
+**ข.14** (`data-act="close-modal"` ไม่มี handler เลย พบระหว่างงาน Customer Master picker, ยังไม่แก้)
+ของเดิม: 2026-09-12 — **ก.1 (`/void`) และ ก.2 (นำส่งภาษีหัก ณ ที่จ่าย) ทั้งคู่ทำเสร็จและปิดไปแล้ว**
 (migration 0021/0022, commit `c572aa4`/`33bec5d`) **พบจุดบล็อกใหม่ 2 จุด: ก.3** (`client_subcontractors` PUT
 ไม่ scope UPDATE ด้วย `company_id` — กระทบข้อมูลธนาคารจริง) เป็นงานถัดไปทันทีหลัง `client_customers` **และ ก.4**
 (`fx_maker2` เห็นปุ่มอนุมัติเงินสดย่อยทั้งที่ไม่มีสิทธิ์ — เจอระหว่างทดสอบ `client_customers`, ยืนยันแล้วว่า
@@ -378,7 +379,7 @@ action เฉพาะ `cancel-customer-quick-add` แทน (มี handler จ
 ก่อนว่า modal บางตัวที่ตั้งใจ "ปิดแล้วเสียข้อมูลฟอร์มที่กรอกค้างไว้" (เช่น `ledger-add` ที่มีฟอร์มยาว) มีผล
 ข้างเคียงอะไรที่ต้องระวังเพิ่มหรือไม่ก่อนเปิดใช้งานกลไกปิดแบบทั่วไปจริง
 
-### ข.15 เทส Playwright 12 ไฟล์ hardcode `BASE = 'http://localhost:3000'` ตรงๆ ไม่อ่าน `BOQ_TEST_BASE_URL` — แอบรันชน production service แทน sandbox โดยไม่มีใครรู้ตัว
+### ~~ข.15~~ เทส Playwright 12 ไฟล์ hardcode `BASE = 'http://localhost:3000'` ตรงๆ ไม่อ่าน `BOQ_TEST_BASE_URL` — แอบรันชน production service แทน sandbox โดยไม่มีใครรู้ตัว — ✅ แก้ root cause แล้ว (2026-10-02)
 
 **พบ 2026-10-01** ระหว่างตรวจ regression suite รอบ migration 0034 (DROP `client_name`/`project_owner`) —
 ตั้งใจรัน server ทดสอบแยกบนพอร์ตอื่น (เช่น 3913) แล้วชี้ด้วย `BOQ_TEST_BASE_URL` เพื่อไม่แตะ production
@@ -398,19 +399,25 @@ subcontract-billings-ui, wo-ui
 0034 เพิ่งถูก apply เข้า DB จริง (DROP คอลัมน์) ขณะที่ production service ยังรันโค้ด server.js เก่า
 (ก่อนแก้วันนี้) ค้างอยู่ในหน่วยความจำ (ไม่ได้ restart มาพร้อมกับตอน apply migration) ทำให้โค้ดเก่าที่ยัง
 `SELECT`/`INSERT` คอลัมน์ที่เพิ่งถูก DROP พังทันทีด้วย 500 จริง — ยืนยันตรงๆ ด้วย `GET
-/api/customer/projects` บน port 3000 ได้ 500 ก่อน restart, ได้ 200 หลัง restart service
-(`Restart-Service -Name SiteReqServer -Force` ผ่าน `Start-Process -Verb RunAs` ตามที่เคยบันทึกไว้ว่า
-ต้อง elevate) — **production service ใช้งาน Project/Tender/Quotation ไม่ได้เลยช่วงสั้นๆ ระหว่างนั้นจริง**
-(ไม่มีลูกค้าจริงใช้งานอยู่ตอนนี้ ยังอยู่ช่วงพัฒนา แต่ถ้าเกิดเหตุการณ์เดียวกันหลัง launch จริงจะกระทบผู้ใช้จริง)
+/api/customer/projects` บน port 3000 ได้ 500 ก่อน restart, ได้ 200 หลัง restart service — แก้ด้วย
+`Restart-Service -Name SiteReqServer -Force` ผ่าน `Start-Process -Verb RunAs` (ต้อง elevate ตามที่เคย
+บันทึกไว้) **Claude Code เองไม่มีความสามารถคลิกอนุมัติหน้าต่าง UAC ได้ — เจ้าของระบบเป็นผู้กดอนุมัติ UAC
+prompt เองที่หน้าเครื่องจริง** (ยืนยันแล้วในแชท) — **production service ใช้งาน Project/Tender/Quotation
+ไม่ได้เลยช่วงสั้นๆ ระหว่างนั้นจริง** (ไม่มีลูกค้าจริงใช้งานอยู่ตอนนี้ ยังอยู่ช่วงพัฒนา แต่ถ้าเกิดเหตุการณ์
+เดียวกันหลัง launch จริงจะกระทบผู้ใช้จริง)
 
 **บทเรียนสำคัญ**: การรันเทสชี้ sandbox ด้วย `BOQ_TEST_BASE_URL` **ไม่ได้แปลว่าปลอดภัยจาก production
 จริง 100%** ถ้ามีไฟล์ไหนลืมรองรับ env var นี้ไว้ — ต้องตรวจสอบว่าทุกไฟล์ใน `tests/*.js` ที่ประกาศ `BASE`
 ใช้ pattern `process.env.BOQ_TEST_BASE_URL || 'http://localhost:3000'` ให้ครบจริงก่อนเชื่อว่าการแยก
 sandbox ได้ผลครบทุกไฟล์
 
-**ยังไม่แก้** (นอกขอบเขตงาน migration 0034 นี้) — วิธีแก้ตรงไปตรงมาคือแก้ทั้ง 12 ไฟล์ให้ใช้ pattern เดียวกับ
-ไฟล์อื่น (`const BASE = process.env.BOQ_TEST_BASE_URL || 'http://localhost:3000';`) ควรทำเป็น sprint
-แยกต่างหากที่ไล่แก้ทีละไฟล์แล้วยืนยันว่ายังรันผ่านปกติ ไม่ใช่แก้เร่งด่วนกลางงานอื่น
+**แก้แล้ว (2026-10-02)** — เปลี่ยนทั้ง 12 ไฟล์เป็น `const BASE = process.env.BOQ_TEST_BASE_URL ||
+'http://localhost:3000';` ตาม pattern เดียวกับไฟล์อื่นในชุดเทสทั้งหมด ยืนยันแล้วว่าทุกไฟล์ยังรันผ่านปกติ
+เมื่อชี้ไปที่ sandbox จริง (รันทีละไฟล์ยืนยันครบทั้ง 12 ไฟล์ แล้วรัน `npm run test:regression-all` เต็มชุด
+อีกครั้ง — 932 checks/34 ไฟล์ ผ่านหมด) และยืนยันด้วย grep ว่าไม่มีไฟล์ไหนใน `tests/*.js` เหลือ hardcode
+`localhost:3000` แบบไม่มี fallback จาก env var อีกเลย — `test:petty-cash-vouchers-ui` ที่เคยมี 500 error
+แปลกๆ ตอนรันกับ sandbox (เพราะแอบชน production ที่ยังรันโค้ดเก่าอยู่ ดูรายละเอียดด้านบน) ตอนนี้กลับมา
+ผ่าน 27/27 สะอาดเหมือนก่อนเกิดเหตุการณ์นี้เป๊ะ ยืนยันว่า root cause คือจุดนี้จริง
 
 ---
 
@@ -438,4 +445,4 @@ sandbox ได้ผลครบทุกไฟล์
 | ข.12 | down.sql migration 0023 ส่วน guard >1 ปี ยืนยันด้วยมือแล้ว แต่ยังไม่มี automated test — ควรเพิ่มเมื่อมีโอกาส | ไม่บล็อก (SQL logic ตรวจแล้วถูกต้อง ความเสี่ยงต่ำ) |
 | ข.13 | down.sql migration 0024 guard แยกข้อมูล backfill เป็น heuristic (`code NOT LIKE 'DEPT-%'`) ยืนยันด้วยมือแล้วว่าถูกต้อง | ไม่บล็อก (ครอบคลุมสถานการณ์จริงถูก 100% ตอนนี้) |
 | ข.14 | `data-act="close-modal"` ไม่มี handler เลย — ปุ่มยกเลิก/คลิกนอก modal ของ `S.modal` ทุกตัวไม่ปิด (พบ 2026-10-01 ระหว่างงาน Customer Master picker) | ไม่บล็อก (ไม่กระทบความถูกต้องข้อมูล แค่ UX ค้างใน modal) |
-| ข.15 | เทส 12 ไฟล์ hardcode `BASE=localhost:3000` ไม่อ่าน `BOQ_TEST_BASE_URL` — แอบชน production service จริงแทน sandbox (พบ 2026-10-01 ระหว่าง migration 0034, ทำให้ production ใช้ Project/Tender/Quotation ไม่ได้ชั่วคราวจนกว่าจะ restart service) | ไม่บล็อก (แก้แล้วด้วยการ restart service — ยังไม่ได้แก้ root cause ที่ไฟล์เทส) |
+| ~~ข.15~~ | ~~เทส 12 ไฟล์ hardcode `BASE=localhost:3000` ไม่อ่าน `BOQ_TEST_BASE_URL`~~ — ✅ แก้ root cause แล้ว (2026-10-02, เปลี่ยนทั้ง 12 ไฟล์เป็น pattern เดียวกับไฟล์อื่น ยืนยันผ่านหมดทีละไฟล์ + full suite) | ปิดแล้ว |

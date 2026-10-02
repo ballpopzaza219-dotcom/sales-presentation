@@ -15,7 +15,7 @@ const { chromium } = require('playwright');
 const pool = require('../db');
 const { setup, COMPANY_A_ID, PASSWORD } = require('./fixtures/setup-approval-fixtures');
 
-const BASE = 'http://localhost:3000';
+const BASE = process.env.BOQ_TEST_BASE_URL || 'http://localhost:3000';
 const SHOT_DIR = path.join(__dirname, 'screenshots');
 if (!fs.existsSync(SHOT_DIR)) fs.mkdirSync(SHOT_DIR, { recursive: true });
 let shotN = 0;
