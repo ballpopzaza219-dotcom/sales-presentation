@@ -111,8 +111,10 @@ sandbox (ดู ข.15 ใน `pr-module-known-limitations.md`) — แก้ด
 
 ## จุดที่ต้องติดตามต่อ (จากงาน Stage A ข้อ 1-2)
 
-- ข.11: `generateInvoiceNumber`/`generateQuotationNumber` (admin-panel/platform billing) มีบั๊กเดียวกัน
-  (timezone + reuse-after-delete) — ยังไม่แก้ นอกขอบเขต migration 0023 ดู `pr-module-known-limitations.md`
+- ~~ข.11~~: `generateInvoiceNumber`/`generateQuotationNumber` (admin-panel/platform billing) มีบั๊กเดียวกัน
+  (timezone + reuse-after-delete) — ✅ **แก้แล้ว 2026-09-21 (migration 0026)** ก่อนเริ่ม Stripe Billing
+  สเตจ 1 — บรรทัดนี้ค้างผิดมานาน (commit ที่แก้เขียนว่า "Close ข.11" แต่ไม่เคยอัปเดตเอกสารจริง) แก้ไขให้ตรง
+  แล้ว 2026-10-02 ดู `pr-module-known-limitations.md`
 - ข.12: down.sql migration 0023 ส่วน guard >1 ปี ยืนยันด้วยมือแล้วแต่ยังไม่มี automated test — ดู
   `pr-module-known-limitations.md`
 - ข.13: down.sql migration 0024 guard แยกข้อมูล backfill เป็น heuristic (`code NOT LIKE 'DEPT-%'`) — ดู

@@ -5,11 +5,15 @@
 endpoint/migration ที่ [`module-status-overview.md`](./module-status-overview.md) และประวัติที่
 `git log`) เรียงตามความสำคัญ: **บล็อกการใช้งานจริง** ก่อน แล้วตามด้วย **แค่ไม่สะดวก/ทำใจได้ชั่วคราว**
 
-อัปเดตล่าสุด: 2026-10-02 — **ก.5 ปิดแล้ว** (UPDATE ไม่ scope ด้วย company_id แพร่หลายทั่วระบบ — audit sprint
-ที่เลื่อนไว้ตั้งแต่ 2026-09-12 ทำเสร็จแล้ว แก้ครบ 82 จุด/21 ตาราง หลัง grep ยืนยันพบว่าตัวเลขจริงมากกว่าที่
-ประเมินไว้ตอนแรกเกือบเท่าตัว) และ **ข.15 ปิดแล้ว** (เทส 12 ไฟล์ hardcode port 3000 ชน production จริง พบ
-ระหว่าง migration 0034 — แก้ root cause เปลี่ยนให้อ่าน `BOQ_TEST_BASE_URL` ครบทั้ง 12 ไฟล์แล้ว ยืนยันผ่านหมด)
-ของเดิม: **ข.14** (`data-act="close-modal"` ไม่มี handler เลย พบระหว่างงาน Customer Master picker, ยังไม่แก้)
+อัปเดตล่าสุด: 2026-10-02 — พบระหว่างสำรวจภาพรวมหลังปิด Stage A ว่า **ก.3 และ ข.11 ถูกแก้จริงไปแล้วทั้งคู่
+(2026-09-12 และ 2026-09-21 ตามลำดับ) แต่ไฟล์นี้ไม่เคยอัปเดตสถานะมาบอกทั้งสองจุด** — แก้ไขให้ตรงแล้ว (ดู
+รายละเอียดในหัวข้อของแต่ละจุดเอง, ข.11 พบรูปแบบเดียวกับ ก.3 เป๊ะ: commit เดิมเขียนว่า "Close ข.11" ตรงๆ แต่
+diff จริงไม่เคยแก้ไฟล์นี้เลย) — ของรอบก่อนหน้า: **ก.5 ปิดแล้ว** (UPDATE ไม่ scope ด้วย company_id แพร่หลาย
+ทั่วระบบ — audit sprint ที่เลื่อนไว้ตั้งแต่ 2026-09-12 ทำเสร็จแล้ว แก้ครบ 82 จุด/21 ตาราง หลัง grep ยืนยัน
+พบว่าตัวเลขจริงมากกว่าที่ประเมินไว้ตอนแรกเกือบเท่าตัว) และ **ข.15 ปิดแล้ว** (เทส 12 ไฟล์ hardcode port 3000
+ชน production จริง พบระหว่าง migration 0034 — แก้ root cause เปลี่ยนให้อ่าน `BOQ_TEST_BASE_URL` ครบทั้ง 12
+ไฟล์แล้ว ยืนยันผ่านหมด) ของเดิม: **ข.14** (`data-act="close-modal"` ไม่มี handler เลย พบระหว่างงาน Customer
+Master picker, ยังไม่แก้)
 ของเดิม: 2026-09-12 — **ก.1 (`/void`) และ ก.2 (นำส่งภาษีหัก ณ ที่จ่าย) ทั้งคู่ทำเสร็จและปิดไปแล้ว**
 (migration 0021/0022, commit `c572aa4`/`33bec5d`) **พบจุดบล็อกใหม่ 2 จุด: ก.3** (`client_subcontractors` PUT
 ไม่ scope UPDATE ด้วย `company_id` — กระทบข้อมูลธนาคารจริง) เป็นงานถัดไปทันทีหลัง `client_customers` **และ ก.4**
@@ -22,19 +26,20 @@ enforcement จริง จึงเรียงความสำคัญ ก
 
 ## ก. บล็อกการใช้งานจริง (ต้องแก้ก่อนใช้งานกับเงินจริงระยะยาว)
 
-### ก.3 `client_subcontractors` PUT ไม่ scope UPDATE ด้วย `company_id` (เหมือนบั๊กที่เคยแก้ใน branches/departments)
+### ~~ก.3~~ `client_subcontractors` PUT ไม่ scope UPDATE ด้วย `company_id` — ✅ แก้แล้ว (2026-09-12, commit `f3b6647`) — **เอกสารนี้ไม่เคยอัปเดตสถานะมาก่อน พบระหว่างสำรวจ 2026-10-02**
 
 **พบ 2026-09-12** ระหว่างอ่านโค้ด `client_subcontractors` เป็นต้นแบบตอนเขียน endpoint `client_customers`
 — `app.put('/api/customer/subcontractors/:id', ...)` (migration 0009) มี
-`UPDATE client_subcontractors SET ... WHERE id=$13 RETURNING *` **ไม่มี `AND company_id=$N`** ทั้งที่มี
+`UPDATE client_subcontractors SET ... WHERE id=$13 RETURNING *` ไม่มี `AND company_id=$N` ทั้งที่มี
 `SELECT ... FOR UPDATE` ที่ scope ด้วย `company_id` ถูกต้องอยู่ก่อนหน้าแล้ว — เป็นช่องโหว่ defense-in-depth
-ชนิดเดียวกับที่ผู้ใช้ตรวจพบและให้แก้ในโค้ด branches/departments (CLAUDE.md ข้อ 10: ทุก query ต้อง scope ด้วย
-company_id เอง ไม่พึ่งพา query อื่นก่อนหน้าเป็นกลไกป้องกันทางอ้อม)
+ชนิดเดียวกับที่ผู้ใช้ตรวจพบและให้แก้ในโค้ด branches/departments (CLAUDE.md ข้อ 10)
 
-**ต่างจาก ข้อ 13 ตรงที่นี่คือโค้ด production ที่ใช้งานจริงแล้ว** (ไม่ใช่ branches/departments ที่ยังไม่
-deploy) และกระทบข้อมูลที่เกี่ยวกับเงินจริงโดยตรง (ข้อมูลธนาคารผู้รับเหมาช่วง — ถ้าแก้ผิดบริษัทจริงจะโอนเงิน
-งวดถัดไปผิดบัญชี) — **ตั้งเป็นงานถัดไปทันทีหลังจบ `client_customers` ตามที่สั่ง ไม่ใช่ known-limitation
-ทั่วไปที่ไม่มีกำหนดแก้**
+**แก้แล้วจริงวันเดียวกับที่พบ (2026-09-12, commit `f3b6647`)** — `WHERE id=$13 AND company_id=$14
+RETURNING *` ยืนยันแล้วในโค้ดปัจจุบัน (มีคอมเมนต์อ้างอิง "ก.3" กำกับไว้ตรงจุดด้วย) **แต่ไฟล์นี้ไม่เคยถูกอัปเดต
+มาบอกว่าปิดแล้ว** ยังคงค้างสถานะ "เปิดอยู่ — งานถัดไปทันที" มาตลอดจนกระทั่งพบระหว่างสำรวจภาพรวมหลังปิด
+Stage A (2026-10-02) — **บทเรียน**: การ "แก้เสร็จแล้วแต่ลืมอัปเดตเอกสารสถานะ" เป็นความเสี่ยงจริงพอๆ กับบั๊ก
+เอง เพราะทำให้ประเมินงานค้างผิดพลาดได้ (เกือบเสนอ ก.3 เป็นงานค้างลำดับแรกซ้ำอีกรอบตอนสำรวจนี้ ถ้าไม่ตรวจโค้ด
+จริงก่อนเชื่อเอกสาร)
 
 ### ก.4 `fx_maker2` เห็นปุ่มอนุมัติใบเบิกเงินสดย่อยทั้งที่ไม่มีสิทธิ์ — บั๊กเก่า ไม่เกี่ยวกับงาน client_customers
 
@@ -310,26 +315,28 @@ parent ปกติดี พบ 3 จุดที่เป็นช่องโ
 
 ### ข.10 D: เป็น FAT32 ไม่รองรับ ACL — ต้องทบทวนก่อนนำระบบขึ้นใช้งานจริงกับข้อมูลลูกค้า
 
-### ข.11 `generateInvoiceNumber`/`generateQuotationNumber` (Platform/admin-panel, ไม่ใช่ client ledger) — timezone + reuse-after-delete บั๊กเดียวกับที่เพิ่งแก้ไปใน migration 0023
+### ~~ข.11~~ `generateInvoiceNumber`/`generateQuotationNumber` (Platform/admin-panel) — ✅ แก้แล้ว (2026-09-21, migration 0026, commit `faec5ad`/`6407e59`/`bb4a8c7`) — **เอกสารนี้ไม่เคยอัปเดตสถานะมาก่อน พบระหว่างสำรวจ 2026-10-02 (เหมือนกรณี ก.3 เป๊ะ)**
 
 **พบระหว่างแก้ document numbering ของฝั่ง client (migration 0023)** — 2 ฟังก์ชันนี้อยู่คนละส่วนกับ
 `company_document_counters` เลย (เป็นเลขที่ SiteReq เองออกใบแจ้งหนี้/ใบเสนอราคาให้ **ลูกค้าเช่าระบบ**
 ผ่าน `admin-panel.html`, ตาราง `invoices`/`quotations` ระดับ platform ไม่ใช่ตาราง `client_*` ของ tenant
-ใดๆ เลย) แต่มีบั๊กแบบเดียวกันเป๊ะ 2 อย่าง:
-1. คำนวณปีจาก `new Date().getFullYear()` (เวลาเครื่อง server) ไม่ใช่ `getBangkokYear()` — ยังไม่มีอาการ
-   ตอนนี้เพราะเครื่องนี้ตั้ง timezone เป็น Asia/Bangkok อยู่แล้ว แต่จะออกเลขปีผิดทันทีช่วง 00:00-07:00
-   น. เวลาไทยถ้าย้ายขึ้น production host ที่ตั้ง UTC (เหมือนที่พบใน document numbering ฝั่ง client)
-2. นับเลขแบบ `COUNT(*) FROM invoices/quotations` — เลขซ้ำได้จริงถ้ามีการลบแถว (บั๊กเดียวกับที่ `tender`/
-   `client_projects`/`client_quotations` เคยเป็นมาก่อนแก้)
+ใดๆ เลย) แต่มีบั๊กแบบเดียวกันเป๊ะ 2 อย่าง: (1) คำนวณปีจาก `new Date().getFullYear()` แทน `getBangkokYear()`
+(2) นับเลขแบบ `COUNT(*) FROM invoices/quotations` (เลขซ้ำได้ถ้ามีการลบแถว)
 
-**ผลกระทบจริง**: จำกัดอยู่แค่บัญชี/ใบแจ้งหนี้ของ SiteReq เอง (ฝั่งขาย subscription ให้ลูกค้า) ไม่กระทบข้อมูล
-ธุรกิจของบริษัทผู้เช่าระบบรายใดเลย — ความเสี่ยงต่ำกว่าฝั่ง client เพราะ (1) เป็นการออกใบแจ้งหนี้ภายในของ
-SiteReq เอง ปริมาณยังน้อย (2) ยังไม่ได้ deploy ขึ้น production host จริงที่ตั้ง UTC — แต่ยังควรแก้ก่อนขึ้น
-production เพื่อไม่ให้เอกสารบัญชีของ SiteReq เองมีปัญหาเดียวกัน
+**แก้แล้วจริงก่อนเริ่ม Stripe Billing สเตจ 1 (2026-09-21)** — migration 0026 สร้าง
+`platform_document_counters` (counter ระดับ platform แยกจาก `company_document_counters` ของฝั่ง tenant
+โดยเจตนา เพราะ `invoice_no`/`quotation_no` เป็น UNIQUE ระดับ global ไม่ scope ด้วย `company_id`) พร้อม
+`nextPlatformDocumentSeq()` (atomic UPSERT เหมือน `nextDocumentSeq` ฝั่ง client) — `generateInvoiceNumber`/
+`generateQuotationNumber` ทั้งคู่เปลี่ยนมาใช้ `getBangkokYear() + 543` และเรียก
+`nextPlatformDocumentSeq(client, 'invoice'/'quotation', year)` แทน `COUNT(*)` แล้ว ยืนยันในโค้ดปัจจุบันตรงๆ
+(มีคอมเมนต์อ้างอิง "แก้ ข.11" กำกับไว้ตรงจุดที่ `nextPlatformDocumentSeq` ด้วย)
 
-**ยังไม่ได้แก้** — วิธีแก้เหมือนกับที่ทำไปแล้วกับ `client_projects`/`client_quotations` เป๊ะ (เปลี่ยนมาใช้
-counter table แยกของ platform เอง เช่น `platform_document_counters`, แก้ให้ใช้ `getBangkokYear()`) แต่
-เป็นคนละ migration/คนละ scope กับ 0023 (แก้ไว้เฉพาะ `company_document_counters` ของฝั่ง tenant เท่านั้น)
+**บทเรียนซ้ำกับกรณี ก.3**: commit `bb4a8c7` มีข้อความว่า "Close ข.11" ตรงๆ แต่ diff จริงของ commit นั้น
+**เพิ่มแค่หัวข้อ ก.6 เข้าไฟล์นี้ ไม่เคยแก้ไขหัวข้อ ข.11 เองหรือตารางสรุปเลยสักบรรทัด** — ข้อความ commit สื่อว่า
+ปิดงานแล้ว แต่ไฟล์เอกสารจริงไม่ได้ปิดตาม ทำให้ค้างสถานะ "ยังไม่ได้แก้" มาตั้งแต่ 2026-09-21 จนถึงตอนสำรวจรอบนี้
+— **ข้อควรระวังสำหรับทุกครั้งต่อจากนี้**: ข้อความ commit ที่บอกว่า "Close ข้อ X" ไม่ใช่หลักฐานว่าไฟล์เอกสาร
+สถานะ (`pr-module-known-limitations.md`/`blueprint-progress.md`) ถูกแก้ไขจริงตามนั้นเสมอไป ต้องตรวจ diff
+ของ commit นั้นเองหรือตรวจโค้ดจริงก่อนเชื่อ ไม่ใช่เชื่อแค่ข้อความ commit
 
 ### ข.12 down.sql ของ migration 0023 ส่วน guard เรื่อง >1 ปี ยังไม่เคยถูกทดสอบแบบ trigger จริงในเทสถาวร
 
@@ -426,7 +433,7 @@ sandbox ได้ผลครบทุกไฟล์
 |---|---|---|
 | ~~ก.1~~ | ~~ไม่มี `/void`~~ — ✅ เสร็จแล้ว (2026-09-07) ยกเว้นเอกสารมี VAT ที่ยังบล็อกโดยตั้งใจ (รอใบลดหนี้) | ปิดแล้ว |
 | ~~ก.2~~ | ~~ไม่มีกระบวนการนำส่ง ภ.ง.ด.~~ — ✅ เสร็จแล้ว (2026-09-07) | ปิดแล้ว |
-| **ก.3** | **`client_subcontractors` PUT ไม่ scope UPDATE ด้วย `company_id`** (พบ 2026-09-12, โค้ด production กระทบข้อมูลธนาคารจริง) | **เปิดอยู่ — งานถัดไปทันทีหลัง client_customers** |
+| ~~ก.3~~ | ~~`client_subcontractors` PUT ไม่ scope UPDATE ด้วย `company_id`~~ — ✅ แก้แล้ว (2026-09-12, commit `f3b6647` — เอกสารนี้เพิ่งอัปเดตให้ตรงจริง 2026-10-02) | ปิดแล้ว |
 | **ก.4** | **`fx_maker2` เห็นปุ่มอนุมัติเงินสดย่อยทั้งที่ไม่มีสิทธิ์** (พบ 2026-09-12, บั๊กเก่าไม่เกี่ยวกับ client_customers/branches/departments — ยืนยันแล้วว่าเป็นแค่ UI แสดงผลผิด ไม่ใช่ broken permission enforcement, ยังไม่พบ root cause) | **เปิดอยู่ — ไม่กระทบเงินจริง แต่บล็อก test:regression-all ไม่ให้ EXIT=0 เต็มชุด** |
 | ~~ก.5~~ | ~~UPDATE ไม่ scope ด้วย company_id เอง (พึ่งพา SELECT FOR UPDATE อย่างเดียว) แพร่หลายทั่วระบบ~~ — ✅ แก้ครบแล้ว (2026-10-02, 82 จุด/21 ตาราง — ตัวเลขจริงมากกว่าที่ประเมินไว้ตอนแรกมาก หลัง grep ยืนยันซ้ำ) | ปิดแล้ว |
 | **ก.6** | **`new Date().toISOString()` (UTC) แทน `getBangkokDateStr()` กระจายทั่วระบบ** — พบ 2026-09-13 ระหว่างแก้ ข.11, ไล่แยกแล้ว 25 จุดน่าจะเป็นบั๊กจริง / 1 จุดถูกต้องอยู่แล้ว (ดูตารางเต็มด้านบน) | **เปิดอยู่ — เตรียมไว้สำหรับ audit sprint แยกต่างหาก ไม่ได้แก้ในงานนี้** |
@@ -440,7 +447,7 @@ sandbox ได้ผลครบทุกไฟล์
 | ข.8 | ไฟล์แนบตรวจรับของ/ส่งบิลหน้างาน ไม่เคยถูกลบทิ้ง (payment voucher/advance clearance แก้แล้ว, เหลือ goods receipt/site expense) | บางส่วนแก้แล้ว |
 | ข.9 | `project_id`: 3 journal insert แก้แล้ว ✅ / advance clearance ไม่เพิ่มคอลัมน์ (ตัดสินใจแล้ว) / รายงาน filter โครงการ รอฝ่ายบัญชียืนยัน | บางส่วนแก้แล้ว |
 | ข.10 | D: เป็น FAT32 ไม่รองรับ ACL — ต้องทบทวนก่อนนำระบบขึ้นใช้งานจริงกับข้อมูลลูกค้า | ไม่บล็อก (ช่วงพัฒนา ไม่มีข้อมูลลูกค้าจริง) |
-| ข.11 | generateInvoiceNumber/generateQuotationNumber (platform, ไม่ใช่ tenant) เจอบั๊ก timezone+reuse-after-delete เดียวกับที่เพิ่งแก้ในฝั่ง client — ยังไม่แก้ | ไม่บล็อก (กระทบแค่บัญชี SiteReq เอง ยังไม่ deploy UTC host) |
+| ~~ข.11~~ | ~~generateInvoiceNumber/generateQuotationNumber (platform) เจอบั๊ก timezone+reuse-after-delete~~ — ✅ แก้แล้ว (2026-09-21, migration 0026 — เอกสารนี้เพิ่งอัปเดตให้ตรงจริง 2026-10-02) | ปิดแล้ว |
 | ข.12 | down.sql migration 0023 ส่วน guard >1 ปี ยืนยันด้วยมือแล้ว แต่ยังไม่มี automated test — ควรเพิ่มเมื่อมีโอกาส | ไม่บล็อก (SQL logic ตรวจแล้วถูกต้อง ความเสี่ยงต่ำ) |
 | ข.13 | down.sql migration 0024 guard แยกข้อมูล backfill เป็น heuristic (`code NOT LIKE 'DEPT-%'`) ยืนยันด้วยมือแล้วว่าถูกต้อง | ไม่บล็อก (ครอบคลุมสถานการณ์จริงถูก 100% ตอนนี้) |
 | ข.14 | `data-act="close-modal"` ไม่มี handler เลย — ปุ่มยกเลิก/คลิกนอก modal ของ `S.modal` ทุกตัวไม่ปิด (พบ 2026-10-01 ระหว่างงาน Customer Master picker) | ไม่บล็อก (ไม่กระทบความถูกต้องข้อมูล แค่ UX ค้างใน modal) |
