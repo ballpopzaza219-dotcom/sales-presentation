@@ -5217,7 +5217,7 @@ app.post('/api/customer/revenue/:id/release-retention', requireCustomerAuth, asy
       return res.status(409).json({ error: 'รายการนี้ไม่มีเงินประกันที่รอคืน หรือคืนเงินประกันไปแล้ว' });
     }
     const releaseDate = new Date().toISOString().slice(0, 10);
-    await client.query(`UPDATE client_revenue SET retention_status='released', retention_released_date=$1 WHERE id=$2`, [releaseDate, id]);
+    await client.query(`UPDATE client_revenue SET retention_status='released', retention_released_date=$1 WHERE id=$2 AND company_id=$3`, [releaseDate, id, companyId]);
     const amt = round2(row.retention_amount);
     await createClientJournalEntry(client, {
       companyId, entryDate: releaseDate, description: `รับเงินประกันคืน: ${row.description}`,
@@ -5681,9 +5681,9 @@ app.put('/api/customer/progress-claims/:id', requireCustomerAuth, async (req, re
       `UPDATE client_progress_claims SET
          project_id=$1, claim_type=$2, claim_mode=$3, installment_id=$4, requested_amount=$5::numeric,
          retention_percent=$6::numeric, retention_percent_override_reason=$7, note=$8
-       WHERE id=$9`,
+       WHERE id=$9 AND company_id=$10`,
       [v.safeProjectId, v.safeClaimType, v.safeClaimMode, v.safeInstallmentId, v.safeRequestedAmount,
-       v.safeRetentionPercent, v.safeRetentionPercentOverrideReason, v.safeNote, id]
+       v.safeRetentionPercent, v.safeRetentionPercentOverrideReason, v.safeNote, id, companyId]
     );
     await client.query('DELETE FROM client_progress_claim_items WHERE progress_claim_id=$1', [id]);
     for (const it of v.safeItems) {
@@ -5741,8 +5741,8 @@ app.post('/api/customer/progress-claims/:id/submit', requireCustomerAuth, async 
 
     const claimNo = await generateClientClaimNumber(client, companyId);
     await client.query(
-      `UPDATE client_progress_claims SET claim_no=$1, status='submitted', submitted_by=$2, submitted_at=now() WHERE id=$3`,
-      [claimNo, req.customer.id, id]
+      `UPDATE client_progress_claims SET claim_no=$1, status='submitted', submitted_by=$2, submitted_at=now() WHERE id=$3 AND company_id=$4`,
+      [claimNo, req.customer.id, id, companyId]
     );
     await writeAuditLog(client, {
       companyId, docType: 'progress_claim', docId: id, action: 'submit',
@@ -5802,11 +5802,11 @@ app.post('/api/customer/progress-claims/:id/certify', requireCustomerAuth, async
     }
 
     for (const u of itemUpdates) {
-      await client.query('UPDATE client_progress_claim_items SET certified_percent=$1::numeric, certified_amount=$2::numeric WHERE id=$3', [u.certifiedPercent, u.certifiedAmount, u.itemId]);
+      await client.query('UPDATE client_progress_claim_items SET certified_percent=$1::numeric, certified_amount=$2::numeric WHERE id=$3 AND company_id=$4', [u.certifiedPercent, u.certifiedAmount, u.itemId, companyId]);
     }
     await client.query(
-      `UPDATE client_progress_claims SET certified_amount=$1::numeric, certified_by=$2, certified_at=now(), certify_note=$3, status='certified' WHERE id=$4`,
-      [safeCertifiedAmount, req.customer.id, safeCertifyNote, id]
+      `UPDATE client_progress_claims SET certified_amount=$1::numeric, certified_by=$2, certified_at=now(), certify_note=$3, status='certified' WHERE id=$4 AND company_id=$5`,
+      [safeCertifiedAmount, req.customer.id, safeCertifyNote, id, companyId]
     );
     await writeAuditLog(client, {
       companyId, docType: 'progress_claim', docId: id, action: 'certify',
@@ -5863,8 +5863,8 @@ app.post('/api/customer/progress-claims/:id/approve', requireCustomerAuth, async
         ],
       });
       await client.query(
-        `UPDATE client_progress_claims SET certified_amount=requested_amount, status='approved', approved_by=$1, approved_at=now(), revenue_id=$2 WHERE id=$3`,
-        [req.customer.id, revenueId, id]
+        `UPDATE client_progress_claims SET certified_amount=requested_amount, status='approved', approved_by=$1, approved_at=now(), revenue_id=$2 WHERE id=$3 AND company_id=$4`,
+        [req.customer.id, revenueId, id, companyId]
       );
     } else {
       // ---- 3.1.1.1 Progress ----
@@ -5974,7 +5974,7 @@ app.post('/api/customer/progress-claims/:id/approve', requireCustomerAuth, async
             { accountCode: '1200', debitAmount: 0, creditAmount: a.amount, description: 'ลูกหนี้การค้า' },
           ],
         });
-        await client.query('UPDATE client_revenue SET applied_amount = applied_amount + $1::numeric WHERE id=$2', [a.amount, a.id]);
+        await client.query('UPDATE client_revenue SET applied_amount = applied_amount + $1::numeric WHERE id=$2 AND company_id=$3', [a.amount, a.id, companyId]);
         await client.query(
           `INSERT INTO client_revenue_advance_applications (company_id, advance_revenue_id, progress_claim_id, amount, applied_date, created_by)
            VALUES ($1,$2,$3,$4::numeric,$5,$6)`,
@@ -5986,13 +5986,13 @@ app.post('/api/customer/progress-claims/:id/approve', requireCustomerAuth, async
         const claimItems2 = await client.query('SELECT budget_item_id, certified_percent FROM client_progress_claim_items WHERE progress_claim_id=$1', [id]);
         for (const it of claimItems2.rows) {
           // += แบบสัมพัทธ์เสมอ ห้ามอ่านมาคำนวณแล้วเขียนค่าสัมบูรณ์กลับ (กัน lost-update, ข้อ 5)
-          await client.query('UPDATE client_budget_items SET claimed_percent = claimed_percent + $1::numeric WHERE id=$2', [it.certified_percent, it.budget_item_id]);
+          await client.query('UPDATE client_budget_items SET claimed_percent = claimed_percent + $1::numeric WHERE id=$2 AND company_id=$3', [it.certified_percent, it.budget_item_id, companyId]);
         }
       }
 
       await client.query(
-        `UPDATE client_progress_claims SET retention_amount=$1::numeric, apply_advance_amount=$2::numeric, status='approved', approved_by=$3, approved_at=now(), revenue_id=$4 WHERE id=$5`,
-        [retentionAmount, safeApplyAdvance, req.customer.id, revenueId, id]
+        `UPDATE client_progress_claims SET retention_amount=$1::numeric, apply_advance_amount=$2::numeric, status='approved', approved_by=$3, approved_at=now(), revenue_id=$4 WHERE id=$5 AND company_id=$6`,
+        [retentionAmount, safeApplyAdvance, req.customer.id, revenueId, id, companyId]
       );
     }
 
@@ -6033,7 +6033,7 @@ app.post('/api/customer/progress-claims/:id/reject', requireCustomerAuth, async 
     );
     if (!permCheck.allowed) { await client.query('ROLLBACK'); return res.status(403).json({ error: permCheck.message, code: permCheck.code }); }
 
-    await client.query(`UPDATE client_progress_claims SET status='rejected', rejected_reason=$1 WHERE id=$2`, [reason.trim(), id]);
+    await client.query(`UPDATE client_progress_claims SET status='rejected', rejected_reason=$1 WHERE id=$2 AND company_id=$3`, [reason.trim(), id, companyId]);
     await writeAuditLog(client, {
       companyId, docType: 'progress_claim', docId: id, action: 'reject',
       fromStatus: claim.status, toStatus: 'rejected', performedBy: req.customer.id,
@@ -6077,7 +6077,7 @@ app.post('/api/customer/progress-claims/:id/cancel', requireCustomerAuth, async 
         return res.status(403).json({ error: 'ไม่มีสิทธิ์ยกเลิกใบขอเบิกนี้', code: permCheck.code });
       }
     }
-    await client.query(`UPDATE client_progress_claims SET status='cancelled' WHERE id=$1`, [id]);
+    await client.query(`UPDATE client_progress_claims SET status='cancelled' WHERE id=$1 AND company_id=$2`, [id, companyId]);
     await writeAuditLog(client, {
       companyId, docType: 'progress_claim', docId: id, action: 'cancel',
       fromStatus: status, toStatus: 'cancelled', performedBy: req.customer.id,
@@ -6150,7 +6150,7 @@ app.post('/api/customer/progress-claims/:id/void', requireCustomerAuth, async (r
         await client.query('SELECT id FROM client_budget_items WHERE id = ANY($1::int[]) FOR UPDATE', [budgetItemIds]);
       }
       for (const it of claimItems.rows) {
-        await client.query('UPDATE client_budget_items SET claimed_percent = claimed_percent - $1::numeric WHERE id=$2', [it.certified_percent, it.budget_item_id]);
+        await client.query('UPDATE client_budget_items SET claimed_percent = claimed_percent - $1::numeric WHERE id=$2 AND company_id=$3', [it.certified_percent, it.budget_item_id, companyId]);
       }
     }
 
@@ -6164,7 +6164,7 @@ app.post('/api/customer/progress-claims/:id/void', requireCustomerAuth, async (r
       const advanceIds = [...new Set(applicationsRes.rows.map(a => a.advance_revenue_id))].sort((a, b) => a - b);
       await client.query('SELECT id FROM client_revenue WHERE id = ANY($1::int[]) FOR UPDATE', [advanceIds]);
       for (const a of applicationsRes.rows) {
-        await client.query('UPDATE client_revenue SET applied_amount = applied_amount - $1::numeric WHERE id=$2', [a.amount, a.advance_revenue_id]);
+        await client.query('UPDATE client_revenue SET applied_amount = applied_amount - $1::numeric WHERE id=$2 AND company_id=$3', [a.amount, a.advance_revenue_id, companyId]);
       }
       await client.query('DELETE FROM client_revenue_advance_applications WHERE progress_claim_id=$1', [id]);
     }
@@ -6176,12 +6176,12 @@ app.post('/api/customer/progress-claims/:id/void', requireCustomerAuth, async (r
     }
 
     await client.query(
-      `UPDATE client_revenue SET status='voided', voided_by=$1, voided_reason=$2, voided_at=now() WHERE id=$3`,
-      [req.customer.id, reason, claim.revenue_id]
+      `UPDATE client_revenue SET status='voided', voided_by=$1, voided_reason=$2, voided_at=now() WHERE id=$3 AND company_id=$4`,
+      [req.customer.id, reason, claim.revenue_id, companyId]
     );
     await client.query(
-      `UPDATE client_progress_claims SET status='voided', voided_by=$1, voided_reason=$2, voided_at=now() WHERE id=$3`,
-      [req.customer.id, reason, id]
+      `UPDATE client_progress_claims SET status='voided', voided_by=$1, voided_reason=$2, voided_at=now() WHERE id=$3 AND company_id=$4`,
+      [req.customer.id, reason, id, companyId]
     );
     await writeAuditLog(client, {
       companyId, docType: 'progress_claim', docId: id, action: 'void',
@@ -6318,7 +6318,7 @@ app.post('/api/customer/labor-costs/:id/mark-paid', requireCustomerAuth, async (
       return res.status(409).json({ error: 'รายการนี้จ่ายค่าแรงไปแล้ว' });
     }
     const paidAt = new Date();
-    await client.query(`UPDATE client_labor_costs SET payment_status='paid', paid_at=$1 WHERE id=$2`, [paidAt, id]);
+    await client.query(`UPDATE client_labor_costs SET payment_status='paid', paid_at=$1 WHERE id=$2 AND company_id=$3`, [paidAt, id, companyId]);
     const amt = round2(row.amount);
     await createClientJournalEntry(client, {
       companyId, entryDate: paidAt.toISOString().slice(0, 10), description: `จ่ายค่าแรง: ${row.full_name} (${row.work_date_str})`,
@@ -6627,7 +6627,7 @@ async function recomputeProjectTaskWbs(client, companyId, projectId) {
     });
   })(null, '');
   for (const [id, code] of updates) {
-    await client.query('UPDATE client_project_tasks SET wbs_code=$1 WHERE id=$2', [code, id]);
+    await client.query('UPDATE client_project_tasks SET wbs_code=$1 WHERE id=$2 AND company_id=$3', [code, id, companyId]);
   }
 }
 // True if `candidateId` is `taskId` itself or one of its descendants — used to reject a reparent
@@ -6812,7 +6812,7 @@ async function applyAutoSchedule(client, companyId, projectId) {
   for (const t of tasks) {
     if (!hasPredecessor.has(t.id)) continue;
     const s = schedule.get(t.id);
-    await client.query('UPDATE client_project_tasks SET start_date=$1, end_date=$2 WHERE id=$3', [s.earlyStart, s.earlyFinish, t.id]);
+    await client.query('UPDATE client_project_tasks SET start_date=$1, end_date=$2 WHERE id=$3 AND company_id=$4', [s.earlyStart, s.earlyFinish, t.id, companyId]);
   }
 }
 
@@ -7225,8 +7225,8 @@ app.put('/api/customer/projects/:projectId/tasks/:taskId', requireCustomerAuth, 
     await client.query('BEGIN');
     await client.query(
       `UPDATE client_project_tasks SET parent_task_id=$1, task_name=$2, duration_days=$3, start_date=$4, end_date=$5, percent_complete=$6, is_milestone=$7,
-         actual_start_date=$9, actual_end_date=$10, actual_amount=$11, actual_percent=$12 WHERE id=$8`,
-      [parentId, taskName.trim(), duration, start, end, pct, milestone, taskId, actualStart, actualEnd, actualBaht, actualPct]
+         actual_start_date=$9, actual_end_date=$10, actual_amount=$11, actual_percent=$12 WHERE id=$8 AND company_id=$13`,
+      [parentId, taskName.trim(), duration, start, end, pct, milestone, taskId, actualStart, actualEnd, actualBaht, actualPct, companyId]
     );
     await recomputeProjectTaskWbs(client, companyId, projectId);
     await applyAutoSchedule(client, companyId, projectId);
@@ -7344,7 +7344,7 @@ app.delete('/api/customer/projects/:projectId/tasks/dependencies/:depId', requir
     // below only ever WRITES tasks that currently have a predecessor, so this has to happen first.
     const stillHasPredecessor = await client.query('SELECT 1 FROM client_project_task_dependencies WHERE company_id=$1 AND task_id=$2', [companyId, orphanedTaskId]);
     if (stillHasPredecessor.rowCount === 0) {
-      await client.query('UPDATE client_project_tasks SET start_date=NULL, end_date=NULL WHERE id=$1', [orphanedTaskId]);
+      await client.query('UPDATE client_project_tasks SET start_date=NULL, end_date=NULL WHERE id=$1 AND company_id=$2', [orphanedTaskId, companyId]);
     }
     // Removing a dependency can also shift other still-connected tasks back to a different
     // predecessor's schedule — always recompute the rest, same as every other mutation here.
@@ -7752,7 +7752,7 @@ app.post('/api/customer/tenders/:id/status', requireCustomerAuth, requireCanMana
   const own = await pool.query('SELECT * FROM client_tenders WHERE id=$1 AND company_id=$2', [id, companyId]);
   if (own.rowCount === 0) return res.status(404).json({ error: 'ไม่พบ Tender' });
   const wasWon = own.rows[0].status === 'won';
-  await pool.query('UPDATE client_tenders SET status=$1 WHERE id=$2', [status, id]);
+  await pool.query('UPDATE client_tenders SET status=$1 WHERE id=$2 AND company_id=$3', [status, id, companyId]);
   if (!wasWon && status === 'won') {
     const linked = await pool.query('SELECT id FROM client_projects WHERE company_id=$1 AND tender_id=$2', [companyId, id]);
     for (const p of linked.rows) {
@@ -8594,7 +8594,7 @@ app.post('/api/customer/budgets/:id/import-boq', requireCustomerAuth, requireCan
     await client.query('BEGIN');
     await client.query('DELETE FROM client_budget_items WHERE revision_id=$1', [revision.id]);
     const total = await insertFreshBoqItems(client, companyId, revision.id, insertable, { withStrictControl: false });
-    await client.query(`UPDATE client_budget_revisions SET total_amount=$1, source='boq_import' WHERE id=$2`, [total, revision.id]);
+    await client.query(`UPDATE client_budget_revisions SET total_amount=$1, source='boq_import' WHERE id=$2 AND company_id=$3`, [total, revision.id, companyId]);
     await client.query('COMMIT');
     res.json({ budget: await loadBudgetDetail(pool, companyId, id), importedCount: insertable.length });
   } catch (err) {
@@ -8646,7 +8646,7 @@ app.put('/api/customer/budgets/:id/items', requireCustomerAuth, requireCanManage
     await client.query('BEGIN');
     await client.query('DELETE FROM client_budget_items WHERE revision_id=$1', [revision.id]);
     const total = await insertFreshBoqItems(client, companyId, revision.id, built, { withStrictControl: true });
-    await client.query(`UPDATE client_budget_revisions SET total_amount=$1, source='manual' WHERE id=$2`, [total, revision.id]);
+    await client.query(`UPDATE client_budget_revisions SET total_amount=$1, source='manual' WHERE id=$2 AND company_id=$3`, [total, revision.id, companyId]);
     await client.query('COMMIT');
     res.json({ budget: await loadBudgetDetail(pool, companyId, id) });
   } catch (err) {
@@ -8695,8 +8695,8 @@ app.post('/api/customer/budgets/:id/submit', requireCustomerAuth, requireCanMana
   const itemCount = await pool.query('SELECT COUNT(*)::int AS n FROM client_budget_items WHERE revision_id=$1', [revision.id]);
   if (itemCount.rows[0].n === 0) return res.status(400).json({ error: 'กรุณาเพิ่มรายการ BOQ ก่อนส่งอนุมัติ' });
   const r = await pool.query(
-    `UPDATE client_budget_revisions SET status='pending_approval', submitted_by=$1, submitted_at=now() WHERE id=$2 RETURNING *`,
-    [req.customer.id, revision.id]
+    `UPDATE client_budget_revisions SET status='pending_approval', submitted_by=$1, submitted_at=now() WHERE id=$2 AND company_id=$3 RETURNING *`,
+    [req.customer.id, revision.id, companyId]
   );
   res.json({ revision: serializeBudgetRevision(r.rows[0]) });
 });
@@ -8718,10 +8718,10 @@ app.post('/api/customer/budgets/:id/approve', requireCustomerAuth, requireCanApp
       return res.status(400).json({ error: 'ไม่มีรายการรออนุมัติ' });
     }
     await client.query(
-      `UPDATE client_budget_revisions SET status='approved', approved_by=$1, approved_at=now() WHERE id=$2`,
-      [req.customer.id, revision.id]
+      `UPDATE client_budget_revisions SET status='approved', approved_by=$1, approved_at=now() WHERE id=$2 AND company_id=$3`,
+      [req.customer.id, revision.id, companyId]
     );
-    await client.query('UPDATE client_budgets SET current_revision_id=$1 WHERE id=$2', [revision.id, id]);
+    await client.query('UPDATE client_budgets SET current_revision_id=$1 WHERE id=$2 AND company_id=$3', [revision.id, id, companyId]);
     await client.query('COMMIT');
     res.json({ budget: await loadBudgetDetail(pool, companyId, id) });
   } catch (err) {
@@ -8746,8 +8746,8 @@ app.post('/api/customer/budgets/:id/reject', requireCustomerAuth, requireCanAppr
   const revision = revisionRes.rows[0];
   if (!revision || revision.status !== 'pending_approval') return res.status(400).json({ error: 'ไม่มีรายการรออนุมัติ' });
   const r = await pool.query(
-    `UPDATE client_budget_revisions SET status='rejected', approved_by=$1, approved_at=now(), rejected_reason=$2 WHERE id=$3 RETURNING *`,
-    [req.customer.id, reason.trim(), revision.id]
+    `UPDATE client_budget_revisions SET status='rejected', approved_by=$1, approved_at=now(), rejected_reason=$2 WHERE id=$3 AND company_id=$4 RETURNING *`,
+    [req.customer.id, reason.trim(), revision.id, companyId]
   );
   res.json({ revision: serializeBudgetRevision(r.rows[0]) });
 });
@@ -9148,9 +9148,9 @@ app.put('/api/customer/purchase-orders/:id', requireCustomerAuth, async (req, re
     }
 
     await client.query(
-      `UPDATE client_purchase_orders SET project_id=$1, supplier_name=$2, supplier_contact=$3, issue_date=$4, expected_delivery_date=$5, payment_terms=$6, note=$7 WHERE id=$8`,
+      `UPDATE client_purchase_orders SET project_id=$1, supplier_name=$2, supplier_contact=$3, issue_date=$4, expected_delivery_date=$5, payment_terms=$6, note=$7 WHERE id=$8 AND company_id=$9`,
       [projectId || null, supplierName.trim(), (supplierContact || '').trim(),
-       issueDate || new Date().toISOString().slice(0, 10), expectedDeliveryDate || null, (paymentTerms || '').trim(), (note || '').trim(), id]
+       issueDate || new Date().toISOString().slice(0, 10), expectedDeliveryDate || null, (paymentTerms || '').trim(), (note || '').trim(), id, companyId]
     );
     await recomputeClientPoTotalAmount(client, companyId, id);
     await client.query('COMMIT');
@@ -9217,8 +9217,8 @@ app.post('/api/customer/purchase-orders/:id/submit', requireCustomerAuth, async 
 
     const poNo = await generateClientPoNumber(client, companyId);
     await client.query(
-      `UPDATE client_purchase_orders SET po_no=$1, status='submitted', submitted_by=$2, submitted_at=now() WHERE id=$3`,
-      [poNo, req.customer.id, id]
+      `UPDATE client_purchase_orders SET po_no=$1, status='submitted', submitted_by=$2, submitted_at=now() WHERE id=$3 AND company_id=$4`,
+      [poNo, req.customer.id, id, companyId]
     );
     await writeAuditLog(client, {
       companyId, docType: 'purchase_order', docId: id, action: 'submit',
@@ -9284,13 +9284,13 @@ app.post('/api/customer/purchase-orders/:id/approve', requireCustomerAuth, async
            VALUES ($1,$2,'consume',$3,$4,$5,$6)`,
           [it.pr_item_id, companyId, it.qty, id, `ตัดยอดจาก PO ${po.po_no}`, req.customer.id]
         );
-        await client.query('UPDATE client_purchase_request_items SET qty_ordered = qty_ordered + $1 WHERE id=$2', [it.qty, it.pr_item_id]);
+        await client.query('UPDATE client_purchase_request_items SET qty_ordered = qty_ordered + $1 WHERE id=$2 AND company_id=$3', [it.qty, it.pr_item_id, companyId]);
       }
     }
 
     await client.query(
-      `UPDATE client_purchase_orders SET status='approved', approved_by=$1, approved_at=now() WHERE id=$2`,
-      [req.customer.id, id]
+      `UPDATE client_purchase_orders SET status='approved', approved_by=$1, approved_at=now() WHERE id=$2 AND company_id=$3`,
+      [req.customer.id, id, companyId]
     );
     const reason = result.isOverride
       ? 'อนุมัติโดย super_user (override ข้ามการตรวจสอบ rule/เพดานปกติ)'
@@ -9331,7 +9331,7 @@ app.post('/api/customer/purchase-orders/:id/reject', requireCustomerAuth, async 
       return res.status(403).json({ error: permCheck.message, code: permCheck.code });
     }
 
-    await client.query(`UPDATE client_purchase_orders SET status='rejected', rejected_reason=$1 WHERE id=$2`, [reason.trim(), id]);
+    await client.query(`UPDATE client_purchase_orders SET status='rejected', rejected_reason=$1 WHERE id=$2 AND company_id=$3`, [reason.trim(), id, companyId]);
     await writeAuditLog(client, {
       companyId, docType: 'purchase_order', docId: id, action: 'reject',
       fromStatus: 'submitted', toStatus: 'rejected', performedBy: req.customer.id,
@@ -9412,11 +9412,11 @@ app.post('/api/customer/purchase-orders/:id/cancel', requireCustomerAuth, async 
            VALUES ($1,$2,'release',$3,$4,$5,$6)`,
           [it.pr_item_id, companyId, it.qty, id, `คืนยอด — ยกเลิก PO ${po.po_no}`, req.customer.id]
         );
-        await client.query('UPDATE client_purchase_request_items SET qty_ordered = qty_ordered - $1 WHERE id=$2', [it.qty, it.pr_item_id]);
+        await client.query('UPDATE client_purchase_request_items SET qty_ordered = qty_ordered - $1 WHERE id=$2 AND company_id=$3', [it.qty, it.pr_item_id, companyId]);
       }
     }
 
-    await client.query(`UPDATE client_purchase_orders SET status='cancelled' WHERE id=$1`, [id]);
+    await client.query(`UPDATE client_purchase_orders SET status='cancelled' WHERE id=$1 AND company_id=$2`, [id, companyId]);
     await writeAuditLog(client, {
       companyId, docType: 'purchase_order', docId: id, action: 'cancel',
       fromStatus: status, toStatus: 'cancelled', performedBy: req.customer.id, isOverride: cancelIsOverride,
@@ -9746,7 +9746,7 @@ async function upsertApprovalRule(client, { actor, approverCustomerId, companyId
   );
   const old = oldRes.rows[0] || null;
   if (old) {
-    await client.query(`UPDATE client_pr_approval_rules SET is_active=false WHERE id=$1`, [old.id]);
+    await client.query(`UPDATE client_pr_approval_rules SET is_active=false WHERE id=$1 AND company_id=$2`, [old.id, companyId]);
   }
   const insRes = await client.query(
     `INSERT INTO client_pr_approval_rules (company_id, approver_customer_id, doc_type, min_amount, max_amount, description, is_active)
@@ -9791,7 +9791,7 @@ async function editApprovalRuleDescription(client, { actor, ruleId, companyId, d
   if (desc === rule.description) {
     return { status: 200, body: { rule } }; // ไม่เปลี่ยนแปลงจริง ไม่ log (เหมือน updateUserPermissionFlag)
   }
-  const updated = await client.query('UPDATE client_pr_approval_rules SET description=$1 WHERE id=$2 RETURNING *', [desc, ruleId]);
+  const updated = await client.query('UPDATE client_pr_approval_rules SET description=$1 WHERE id=$2 AND company_id=$3 RETURNING *', [desc, ruleId, companyId]);
   await writeAuditLog(client, {
     companyId, docType: 'user_permission', docId: rule.approver_customer_id, action: 'grant',
     fromStatus: rule.description, toStatus: desc, performedBy: actor.id,
@@ -9813,7 +9813,7 @@ async function deactivateApprovalRule(client, { actor, ruleId, companyId }) {
   if (!rule.is_active) {
     return { status: 200, body: { rule } }; // ปิดอยู่แล้ว ไม่เปลี่ยนแปลงจริง ไม่ log
   }
-  const updated = await client.query('UPDATE client_pr_approval_rules SET is_active=false WHERE id=$1 RETURNING *', [ruleId]);
+  const updated = await client.query('UPDATE client_pr_approval_rules SET is_active=false WHERE id=$1 AND company_id=$2 RETURNING *', [ruleId, companyId]);
   const docLabel = APPROVAL_DOC_TYPE_LABEL_TH[rule.doc_type] || rule.doc_type;
   await writeAuditLog(client, {
     companyId, docType: 'user_permission', docId: rule.approver_customer_id, action: 'revoke',
@@ -10383,7 +10383,7 @@ app.put('/api/customer/purchase-requests/:id', requireCustomerAuth, async (req, 
     // ผู้ใช้สลับลำดับรายการ (เช่น สลับ idx 0 กับ 1 — ถ้า UPDATE ทีละแถวด้วยค่าจริงเลย แถวแรกที่เปลี่ยน
     // เป็น idx=1 จะชนกับแถวที่สองซึ่งยังเป็น idx=1 อยู่ ณ ขณะนั้น)
     for (const it of safeItems) {
-      if (it.id) await client.query('UPDATE client_purchase_request_items SET idx = -id WHERE id = $1', [it.id]);
+      if (it.id) await client.query('UPDATE client_purchase_request_items SET idx = -id WHERE id = $1 AND company_id = $2', [it.id, companyId]);
     }
 
     // Phase 2: ตั้งค่าจริงทั้งหมด (idx ตามตำแหน่งใหม่) — ไม่มีทางชนกันอีกเพราะทุกแถวผ่านค่าลบชั่วคราวแล้ว
@@ -10405,8 +10405,8 @@ app.put('/api/customer/purchase-requests/:id', requireCustomerAuth, async (req, 
           return res.status(409).json({ error: `ลดจำนวนรายการ id=${it.id} ต่ำกว่ายอดที่ตัด/ลดไปแล้วไม่ได้ (ขั้นต่ำ ${minCheck.rows[0].min_qty})` });
         }
         await client.query(
-          `UPDATE client_purchase_request_items SET budget_item_id=$1, idx=$2, material=$3, unit=$4, qty_requested=$5, unit_price=$6 WHERE id=$7`,
-          [it.budgetItemId, i, it.material, it.unit, it.qtyRequested, it.unitPrice, it.id]
+          `UPDATE client_purchase_request_items SET budget_item_id=$1, idx=$2, material=$3, unit=$4, qty_requested=$5, unit_price=$6 WHERE id=$7 AND company_id=$8`,
+          [it.budgetItemId, i, it.material, it.unit, it.qtyRequested, it.unitPrice, it.id, companyId]
         );
       } else {
         await client.query(
@@ -10418,8 +10418,8 @@ app.put('/api/customer/purchase-requests/:id', requireCustomerAuth, async (req, 
     }
 
     await client.query(
-      `UPDATE client_purchase_requests SET project_id=$1, source=$2, budget_revision_id=$3, needed_date=$4, note=$5 WHERE id=$6`,
-      [projectId, source, budgetRevisionId || null, neededDate || null, (note || '').trim(), id]
+      `UPDATE client_purchase_requests SET project_id=$1, source=$2, budget_revision_id=$3, needed_date=$4, note=$5 WHERE id=$6 AND company_id=$7`,
+      [projectId, source, budgetRevisionId || null, neededDate || null, (note || '').trim(), id, companyId]
     );
     await recomputeClientPrTotalAmount(client, companyId, id);
     await client.query('COMMIT');
@@ -10491,8 +10491,8 @@ app.post('/api/customer/purchase-requests/:id/submit', requireCustomerAuth, asyn
 
     const prNo = await generateClientPrNumber(client, companyId);
     await client.query(
-      `UPDATE client_purchase_requests SET pr_no=$1, status='submitted', submitted_by=$2, submitted_at=now() WHERE id=$3`,
-      [prNo, req.customer.id, id]
+      `UPDATE client_purchase_requests SET pr_no=$1, status='submitted', submitted_by=$2, submitted_at=now() WHERE id=$3 AND company_id=$4`,
+      [prNo, req.customer.id, id, companyId]
     );
     await writeAuditLog(client, {
       companyId, docType: 'purchase_request', docId: id, action: 'submit',
@@ -10525,8 +10525,8 @@ app.post('/api/customer/purchase-requests/:id/approve', requireCustomerAuth, asy
     if (!result.allowed) return { status: 403, body: { error: result.message, code: result.code } };
 
     await client.query(
-      `UPDATE client_purchase_requests SET status='approved', approved_by=$1, approved_at=now(), approved_amount=$2 WHERE id=$3`,
-      [req.customer.id, pr.total_amount, id]
+      `UPDATE client_purchase_requests SET status='approved', approved_by=$1, approved_at=now(), approved_amount=$2 WHERE id=$3 AND company_id=$4`,
+      [req.customer.id, pr.total_amount, id, companyId]
     );
     const reason = result.isOverride
       ? 'อนุมัติโดย super_user (override ข้ามการตรวจสอบ rule/เพดานปกติ)'
@@ -10572,7 +10572,7 @@ app.post('/api/customer/purchase-requests/:id/reject', requireCustomerAuth, asyn
       return res.status(403).json({ error: permCheck.message, code: permCheck.code });
     }
 
-    await client.query(`UPDATE client_purchase_requests SET status='rejected', rejected_reason=$1 WHERE id=$2`, [reason.trim(), id]);
+    await client.query(`UPDATE client_purchase_requests SET status='rejected', rejected_reason=$1 WHERE id=$2 AND company_id=$3`, [reason.trim(), id, companyId]);
     await writeAuditLog(client, {
       companyId, docType: 'purchase_request', docId: id, action: 'reject',
       fromStatus: 'submitted', toStatus: 'rejected', performedBy: req.customer.id,
@@ -10631,7 +10631,7 @@ app.post('/api/customer/purchase-requests/:id/cancel', requireCustomerAuth, asyn
         return res.status(409).json({ error: 'ไม่สามารถยกเลิกได้ เนื่องจากมีรายการที่ถูกตัดยอดไปสร้าง PO แล้ว' });
       }
     }
-    await client.query(`UPDATE client_purchase_requests SET status='cancelled' WHERE id=$1`, [id]);
+    await client.query(`UPDATE client_purchase_requests SET status='cancelled' WHERE id=$1 AND company_id=$2`, [id, companyId]);
     await writeAuditLog(client, {
       companyId, docType: 'purchase_request', docId: id, action: 'cancel',
       fromStatus: status, toStatus: 'cancelled', performedBy: req.customer.id, isOverride: cancelIsOverride,
@@ -11393,9 +11393,9 @@ app.put('/api/customer/subcontract-terms/:id', requireCustomerAuth, async (req, 
       `UPDATE client_subcontract_terms SET
          subcontractor_id=$1, project_id=$2, contract_value=$3::numeric, advance_percent=$4::numeric, retention_percent=$5::numeric,
          wht_income_type_code=$6, wht_rate=$7::numeric, start_date=$8, end_date=$9, note=$10
-       WHERE id=$11`,
+       WHERE id=$11 AND company_id=$12`,
       [v.safeSubcontractorId, v.safeProjectId, v.safeContractValue, v.safeAdvancePercent, v.safeRetentionPercent,
-       v.safeWhtIncomeTypeCode, v.safeWhtRate, v.safeStartDate, v.safeEndDate, (note || '').trim(), id]
+       v.safeWhtIncomeTypeCode, v.safeWhtRate, v.safeStartDate, v.safeEndDate, (note || '').trim(), id, companyId]
     );
     await client.query('COMMIT');
     const r = await pool.query(`${CLIENT_WO_SELECT} WHERE wo.id=$1 AND wo.company_id=$2`, [id, companyId]);
@@ -11429,8 +11429,8 @@ app.post('/api/customer/subcontract-terms/:id/submit', requireCustomerAuth, asyn
 
     const contractNo = await generateClientWoNumber(client, companyId);
     await client.query(
-      `UPDATE client_subcontract_terms SET contract_no=$1, status='submitted', submitted_by=$2, submitted_at=now() WHERE id=$3`,
-      [contractNo, req.customer.id, id]
+      `UPDATE client_subcontract_terms SET contract_no=$1, status='submitted', submitted_by=$2, submitted_at=now() WHERE id=$3 AND company_id=$4`,
+      [contractNo, req.customer.id, id, companyId]
     );
     await writeAuditLog(client, {
       companyId, docType: 'subcontract_term', docId: id, action: 'submit',
@@ -11458,8 +11458,8 @@ app.post('/api/customer/subcontract-terms/:id/approve', requireCustomerAuth, asy
     // อนุมัติแล้ว = สัญญาเริ่มมีผลจริงทันที (contract_status='active') — ตรงกับ CHECK
     // client_subcontract_terms_status_pair_check (status='approved' ต้องคู่กับ contract_status ที่ไม่ใช่ NULL)
     await client.query(
-      `UPDATE client_subcontract_terms SET status='approved', contract_status='active', approved_by=$1, approved_at=now() WHERE id=$2`,
-      [req.customer.id, id]
+      `UPDATE client_subcontract_terms SET status='approved', contract_status='active', approved_by=$1, approved_at=now() WHERE id=$2 AND company_id=$3`,
+      [req.customer.id, id, companyId]
     );
     const reason = result.isOverride
       ? 'อนุมัติโดย super_user (override ข้ามการตรวจสอบ rule/เพดานปกติ)'
@@ -11492,7 +11492,7 @@ app.post('/api/customer/subcontract-terms/:id/reject', requireCustomerAuth, asyn
     }, { enforceAmountLimit: false });
     if (!permCheck.allowed) { await client.query('ROLLBACK'); return res.status(403).json({ error: permCheck.message, code: permCheck.code }); }
 
-    await client.query(`UPDATE client_subcontract_terms SET status='rejected', rejected_reason=$1 WHERE id=$2`, [reason.trim(), id]);
+    await client.query(`UPDATE client_subcontract_terms SET status='rejected', rejected_reason=$1 WHERE id=$2 AND company_id=$3`, [reason.trim(), id, companyId]);
     await writeAuditLog(client, {
       companyId, docType: 'subcontract_term', docId: id, action: 'reject',
       fromStatus: 'submitted', toStatus: 'rejected', performedBy: req.customer.id,
@@ -11539,7 +11539,7 @@ app.post('/api/customer/subcontract-terms/:id/cancel', requireCustomerAuth, asyn
       }
     }
 
-    await client.query(`UPDATE client_subcontract_terms SET status='cancelled' WHERE id=$1`, [id]);
+    await client.query(`UPDATE client_subcontract_terms SET status='cancelled' WHERE id=$1 AND company_id=$2`, [id, companyId]);
     await writeAuditLog(client, {
       companyId, docType: 'subcontract_term', docId: id, action: 'cancel',
       fromStatus: status, toStatus: 'cancelled', performedBy: req.customer.id,
@@ -11573,7 +11573,7 @@ app.post('/api/customer/subcontract-terms/:id/complete', requireCustomerAuth, as
       await client.query('ROLLBACK');
       return res.status(409).json({ error: 'ปิดงานได้เฉพาะสัญญาที่อนุมัติแล้วและยังดำเนินอยู่ (active) เท่านั้น' });
     }
-    await client.query(`UPDATE client_subcontract_terms SET contract_status='completed' WHERE id=$1`, [id]);
+    await client.query(`UPDATE client_subcontract_terms SET contract_status='completed' WHERE id=$1 AND company_id=$2`, [id, companyId]);
     await writeAuditLog(client, {
       companyId, docType: 'subcontract_term', docId: id, action: 'complete',
       fromStatus: 'active', toStatus: 'completed', performedBy: req.customer.id,
@@ -11606,7 +11606,7 @@ app.post('/api/customer/subcontract-terms/:id/terminate', requireCustomerAuth, a
       await client.query('ROLLBACK');
       return res.status(409).json({ error: 'เลิกสัญญาได้เฉพาะสัญญาที่อนุมัติแล้วและยังดำเนินอยู่ (active) เท่านั้น' });
     }
-    await client.query(`UPDATE client_subcontract_terms SET contract_status='terminated' WHERE id=$1`, [id]);
+    await client.query(`UPDATE client_subcontract_terms SET contract_status='terminated' WHERE id=$1 AND company_id=$2`, [id, companyId]);
     await writeAuditLog(client, {
       companyId, docType: 'subcontract_term', docId: id, action: 'terminate',
       fromStatus: 'active', toStatus: 'terminated', performedBy: req.customer.id, reason: reason.trim(),
@@ -11959,10 +11959,10 @@ app.put('/api/customer/subcontract-billings/:id', requireCustomerAuth, async (re
          advance_recovery_amount=$5::numeric, retention_amount=$6::numeric, has_tax_invoice=$7,
          vat_rate=$8::numeric, vat_amount=$9::numeric, wht_income_type_code=$10, wht_rate=$11::numeric,
          wht_amount=$12::numeric, net_payable_amount=$13::numeric, note=$14
-       WHERE id=$15`,
+       WHERE id=$15 AND company_id=$16`,
       [v.safeSubcontractTermId, v.safeBillingType, v.safeBillingDate, v.safeGrossAmount,
        v.safeAdvanceRecoveryAmount, v.safeRetentionAmount, v.safeHasTaxInvoice, v.safeVatRate, v.safeVatAmount,
-       v.safeWhtIncomeTypeCode, v.safeWhtRate, v.safeWhtAmount, v.safeNetPayableAmount, v.safeNote, id]
+       v.safeWhtIncomeTypeCode, v.safeWhtRate, v.safeWhtAmount, v.safeNetPayableAmount, v.safeNote, id, companyId]
     );
     await client.query('DELETE FROM client_subcontract_retention_release_items WHERE retention_release_billing_id=$1', [id]);
     for (const it of v.safeItems) {
@@ -12036,7 +12036,7 @@ app.post('/api/customer/subcontract-billings/:id/submit', requireCustomerAuth, a
     }
 
     const billingNo = await generateClientSubcontractBillingNo(client, companyId);
-    await client.query(`UPDATE client_subcontract_billings SET billing_no=$1, status='submitted', submitted_by=$2, submitted_at=now() WHERE id=$3`, [billingNo, req.customer.id, id]);
+    await client.query(`UPDATE client_subcontract_billings SET billing_no=$1, status='submitted', submitted_by=$2, submitted_at=now() WHERE id=$3 AND company_id=$4`, [billingNo, req.customer.id, id, companyId]);
     await writeAuditLog(client, {
       companyId, docType: 'subcontractor_payment', docId: id, action: 'submit',
       fromStatus: 'draft', toStatus: 'submitted', performedBy: req.customer.id,
@@ -12173,7 +12173,7 @@ app.post('/api/customer/subcontract-billings/:id/approve', requireCustomerAuth, 
       issuedCertNo = certNo;
     }
 
-    await client.query(`UPDATE client_subcontract_billings SET status='approved', approved_by=$1, approved_at=now() WHERE id=$2`, [req.customer.id, id]);
+    await client.query(`UPDATE client_subcontract_billings SET status='approved', approved_by=$1, approved_at=now() WHERE id=$2 AND company_id=$3`, [req.customer.id, id, companyId]);
     const reason = result.isOverride
       ? 'อนุมัติโดย super_user (override ข้ามการตรวจสอบ rule/เพดานปกติ)'
       : `อนุมัติผ่าน rule #${result.ruleId} (เพดาน ${result.maxAmountRaw} บาท)`;
@@ -12205,7 +12205,7 @@ app.post('/api/customer/subcontract-billings/:id/reject', requireCustomerAuth, a
     }, { enforceAmountLimit: false });
     if (!permCheck.allowed) { await client.query('ROLLBACK'); return res.status(403).json({ error: permCheck.message, code: permCheck.code }); }
 
-    await client.query(`UPDATE client_subcontract_billings SET status='rejected', rejected_reason=$1 WHERE id=$2`, [reason.trim(), id]);
+    await client.query(`UPDATE client_subcontract_billings SET status='rejected', rejected_reason=$1 WHERE id=$2 AND company_id=$3`, [reason.trim(), id, companyId]);
     await writeAuditLog(client, {
       companyId, docType: 'subcontractor_payment', docId: id, action: 'reject',
       fromStatus: 'submitted', toStatus: 'rejected', performedBy: req.customer.id,
@@ -12245,7 +12245,7 @@ app.post('/api/customer/subcontract-billings/:id/cancel', requireCustomerAuth, a
         return { status: 403, body: { error: 'ไม่มีสิทธิ์ยกเลิกใบเบิกเงินนี้', code: permCheck.code } };
       }
     }
-    await client.query(`UPDATE client_subcontract_billings SET status='cancelled' WHERE id=$1`, [id]);
+    await client.query(`UPDATE client_subcontract_billings SET status='cancelled' WHERE id=$1 AND company_id=$2`, [id, companyId]);
     await writeAuditLog(client, {
       companyId, docType: 'subcontractor_payment', docId: id, action: 'cancel',
       fromStatus: status, toStatus: 'cancelled', performedBy: req.customer.id,
@@ -12294,8 +12294,8 @@ app.post('/api/customer/subcontract-billings/:id/void', requireCustomerAuth, asy
     const voidedCerts = await voidWhtCertificatesForSources(client, companyId, 'subcontractor_payment', [id], { voidedBy: req.customer.id, reason });
 
     await client.query(
-      `UPDATE client_subcontract_billings SET status='voided', voided_by=$1, voided_reason=$2, voided_at=now() WHERE id=$3`,
-      [req.customer.id, reason, id]
+      `UPDATE client_subcontract_billings SET status='voided', voided_by=$1, voided_reason=$2, voided_at=now() WHERE id=$3 AND company_id=$4`,
+      [req.customer.id, reason, id, companyId]
     );
     await writeAuditLog(client, {
       companyId, docType: 'subcontractor_payment', docId: id, action: 'void',
@@ -12898,7 +12898,7 @@ app.post('/api/customer/site-expense-submissions/:id/reject', requireCustomerAut
     const r = await client.query('SELECT status FROM client_site_expense_submissions WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
     if (r.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบใบส่งบิล' }); }
     if (r.rows[0].status !== 'submitted') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'ตีกลับได้เฉพาะเรื่องที่ยังไม่ได้ดำเนินการเท่านั้น' }); }
-    await client.query(`UPDATE client_site_expense_submissions SET status='rejected', rejected_reason=$1 WHERE id=$2`, [reason.trim(), id]);
+    await client.query(`UPDATE client_site_expense_submissions SET status='rejected', rejected_reason=$1 WHERE id=$2 AND company_id=$3`, [reason.trim(), id, companyId]);
     deletedAttachmentPaths = await deleteSiteExpenseAttachmentRows(client, id);
     await writeAuditLog(client, {
       companyId, docType: 'site_expense_submission', docId: id, action: 'reject',
@@ -12941,8 +12941,8 @@ app.post('/api/customer/site-expense-submissions/:id/close', requireCustomerAuth
     await client.query(
       `UPDATE client_site_expense_submissions
        SET status='closed', result_doc_type=$1, result_doc_id=$2, closing_note=$3, closed_by=$4, closed_at=now()
-       WHERE id=$5`,
-      [resultDocType, parsedResultDocId, (closingNote || '').trim(), req.customer.id, id]
+       WHERE id=$5 AND company_id=$6`,
+      [resultDocType, parsedResultDocId, (closingNote || '').trim(), req.customer.id, id, companyId]
     );
     await writeAuditLog(client, {
       companyId, docType: 'site_expense_submission', docId: id, action: 'close',
@@ -13009,7 +13009,7 @@ app.post('/api/customer/purchase-requests/:id/items/:itemId/consume', requireCus
     );
     // อัปเดตแบบสัมพัทธ์เท่านั้น (qty_ordered = qty_ordered + $) ตามกฎที่บันทึกไว้ในสคีมา — ห้ามอ่านค่ามา
     // คำนวณในโค้ดแอปแล้วเขียนค่าสัมบูรณ์กลับ (กัน lost-update ตอน concurrent consume สองคำขอพร้อมกัน)
-    await client.query('UPDATE client_purchase_request_items SET qty_ordered = qty_ordered + $1 WHERE id=$2', [safeQty, itemId]);
+    await client.query('UPDATE client_purchase_request_items SET qty_ordered = qty_ordered + $1 WHERE id=$2 AND company_id=$3', [safeQty, itemId, companyId]);
     await writeAuditLog(client, {
       companyId, docType: 'purchase_request', docId: id, action: 'consume',
       performedBy: req.customer.id, reason: `ตัดยอด ${safeQty} หน่วย รายการ id=${itemId} อ้างอิง PO #${poId}`,
@@ -13071,7 +13071,7 @@ app.post('/api/customer/purchase-requests/:id/items/:itemId/release', requireCus
        VALUES ($1,$2,'release',$3,$4,$5,$6)`,
       [itemId, companyId, safeQty, poId, (note || '').trim(), req.customer.id]
     );
-    await client.query('UPDATE client_purchase_request_items SET qty_ordered = qty_ordered - $1 WHERE id=$2', [safeQty, itemId]);
+    await client.query('UPDATE client_purchase_request_items SET qty_ordered = qty_ordered - $1 WHERE id=$2 AND company_id=$3', [safeQty, itemId, companyId]);
     await writeAuditLog(client, {
       companyId, docType: 'purchase_request', docId: id, action: 'release',
       performedBy: req.customer.id, reason: `คืนยอด ${safeQty} หน่วย รายการ id=${itemId} อ้างอิง PO #${poId}`,
@@ -13123,7 +13123,7 @@ app.post('/api/customer/purchase-requests/:id/items/:itemId/cancel-qty', require
        VALUES ($1,$2,'cancel',$3,$4,$5)`,
       [itemId, companyId, safeQty, (note || '').trim(), req.customer.id]
     );
-    await client.query('UPDATE client_purchase_request_items SET qty_cancelled = qty_cancelled + $1 WHERE id=$2', [safeQty, itemId]);
+    await client.query('UPDATE client_purchase_request_items SET qty_cancelled = qty_cancelled + $1 WHERE id=$2 AND company_id=$3', [safeQty, itemId, companyId]);
     await writeAuditLog(client, {
       companyId, docType: 'purchase_request', docId: id, action: 'cancel-qty',
       performedBy: req.customer.id, reason: `ลดยอด ${safeQty} หน่วย รายการ id=${itemId}`,
@@ -13455,9 +13455,9 @@ app.put('/api/customer/external-payees/:id', requireCustomerAuth, async (req, re
       `UPDATE client_external_payees SET
          name=$1, tax_id=$2, branch_code=$3, address=$4, taxpayer_type=$5,
          default_wht_rate=$6::numeric, default_expense_account_code=$7, is_active=$8
-       WHERE id=$9 RETURNING *`,
+       WHERE id=$9 AND company_id=$10 RETURNING *`,
       [v.safeName, v.safeTaxId, v.safeBranchCode, v.safeAddress, v.safeTaxpayerType,
-       v.safeDefaultWhtRate, v.safeDefaultExpenseAccountCode, isActive, id]
+       v.safeDefaultWhtRate, v.safeDefaultExpenseAccountCode, isActive, id, companyId]
     );
     const row = update.rows[0];
 
@@ -13763,7 +13763,7 @@ app.put('/api/customer/payment-vouchers/:id', requireCustomerAuth, async (req, r
          has_tax_invoice=$10, vat_rate=$11::numeric, vat_amount=ROUND($7::numeric * $11::numeric / 100, 2),
          wht_rate=$12::numeric, wht_amount=ROUND($7::numeric * $12::numeric / 100, 2), wht_income_type_code=$13,
          net_amount=($7::numeric + ROUND($7::numeric * $11::numeric / 100, 2) - ROUND($7::numeric * $12::numeric / 100, 2))
-       WHERE id=$14`,
+       WHERE id=$14 AND company_id=$15`,
       [
         projectId || null,
         voucherType === 'petty_cash' ? pettyCashFundId : null,
@@ -13777,6 +13777,7 @@ app.put('/api/customer/payment-vouchers/:id', requireCustomerAuth, async (req, r
         voucherType === 'other' ? validation.whtRate : '0',
         voucherType === 'other' ? validation.whtIncomeTypeCode : null,
         id,
+        companyId,
       ]
     );
     await client.query('COMMIT');
@@ -13846,8 +13847,8 @@ app.post('/api/customer/payment-vouchers/:id/submit', requireCustomerAuth, async
 
     const voucherNo = await generateVoucherNo(client, companyId);
     await client.query(
-      `UPDATE client_payment_vouchers SET voucher_no=$1, status='submitted', submitted_by=$2, submitted_at=now() WHERE id=$3`,
-      [voucherNo, req.customer.id, id]
+      `UPDATE client_payment_vouchers SET voucher_no=$1, status='submitted', submitted_by=$2, submitted_at=now() WHERE id=$3 AND company_id=$4`,
+      [voucherNo, req.customer.id, id, companyId]
     );
     await writeAuditLog(client, {
       companyId, docType: 'payment_voucher', docId: id, action: 'submit',
@@ -13909,8 +13910,8 @@ app.post('/api/customer/payment-vouchers/:id/approve', requireCustomerAuth, asyn
     // ไม่มีเพดานยอดคงเหลือต้องเช็คตรงนี้ เพดานอนุมัติมีแค่ระดับ per-document ผ่าน canApprove ด้านบนเท่านั้น
 
     await client.query(
-      `UPDATE client_payment_vouchers SET status='approved', approved_by=$1, approved_at=now() WHERE id=$2`,
-      [req.customer.id, id]
+      `UPDATE client_payment_vouchers SET status='approved', approved_by=$1, approved_at=now() WHERE id=$2 AND company_id=$3`,
+      [req.customer.id, id, companyId]
     );
 
     let issuedCertNos = [];
@@ -14014,7 +14015,7 @@ app.post('/api/customer/payment-vouchers/:id/reject', requireCustomerAuth, async
     }, { enforceAmountLimit: false });
     if (!permCheck.allowed) { await client.query('ROLLBACK'); return res.status(403).json({ error: permCheck.message, code: permCheck.code }); }
 
-    await client.query(`UPDATE client_payment_vouchers SET status='rejected', rejected_reason=$1 WHERE id=$2`, [reason.trim(), id]);
+    await client.query(`UPDATE client_payment_vouchers SET status='rejected', rejected_reason=$1 WHERE id=$2 AND company_id=$3`, [reason.trim(), id, companyId]);
     await writeAuditLog(client, {
       companyId, docType: 'payment_voucher', docId: id, action: 'reject',
       fromStatus: 'submitted', toStatus: 'rejected', performedBy: req.customer.id,
@@ -14060,7 +14061,7 @@ app.post('/api/customer/payment-vouchers/:id/cancel', requireCustomerAuth, async
       cancelIsOverride = permCheck.isOverride;
     }
     const deletedAttachmentPaths = await deletePaymentVoucherAttachmentRows(client, id);
-    await client.query(`UPDATE client_payment_vouchers SET status='cancelled' WHERE id=$1`, [id]);
+    await client.query(`UPDATE client_payment_vouchers SET status='cancelled' WHERE id=$1 AND company_id=$2`, [id, companyId]);
     await writeAuditLog(client, {
       companyId, docType: 'payment_voucher', docId: id, action: 'cancel',
       fromStatus: v.status, toStatus: 'cancelled', performedBy: req.customer.id, isOverride: cancelIsOverride,
@@ -14119,8 +14120,8 @@ app.post('/api/customer/payment-vouchers/:id/void', requireCustomerAuth, async (
     deletedAttachmentPaths = await deletePaymentVoucherAttachmentRows(client, id);
 
     await client.query(
-      `UPDATE client_payment_vouchers SET status='voided', voided_by=$1, voided_reason=$2, voided_at=now() WHERE id=$3`,
-      [req.customer.id, reason, id]
+      `UPDATE client_payment_vouchers SET status='voided', voided_by=$1, voided_reason=$2, voided_at=now() WHERE id=$3 AND company_id=$4`,
+      [req.customer.id, reason, id, companyId]
     );
     await writeAuditLog(client, {
       companyId, docType: 'payment_voucher', docId: id, action: 'void',
@@ -14688,7 +14689,7 @@ app.post('/api/customer/wht-remittances', requireCustomerAuth, async (req, res) 
       }
       throw err;
     }
-    await client.query(`UPDATE client_wht_certificates SET remittance_id=$1 WHERE id = ANY($2::int[])`, [remittanceId, certIds]);
+    await client.query(`UPDATE client_wht_certificates SET remittance_id=$1 WHERE id = ANY($2::int[]) AND company_id=$3`, [remittanceId, certIds, companyId]);
 
     const whtFormLabel = whtForm === 'pnd3' ? 'ภ.ง.ด.3' : 'ภ.ง.ด.53';
     await createClientJournalEntry(client, {
@@ -14866,8 +14867,8 @@ app.put('/api/customer/advance-clearances/:id', requireCustomerAuth, async (req,
     await client.query('DELETE FROM client_advance_clearance_items WHERE clearance_id=$1', [id]);
     await insertAdvanceClearanceItems(client, companyId, id, safeItems);
     await client.query(
-      `UPDATE client_advance_clearances SET advance_voucher_id=$1, clearance_date=$2, advance_amount=$3::numeric, note=$4 WHERE id=$5`,
-      [advanceVoucherId, clearanceDate || getBangkokDateStr(), voucher.amount, (note || '').trim(), id]
+      `UPDATE client_advance_clearances SET advance_voucher_id=$1, clearance_date=$2, advance_amount=$3::numeric, note=$4 WHERE id=$5 AND company_id=$6`,
+      [advanceVoucherId, clearanceDate || getBangkokDateStr(), voucher.amount, (note || '').trim(), id, companyId]
     );
     await recomputeClientAdvanceClearanceTotalAmount(client, companyId, id);
     await client.query('COMMIT');
@@ -14921,8 +14922,8 @@ app.post('/api/customer/advance-clearances/:id/submit', requireCustomerAuth, asy
 
     const clearanceNo = await generateClearanceNo(client, companyId);
     await client.query(
-      `UPDATE client_advance_clearances SET clearance_no=$1, status='submitted', submitted_by=$2, submitted_at=now() WHERE id=$3`,
-      [clearanceNo, req.customer.id, id]
+      `UPDATE client_advance_clearances SET clearance_no=$1, status='submitted', submitted_by=$2, submitted_at=now() WHERE id=$3 AND company_id=$4`,
+      [clearanceNo, req.customer.id, id, companyId]
     );
     await writeAuditLog(client, {
       companyId, docType: 'advance_clearance', docId: id, action: 'submit',
@@ -15005,8 +15006,8 @@ app.post('/api/customer/advance-clearances/:id/approve', requireCustomerAuth, as
 
     const nextStatus = diffCheck.rows[0].is_exact ? 'settled' : 'approved';
     await client.query(
-      `UPDATE client_advance_clearances SET status=$1, approved_by=$2, approved_at=now() WHERE id=$3`,
-      [nextStatus, req.customer.id, id]
+      `UPDATE client_advance_clearances SET status=$1, approved_by=$2, approved_at=now() WHERE id=$3 AND company_id=$4`,
+      [nextStatus, req.customer.id, id, companyId]
     );
 
     await createClientJournalEntry(client, {
@@ -15111,8 +15112,8 @@ app.post('/api/customer/advance-clearances/:id/settle', requireCustomerAuth, asy
 
     await client.query(
       `UPDATE client_advance_clearances SET status='settled', settlement_date=$1, settlement_channel=$2, settlement_ref=$3,
-         settlement_recorded_by=$4, settlement_recorded_at=now() WHERE id=$5`,
-      [settlementDate, settlementChannel, (settlementRef || '').trim(), req.customer.id, id]
+         settlement_recorded_by=$4, settlement_recorded_at=now() WHERE id=$5 AND company_id=$6`,
+      [settlementDate, settlementChannel, (settlementRef || '').trim(), req.customer.id, id, companyId]
     );
 
     const lines = diffCheck.rows[0].is_overage
@@ -15157,7 +15158,7 @@ app.post('/api/customer/advance-clearances/:id/reject', requireCustomerAuth, asy
       companyId, originators: [c.created_by, c.submitted_by],
     }, { enforceAmountLimit: false });
     if (!permCheck.allowed) { await client.query('ROLLBACK'); return res.status(403).json({ error: permCheck.message, code: permCheck.code }); }
-    await client.query(`UPDATE client_advance_clearances SET status='rejected', rejected_reason=$1 WHERE id=$2`, [reason.trim(), id]);
+    await client.query(`UPDATE client_advance_clearances SET status='rejected', rejected_reason=$1 WHERE id=$2 AND company_id=$3`, [reason.trim(), id, companyId]);
     await writeAuditLog(client, {
       companyId, docType: 'advance_clearance', docId: id, action: 'reject',
       fromStatus: 'submitted', toStatus: 'rejected', performedBy: req.customer.id,
@@ -15198,7 +15199,7 @@ app.post('/api/customer/advance-clearances/:id/cancel', requireCustomerAuth, asy
       cancelIsOverride = permCheck.isOverride;
     }
     const deletedAttachmentPaths = await deleteAdvanceClearanceAttachmentRows(client, id);
-    await client.query(`UPDATE client_advance_clearances SET status='cancelled' WHERE id=$1`, [id]);
+    await client.query(`UPDATE client_advance_clearances SET status='cancelled' WHERE id=$1 AND company_id=$2`, [id, companyId]);
     await writeAuditLog(client, {
       companyId, docType: 'advance_clearance', docId: id, action: 'cancel',
       fromStatus: c.status, toStatus: 'cancelled', performedBy: req.customer.id, isOverride: cancelIsOverride,
@@ -15263,8 +15264,8 @@ app.post('/api/customer/advance-clearances/:id/void', requireCustomerAuth, async
     deletedAttachmentPaths = await deleteAdvanceClearanceAttachmentRows(client, id);
 
     await client.query(
-      `UPDATE client_advance_clearances SET status='voided', voided_by=$1, voided_reason=$2, voided_at=now() WHERE id=$3`,
-      [req.customer.id, reason, id]
+      `UPDATE client_advance_clearances SET status='voided', voided_by=$1, voided_reason=$2, voided_at=now() WHERE id=$3 AND company_id=$4`,
+      [req.customer.id, reason, id, companyId]
     );
     await writeAuditLog(client, {
       companyId, docType: 'advance_clearance', docId: id, action: 'void',
@@ -15365,7 +15366,7 @@ app.put('/api/customer/petty-cash-replenishments/:id', requireCustomerAuth, asyn
     const fund = await client.query('SELECT 1 FROM client_petty_cash_funds WHERE id=$1 AND company_id=$2 AND is_active=true', [fundId, companyId]);
     if (fund.rowCount === 0) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'ไม่พบกองทุนนี้ในบริษัทของคุณ หรือกองทุนถูกปิดใช้งานแล้ว' }); }
 
-    await client.query(`UPDATE client_petty_cash_replenishments SET fund_id=$1, amount=$2, note=$3 WHERE id=$4`, [fundId, safeAmount, (note || '').trim(), id]);
+    await client.query(`UPDATE client_petty_cash_replenishments SET fund_id=$1, amount=$2, note=$3 WHERE id=$4 AND company_id=$5`, [fundId, safeAmount, (note || '').trim(), id, companyId]);
     await client.query('COMMIT');
     res.json({ replenishment: await fetchReplenishment(pool, id, companyId) });
   } catch (err) {
@@ -15408,8 +15409,8 @@ app.post('/api/customer/petty-cash-replenishments/:id/submit', requireCustomerAu
 
     const replenishNo = await generateReplenishNo(client, companyId);
     await client.query(
-      `UPDATE client_petty_cash_replenishments SET replenish_no=$1, status='submitted', submitted_by=$2, submitted_at=now() WHERE id=$3`,
-      [replenishNo, req.customer.id, id]
+      `UPDATE client_petty_cash_replenishments SET replenish_no=$1, status='submitted', submitted_by=$2, submitted_at=now() WHERE id=$3 AND company_id=$4`,
+      [replenishNo, req.customer.id, id, companyId]
     );
     await writeAuditLog(client, {
       companyId, docType: 'petty_cash_replenishment', docId: id, action: 'submit',
@@ -15436,8 +15437,8 @@ app.post('/api/customer/petty-cash-replenishments/:id/approve', requireCustomerA
     if (!result.allowed) return { status: 403, body: { error: result.message, code: result.code } };
 
     await client.query(
-      `UPDATE client_petty_cash_replenishments SET status='approved', approved_by=$1, approved_at=now() WHERE id=$2`,
-      [req.customer.id, id]
+      `UPDATE client_petty_cash_replenishments SET status='approved', approved_by=$1, approved_at=now() WHERE id=$2 AND company_id=$3`,
+      [req.customer.id, id, companyId]
     );
 
     // client_petty_cash_replenishments ไม่มี project_id เป็นของตัวเอง (ดู known-limitations ข.9) — join
@@ -15496,7 +15497,7 @@ app.post('/api/customer/petty-cash-replenishments/:id/reject', requireCustomerAu
     // เขียน rejected_reason ลงคอลัมน์บนแถวเอกสารเองด้วย (เดิมพึ่ง audit log อย่างเดียว — มีอยู่จริงแต่ไม่
     // สะดวกเท่าคอลัมน์ตรงบนแถวเหมือน client_payment_vouchers.rejected_reason) — column นี้มีอยู่แล้วตั้งแต่
     // migration 0003 (`rejected_reason TEXT NOT NULL DEFAULT ''`) แค่ไม่เคยมี route ไหนเขียนลงไปเลย
-    await client.query(`UPDATE client_petty_cash_replenishments SET status='rejected', rejected_reason=$1 WHERE id=$2`, [reason.trim(), id]);
+    await client.query(`UPDATE client_petty_cash_replenishments SET status='rejected', rejected_reason=$1 WHERE id=$2 AND company_id=$3`, [reason.trim(), id, companyId]);
     await writeAuditLog(client, {
       companyId, docType: 'petty_cash_replenishment', docId: id, action: 'reject',
       fromStatus: 'submitted', toStatus: 'rejected', performedBy: req.customer.id,
@@ -15538,7 +15539,7 @@ app.post('/api/customer/petty-cash-replenishments/:id/cancel', requireCustomerAu
       }
       cancelIsOverride = permCheck.isOverride;
     }
-    await client.query(`UPDATE client_petty_cash_replenishments SET status='cancelled' WHERE id=$1`, [id]);
+    await client.query(`UPDATE client_petty_cash_replenishments SET status='cancelled' WHERE id=$1 AND company_id=$2`, [id, companyId]);
     await writeAuditLog(client, {
       companyId, docType: 'petty_cash_replenishment', docId: id, action: 'cancel',
       fromStatus: rep.status, toStatus: 'cancelled', performedBy: req.customer.id, isOverride: cancelIsOverride,

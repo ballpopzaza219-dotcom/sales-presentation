@@ -5,9 +5,11 @@
 endpoint/migration ที่ [`module-status-overview.md`](./module-status-overview.md) และประวัติที่
 `git log`) เรียงตามความสำคัญ: **บล็อกการใช้งานจริง** ก่อน แล้วตามด้วย **แค่ไม่สะดวก/ทำใจได้ชั่วคราว**
 
-อัปเดตล่าสุด: 2026-10-02 — **ข.15 ปิดแล้ว** (เทส 12 ไฟล์ hardcode port 3000 ชน production จริง พบระหว่าง
-migration 0034 — แก้ root cause เปลี่ยนให้อ่าน `BOQ_TEST_BASE_URL` ครบทั้ง 12 ไฟล์แล้ว ยืนยันผ่านหมด) และ
-**ข.14** (`data-act="close-modal"` ไม่มี handler เลย พบระหว่างงาน Customer Master picker, ยังไม่แก้)
+อัปเดตล่าสุด: 2026-10-02 — **ก.5 ปิดแล้ว** (UPDATE ไม่ scope ด้วย company_id แพร่หลายทั่วระบบ — audit sprint
+ที่เลื่อนไว้ตั้งแต่ 2026-09-12 ทำเสร็จแล้ว แก้ครบ 82 จุด/21 ตาราง หลัง grep ยืนยันพบว่าตัวเลขจริงมากกว่าที่
+ประเมินไว้ตอนแรกเกือบเท่าตัว) และ **ข.15 ปิดแล้ว** (เทส 12 ไฟล์ hardcode port 3000 ชน production จริง พบ
+ระหว่าง migration 0034 — แก้ root cause เปลี่ยนให้อ่าน `BOQ_TEST_BASE_URL` ครบทั้ง 12 ไฟล์แล้ว ยืนยันผ่านหมด)
+ของเดิม: **ข.14** (`data-act="close-modal"` ไม่มี handler เลย พบระหว่างงาน Customer Master picker, ยังไม่แก้)
 ของเดิม: 2026-09-12 — **ก.1 (`/void`) และ ก.2 (นำส่งภาษีหัก ณ ที่จ่าย) ทั้งคู่ทำเสร็จและปิดไปแล้ว**
 (migration 0021/0022, commit `c572aa4`/`33bec5d`) **พบจุดบล็อกใหม่ 2 จุด: ก.3** (`client_subcontractors` PUT
 ไม่ scope UPDATE ด้วย `company_id` — กระทบข้อมูลธนาคารจริง) เป็นงานถัดไปทันทีหลัง `client_customers` **และ ก.4**
@@ -68,45 +70,42 @@ state/cache ฝั่ง browser ระหว่างสลับ user ใน�
 เงินจริง เป็นแค่ UI แสดงปุ่มผิดที่ทำให้สับสน** — ความเร่งด่วนต่ำกว่า ก.3 (ที่กระทบเงินจริงได้จริง) จึงเรียง
 ลำดับ ก.3 ก่อน ก.4 ตามเดิม
 
-### ก.5 pattern "UPDATE ไม่ scope ด้วย company_id เอง พึ่งพา SELECT FOR UPDATE ก่อนหน้าอย่างเดียว" แพร่หลายทั่วระบบ — เตรียมไว้สำหรับ audit แยกต่างหาก ยังไม่แก้ตอนนี้
+### ~~ก.5~~ pattern "UPDATE ไม่ scope ด้วย company_id เอง พึ่งพา SELECT FOR UPDATE ก่อนหน้าอย่างเดียว" แพร่หลายทั่วระบบ — ✅ ปิดแล้ว (audit sprint เต็มรูปแบบ 2026-10-02)
 
 **พบ 2026-09-12** ระหว่างแก้ ก.3 (`client_subcontractors`) — grep `UPDATE client_` ทั้งไฟล์ `server.js` แล้ว
-เช็คว่าแต่ละ statement มี `company_id` ใน `WHERE`/`SET` เองหรือไม่ (ไม่นับที่ `company_id` โผล่แค่ใน subquery
-คำนวณยอดรวมแบบ `COALESCE(...)` ซึ่งปลอดภัยอยู่แล้ว) — พบว่าเป็น**ธรรมเนียมเดิมของทั้งระบบ** (ล็อกแถวด้วย
-`SELECT ... FOR UPDATE WHERE id=$1 AND company_id=$2` ก่อนเสมอ แล้วค่อย `UPDATE ... WHERE id=$X` ตัวเดียวโดย
-ไม่ scope ซ้ำ) ไม่ใช่บั๊กเฉพาะจุดแบบ ก.3 — ระดับความเสี่ยงเดียวกับ ก.3 ทุกจุด (defense-in-depth ชั้นที่สอง
-หายไป ไม่ใช่ช่องโหว่ที่ใช้งานได้จริงถ้า flow ปกติทำงานถูกทุกจุด แต่เสี่ยงถ้ามี bug อื่นแทรกระหว่างทาง)
+เช็คว่าแต่ละ statement มี `company_id` ใน `WHERE`/`SET` เองหรือไม่ พบว่าเป็น**ธรรมเนียมเดิมของทั้งระบบ**
+(ล็อกแถวด้วย `SELECT ... FOR UPDATE WHERE id=$1 AND company_id=$2` ก่อนเสมอ แล้วค่อย `UPDATE ... WHERE
+id=$X` ตัวเดียวโดยไม่ scope ซ้ำ) — เลื่อนไว้เป็น audit sprint แยกต่างหากตามที่ตกลง ไม่ได้แก้รวมกับ ก.3 ตอนนั้น
 
-**ไม่ทำรวมกับ ก.3 ตอนนี้ตามที่ตกลง** — ขอบเขตใหญ่เกินไปสำหรับแก้ทีละจุดกลางงานอื่น ควรเป็น audit sprint
-แยกต่างหากที่ไล่ตรวจ+แก้+เทสให้ครบทุกจุดในรอบเดียว รายชื่อ endpoint/ตารางที่ grep เจอ (บรรทัดใน `server.js`
-ณ วันที่บันทึก อาจขยับถ้ามีการแก้ไฟล์เพิ่มเติมทีหลัง — ใช้ชื่อ endpoint/ตารางอ้างอิงเป็นหลัก ไม่ใช่เลขบรรทัด):
+**แก้จริงแล้ว 2026-10-02** (ระหว่างงาน Customer Master migration 0034) — **grep ยืนยันรายการใหม่ทั้งหมดก่อน
+ลงมือแก้ตามที่สั่ง พบว่าตัวเลขจริงต่างจากที่บันทึกไว้ครั้งแรกมาก: 82 statement ข้าม 21 ตาราง** (ไม่ใช่ ~36
+จุด/13 ตารางตามที่ประเมินไว้ตอนแรก) สาเหตุหลัก: การตรวจครั้งแรกสุ่มมาแค่ 1 บรรทัดตัวแทนต่อ 1 action ต่อ
+ตาราง (เช่น submit/approve) ไม่ได้ไล่ reject/cancel/void ที่เป็น pattern เดียวกันทุกประการ และพบตารางใหม่ที่
+ไม่เคยอยู่ในรายการเดิมเลย 7 ตาราง: `client_labor_costs`, `client_pr_approval_rules`, `client_budgets`,
+`client_budget_items`, `client_progress_claim_items`, `client_purchase_request_items`,
+`client_wht_certificates` (จุดเชื่อม remittance_id)
 
-| ตาราง | บรรทัด (ประมาณ) | บริบท |
-|---|---|---|
-| `client_progress_claims` | 5042, 5105, 5169, 5227, 5355, 5544 | แก้ไข draft, submit, certify, approve (2 จุด), void |
-| `client_revenue` | 5540 | void (คู่กับ progress claim ด้านบน) |
-| `client_project_tasks` | 6572 | แก้ไข task (Gantt/schedule) |
-| ~~`client_tenders`~~ | ~~7052~~ | ~~แก้ไข tender (PUT)~~ — ✅ แก้แล้ว 2026-09-13 (บังเอิญกำลังแก้ statement นี้อยู่แล้วตอนเชื่อม customerId เข้า tenders ต้นทุนเพิ่มแทบเป็นศูนย์) |
-| `client_budget_revisions` | 8016, 8039, 8067 | submit, approve, reject |
-| `client_purchase_orders` | 8469, 8538, 8610 | แก้ไข PO, submit, approve |
-| `client_purchase_requests` | 9629, 9702, 9736 | แก้ไข PR, submit, approve |
-| `client_subcontract_terms` | 10597, 10636, 10665 | แก้ไขสัญญา/WO, submit, approve |
-| `client_subcontract_billings` | 11161, 11501 | แก้ไขใบวางบิลผู้รับเหมาช่วง, void |
-| `client_site_expense_submissions` | 12146 | แก้ไข/ประมวลผลใบส่งบิลหน้างาน |
-| `client_external_payees` | 12659 | แก้ไขผู้รับเงินภายนอก (เหมือน ก.3 เป๊ะ แต่คนละตาราง) |
-| `client_payment_vouchers` | 12965, 13053, 13116, 13326 | แก้ไขใบเบิกเงิน, submit, approve, void |
-| `client_advance_clearances` | 14073, 14128, 14212, 14317, 14470 | แก้ไขใบเคลียร์เงินทดรอง, submit, approve, settle, void |
-| `client_petty_cash_replenishments` | 14615, 14643 | submit, approve |
+**ข้อควรระวังเดิมเรื่อง JOIN ไม่ตรงกับสภาพจริง** — ตรวจ schema จริงทุกตารางที่เกี่ยวข้องแล้วพบว่า **ทุกตาราง
+รวมถึงตารางระดับ item ที่เคยเตือนไว้ว่า "อาจไม่มี company_id เอง" (`client_progress_claim_items`,
+`client_budget_items`, `client_purchase_request_items`) มีคอลัมน์ `company_id` ของตัวเองครบทุกตารางจริง** —
+แก้ด้วยการเติม `AND company_id=$N` ตรงๆ ได้ทั้งหมด ไม่ต้องใช้ JOIN เลยแม้แต่จุดเดียว
 
-**ตรวจแล้วว่าปลอดภัยอยู่แล้ว** (มี `company_id` ใน `WHERE`/subquery เองครบ ไม่ต้องแก้): `client_branches`,
-`client_departments`, `client_customers` (ทั้งสามแก้ในงานนี้แล้ว), `client_petty_cash_funds`,
-`client_wht_remittances`, `client_wht_certificates`, และ 3 จุด `total_amount recompute` แบบ `COALESCE` บน
-`client_purchase_orders`/`client_purchase_requests`/`client_advance_clearances`
+**ผลการแก้**: เติม `company_id` เข้า WHERE ของ UPDATE ครบทั้ง 82 จุด (ยืนยันด้วยสคริปต์ตรวจอัตโนมัติซ้ำหลังแก้
+เสร็จว่าเหลือ 0 จุด) รัน `node --check` ผ่าน แล้ว apply/verify ผ่าน `npm run test:regression-all` เต็มชุด 2
+รอบ (ก่อน commit และหลัง commit) ได้ 932 checks/34 ไฟล์ EXIT=0 ทั้งสองรอบ ไม่มี regression — รายชื่อตาราง
+สุดท้ายที่แก้ครบ: `client_progress_claims` (8), `client_progress_claim_items` (1), `client_revenue` (4),
+`client_budget_items` (2), `client_labor_costs` (1), `client_project_tasks` (4), `client_tenders` (1 — จุด
+`/status` ที่ตกหล่นจาก PUT หลักที่แก้ไปแล้วตอน migration 0025), `client_budget_revisions` (5),
+`client_budgets` (1), `client_purchase_orders` (5), `client_purchase_request_items` (7),
+`client_pr_approval_rules` (3), `client_purchase_requests` (5), `client_subcontract_terms` (7),
+`client_subcontract_billings` (6), `client_site_expense_submissions` (2), `client_external_payees` (1),
+`client_payment_vouchers` (6), `client_wht_certificates` (1), `client_advance_clearances` (7),
+`client_petty_cash_replenishments` (5)
 
-**ข้อควรระวังตอนทำ audit จริง**: บาง sub-table ระดับ item (เช่น `client_purchase_request_items` บรรทัด
-~9616) อาจไม่มีคอลัมน์ `company_id` ของตัวเองเลย (ผูกกับ header ผ่าน `purchase_request_id` แทน) ต้อง
-ตรวจสอบ schema จริงของแต่ละตารางก่อนว่ามีคอลัมน์ `company_id` ให้ scope ได้จริงหรือไม่ ก่อนสรุปว่าเป็นช่องโหว่
-เดียวกัน — บางจุดอาจต้อง JOIN ไปยัง header แทนการเติม `AND company_id=$N` ตรงๆ
+**บทเรียนสำคัญ**: เมื่อกลับมาทำ audit sprint ที่เลื่อนไว้นานแล้ว ต้อง grep ยืนยันรายการใหม่เสมอก่อนลงมือ
+ไม่ใช่เชื่อตัวเลข/รายการที่บันทึกไว้ครั้งแรกตรงๆ — schema และโค้ดอาจเปลี่ยนไปมากระหว่างที่งานถูกเลื่อนไว้
+(ในกรณีนี้คือเพิ่มตารางใหม่ 7 ตาราง และขอบเขตที่ประเมินไว้ครั้งแรกไม่ครบถ้วนตั้งแต่ต้น ไม่ใช่เพราะมีอะไร
+เปลี่ยนแปลงระหว่างทาง)
 
 ### ก.6 `new Date().toISOString().slice(0,10)` (UTC ตรงๆ ไม่ผ่าน Asia/Bangkok) กระจายอยู่ทั่วระบบ — เตรียมไว้สำหรับ audit แยกต่างหาก ยังไม่แก้ตอนนี้
 
@@ -429,7 +428,7 @@ sandbox ได้ผลครบทุกไฟล์
 | ~~ก.2~~ | ~~ไม่มีกระบวนการนำส่ง ภ.ง.ด.~~ — ✅ เสร็จแล้ว (2026-09-07) | ปิดแล้ว |
 | **ก.3** | **`client_subcontractors` PUT ไม่ scope UPDATE ด้วย `company_id`** (พบ 2026-09-12, โค้ด production กระทบข้อมูลธนาคารจริง) | **เปิดอยู่ — งานถัดไปทันทีหลัง client_customers** |
 | **ก.4** | **`fx_maker2` เห็นปุ่มอนุมัติเงินสดย่อยทั้งที่ไม่มีสิทธิ์** (พบ 2026-09-12, บั๊กเก่าไม่เกี่ยวกับ client_customers/branches/departments — ยืนยันแล้วว่าเป็นแค่ UI แสดงผลผิด ไม่ใช่ broken permission enforcement, ยังไม่พบ root cause) | **เปิดอยู่ — ไม่กระทบเงินจริง แต่บล็อก test:regression-all ไม่ให้ EXIT=0 เต็มชุด** |
-| **ก.5** | **UPDATE ไม่ scope ด้วย company_id เอง (พึ่งพา SELECT FOR UPDATE อย่างเดียว) แพร่หลายทั่วระบบ** — พบ 2026-09-12 ระหว่างแก้ ก.3, รายชื่อ ~35 จุดข้าม 12 ตารางที่เหลือ (`client_tenders` แก้ไปแล้ว 1 จุดระหว่างทาง) | **เปิดอยู่ — เตรียมไว้สำหรับ audit sprint แยกต่างหาก ไม่ได้แก้ในงานนี้** |
+| ~~ก.5~~ | ~~UPDATE ไม่ scope ด้วย company_id เอง (พึ่งพา SELECT FOR UPDATE อย่างเดียว) แพร่หลายทั่วระบบ~~ — ✅ แก้ครบแล้ว (2026-10-02, 82 จุด/21 ตาราง — ตัวเลขจริงมากกว่าที่ประเมินไว้ตอนแรกมาก หลัง grep ยืนยันซ้ำ) | ปิดแล้ว |
 | **ก.6** | **`new Date().toISOString()` (UTC) แทน `getBangkokDateStr()` กระจายทั่วระบบ** — พบ 2026-09-13 ระหว่างแก้ ข.11, ไล่แยกแล้ว 25 จุดน่าจะเป็นบั๊กจริง / 1 จุดถูกต้องอยู่แล้ว (ดูตารางเต็มด้านบน) | **เปิดอยู่ — เตรียมไว้สำหรับ audit sprint แยกต่างหาก ไม่ได้แก้ในงานนี้** |
 | ข.1 | หัวข้อ 3.2 Project Complete (อสังหาริมทรัพย์) — รอนิยาม requirement | รอ requirement |
 | ข.2 | PR item adjustment ไม่มี uncancel (ตั้งใจ) | ไม่สะดวก |
