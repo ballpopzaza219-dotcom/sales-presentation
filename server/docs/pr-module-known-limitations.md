@@ -373,6 +373,14 @@ add-stock, reject-admin-req, ledger-add ฯลฯ) — ปุ่ม "ยกเ�
 เพื่อออกจาก modal แทน — **ไม่กระทบความถูกต้องของข้อมูล** (ไม่มี modal ไหนบันทึกอะไรเองตอนปิด) เป็นแค่ UX ที่
 ผู้ใช้ค้างอยู่ใน modal นานกว่าที่ตั้งใจ
 
+**เจอผลกระทบเพิ่มอีกจุด 2026-10-03** ระหว่างทำ Stage B ข้อ 4 (คืน WBS/Gantt UI ของหน้าแผนงาน, Phase A) —
+รัน regression suite ที่เกี่ยวข้องทั้งหมดเพื่อยืนยันว่า Phase A ไม่ทำอะไรพัง พบ
+`project-schedule-print.regression.js` fail ที่ assertion "close-modal clears S.modal" (คลิกปุ่ม
+`data-act="close-modal"` ของ modal พิมพ์แผนงานแล้ว `S.modal` ไม่เป็น `null`) — ยืนยันด้วย `git stash` ว่า
+fail เหมือนกันทุกประการบน `master` ก่อน Phase A เริ่มด้วย จึงเป็นอาการเดียวกับบั๊กนี้ ไม่ใช่บั๊กใหม่ที่ Phase A
+ทำให้เกิด (schedule-print modal ก็ใช้กลไก `S.modal` กลางตัวเดียวกัน จึงโดนผลกระทบเหมือน add-user/add-stock/
+ฯลฯ ด้านบนทุกประการ) — บันทึกไว้ตรงนี้แทนการเปิดรายการใหม่ตามคำสั่งผู้ใช้ ยังไม่แก้ root cause ตามแผนเดิม
+
 **ทางเลี่ยงที่ใช้ในงาน Customer Master picker**: quick-add modal ของ picker (`S.customerQuickAddForm`,
 `renderCustomerQuickAddForm()`) **จงใจไม่ใช้ `S.modal`/`close-modal` เลย** — ใช้ state object แยกของตัวเองกับ
 action เฉพาะ `cancel-customer-quick-add` แทน (มี handler จริงใน `handleAction()`) ตาม pattern เดียวกับ
@@ -450,5 +458,5 @@ sandbox ได้ผลครบทุกไฟล์
 | ~~ข.11~~ | ~~generateInvoiceNumber/generateQuotationNumber (platform) เจอบั๊ก timezone+reuse-after-delete~~ — ✅ แก้แล้ว (2026-09-21, migration 0026 — เอกสารนี้เพิ่งอัปเดตให้ตรงจริง 2026-10-02) | ปิดแล้ว |
 | ข.12 | down.sql migration 0023 ส่วน guard >1 ปี ยืนยันด้วยมือแล้ว แต่ยังไม่มี automated test — ควรเพิ่มเมื่อมีโอกาส | ไม่บล็อก (SQL logic ตรวจแล้วถูกต้อง ความเสี่ยงต่ำ) |
 | ข.13 | down.sql migration 0024 guard แยกข้อมูล backfill เป็น heuristic (`code NOT LIKE 'DEPT-%'`) ยืนยันด้วยมือแล้วว่าถูกต้อง | ไม่บล็อก (ครอบคลุมสถานการณ์จริงถูก 100% ตอนนี้) |
-| ข.14 | `data-act="close-modal"` ไม่มี handler เลย — ปุ่มยกเลิก/คลิกนอก modal ของ `S.modal` ทุกตัวไม่ปิด (พบ 2026-10-01 ระหว่างงาน Customer Master picker) | ไม่บล็อก (ไม่กระทบความถูกต้องข้อมูล แค่ UX ค้างใน modal) |
+| ข.14 | `data-act="close-modal"` ไม่มี handler เลย — ปุ่มยกเลิก/คลิกนอก modal ของ `S.modal` ทุกตัวไม่ปิด (พบ 2026-10-01 ระหว่างงาน Customer Master picker, ยืนยันกระทบ `project-schedule-print.regression.js` ด้วย 2026-10-03) | ไม่บล็อก (ไม่กระทบความถูกต้องข้อมูล แค่ UX ค้างใน modal) |
 | ~~ข.15~~ | ~~เทส 12 ไฟล์ hardcode `BASE=localhost:3000` ไม่อ่าน `BOQ_TEST_BASE_URL`~~ — ✅ แก้ root cause แล้ว (2026-10-02, เปลี่ยนทั้ง 12 ไฟล์เป็น pattern เดียวกับไฟล์อื่น ยืนยันผ่านหมดทีละไฟล์ + full suite) | ปิดแล้ว |

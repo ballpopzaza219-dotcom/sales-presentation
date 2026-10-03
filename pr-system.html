@@ -307,6 +307,12 @@ tr:hover td{background:var(--surface-alt);}
 .sched-plain-input{border:1px solid transparent; background:transparent; border-radius:4px;}
 .sched-plain-input:hover{border-color:var(--border);}
 .sched-plain-input:focus{outline:none; border-color:var(--navy); background:var(--surface);}
+/* Restored Gantt view (Stage B item 4, Phase B) — one bar/placeholder per task row, absolutely positioned
+   (via inline left/width, computed by scheduleGanttBarGeometry()) inside its row's single wide grid <td>.
+   Critical-path red fill, milestone diamond and baseline ghost-outline variants are added in Phase D —
+   this is deliberately just the plain default look for now. */
+.gantt-row-bar{position:absolute; top:6px; height:18px; background:var(--navy); border-radius:4px;}
+.gantt-row-noDates{position:absolute; top:14px; left:4px; right:4px; height:2px; background:var(--border-strong); border-radius:1px;}
 /* Right-align numeric/money columns (convention: numbers align on their least-significant digit so
    magnitudes are easy to compare down a column). Named .num-cell rather than .num to avoid colliding
    with the pre-existing .stat-card .num (a big KPI figure, unrelated purpose). */
@@ -663,6 +669,11 @@ const ICN = {
   chevronRight: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>',
   bell: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>',
   refresh: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>',
+  chevronDown: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>',
+  // Restored WBS/Gantt view (Project Schedule, Stage B item 4) — icons that didn't exist before 2026-07-26's removal.
+  link: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>',
+  milestoneDiamond: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><polygon points="12 2 22 12 12 22 2 12"/></svg>',
+  move: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 9 2 12 5 15"/><polyline points="9 5 12 2 15 5"/><polyline points="15 19 12 22 9 19"/><polyline points="19 9 22 12 19 15"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="12" y1="2" x2="12" y2="22"/></svg>',
 };
 
 // ---------------- App state ----------------
@@ -704,6 +715,18 @@ let S = {
   taskPeriodsOriginal:null, // canonical-JSON snapshot of taskPeriods as last loaded from the server — see canonicalPeriodsJson()/taskPeriodsHasUnsavedChanges()
   scheduleZoom:'week', // 'day'|'week'|'month' — renderProjectScheduleTable()'s time grid (Phase 2)
   scheduleUpdatedAt:null, // client_projects.schedule_updated_at, refreshed by loadProjectTasks
+  projectTaskDependencies:[], // flat array {id,taskId,dependsOnTaskId,dependencyType,lagDays} from GET .../tasks → data.dependencies — restored WBS/Gantt view (Phase A/C)
+  projectTaskBaselines:[], // flat array {taskId,baselineStart,baselineEnd,baselineSetAt} from GET .../tasks → data.baselines — restored WBS/Gantt view (Phase A/D)
+  scheduleViewMode:'both', // 'table'|'gantt'|'both' — which section(s) of the แผนงาน page render (Phase B)
+  scheduleExpandedTaskIds:null, // Set<taskId>|null — null means "not yet initialized for the CURRENT
+  // project": first loadProjectTasks() call for a given project defaults every isSummary task to
+  // expanded. Reconciled (not reset) on every later reload of the SAME project so a user's manual
+  // collapse survives unrelated saves — see loadProjectTasks(), which also resets this back to null
+  // whenever scheduleExpandedTaskIdsProjectId no longer matches the project being loaded (switching
+  // projects without a full page reload must re-default to all-expanded for the new project, not
+  // inherit/reconcile against the previous project's unrelated task ids).
+  scheduleExpandedTaskIdsProjectId:null, // which project's id the above Set belongs to — see loadProjectTasks()
+  scheduleGanttSelectedTaskId:null, // convenience only (default predecessor-picker context for the add-dependency modal), not load-bearing
   selectedTenderId:null,
   tenderAddForm:null,        // set lazily on first render of pageFinTenderAdd() so field edits persist across re-renders
   selectedTenderBudget:undefined, // undefined = not fetched yet, null = fetched but none exists, object = the bidding budget for the selected tender
@@ -1314,12 +1337,32 @@ async function loadProjectTasks(projectId){
     ]);
     S.projectTasks = data.tasks;
     S.projectTasksLoaded = true;
+    S.projectTaskDependencies = data.dependencies || [];
+    S.projectTaskBaselines = data.baselines || [];
     S.taskTableAvailableBoqItems = boqData.items;
     resetTaskTableEditState();
     S.taskPeriods = data.periods;
     resetTaskPeriodsEditState(); // snapshot BEFORE auto-distribute, so a freshly-defaulted plan correctly shows as unsaved
     scheduleAutoDistributePlanned();
     S.scheduleUpdatedAt = data.scheduleUpdatedAt;
+    // Reconcile (never blanket-reset) the WBS collapse/expand state against the freshly-loaded task set —
+    // but ONLY when this load is for the SAME project the current Set was built for. loadDataForPage()
+    // unconditionally calls loadProjectTasks() on every visit to this page (see its own comment), which
+    // includes navigating from Project A's schedule straight to Project B's without a full page reload —
+    // task ids are NOT scoped per-project in this Set, so reconciling B's load against A's leftover Set
+    // would silently drop every one of A's ids (none of them belong to B) and leave B's own summary tasks
+    // defaulting to COLLAPSED instead of expanded. Detect the project change here and treat it exactly
+    // like "first load ever" for the new project.
+    if(S.scheduleExpandedTaskIdsProjectId !== projectId){
+      S.scheduleExpandedTaskIds = null;
+      S.scheduleExpandedTaskIdsProjectId = projectId;
+    }
+    if(S.scheduleExpandedTaskIds === null){
+      S.scheduleExpandedTaskIds = new Set(S.projectTasks.filter(t=>t.isSummary).map(t=>t.id));
+    } else {
+      const liveIds = new Set(S.projectTasks.map(t=>t.id));
+      for(const id of [...S.scheduleExpandedTaskIds]) if(!liveIds.has(id)) S.scheduleExpandedTaskIds.delete(id);
+    }
   } catch(e){ toast(e.message, 'err'); }
   render();
 }
@@ -5897,6 +5940,62 @@ function taskPeriodsValidationErrors(){
   return errors;
 }
 
+// Restored WBS view (Stage B item 4, Phase A) — flattens the flat S.projectTasks array (keyed by
+// parentTaskId/sortOrder) into depth-first WBS outline order. Pure function (no S/DOM access beyond its
+// two arguments) so it's independently testable and reusable by both the indent/collapse decoration on
+// the existing flat table (Phase A, here) and the Gantt left pane (Phase B, later). Depth-first walk
+// order IS the WBS reading order — the server's own wbsCode string ("1","1.1","1.2","2",...) is just a
+// label on top of this same order, never recomputed client-side.
+function scheduleBuildWbsRows(tasks, expandedIds){
+  const byParent = new Map(); // parentTaskId (or null) -> [task,...], sorted by sortOrder
+  for(const t of tasks){
+    const key = t.parentTaskId==null ? null : t.parentTaskId;
+    if(!byParent.has(key)) byParent.set(key, []);
+    byParent.get(key).push(t);
+  }
+  for(const arr of byParent.values()) arr.sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0));
+  const out = [];
+  function walk(parentKey, depth, ancestorCollapsed){
+    if(depth>50) return; // defensive cap only — isTaskOrDescendant (server.js) already prevents real cycles
+    for(const t of (byParent.get(parentKey)||[])){
+      const hasChildren = byParent.has(t.id);
+      out.push({task:t, depth, hasChildren, isVisible: !ancestorCollapsed});
+      const childrenCollapsed = ancestorCollapsed || (hasChildren && !(expandedIds && expandedIds.has(t.id)));
+      walk(t.id, depth+1, childrenCollapsed);
+    }
+  }
+  walk(null, 0, false);
+  return out;
+}
+
+// Restored Gantt view (Stage B item 4, Phase B) — locates which display column a 'YYYY-MM-DD' date falls
+// into. Plain string comparison against columns[i].dayStart/dayEnd (both already 'YYYY-MM-DD') — exactly
+// the same no-Date-object convention scheduleBuildColumns()/scheduleDayDiff() already use throughout this
+// page, never `new Date(dateStr)` arithmetic (see this codebase's documented off-by-one local-timezone
+// history). Dates outside the displayed range clamp to the nearest edge column rather than returning -1,
+// since computeScheduleDateRange() is built to already span every task's dates — landing outside the
+// range here would only happen from a stale read mid-edit, not a real data problem.
+function scheduleGanttColIndexForDate(columns, dateStr){
+  if(!dateStr || !columns.length) return -1;
+  for(let i=0;i<columns.length;i++){
+    if(dateStr>=columns[i].dayStart && dateStr<=columns[i].dayEnd) return i;
+  }
+  return dateStr < columns[0].dayStart ? 0 : columns.length-1;
+}
+// Bar left/width in pixels, purely from columns/colWidth already computed for the %-grid table (ctx.columns/
+// ctx.colWidth) — NOT a fresh date-to-pixel continuous calculation, so the Gantt pane's bars land on
+// exactly the same column boundaries the %-grid's own cells use, keeping the two sections pixel-aligned
+// when S.scheduleViewMode==='both'. Returns null for a task with no start/end to plot (unscheduled —
+// Phase B renders these as a muted placeholder, not a bar) — milestone/critical/baseline-specific visual
+// treatment is Phase D's job, not this function's.
+function scheduleGanttBarGeometry(task, columns, colWidth){
+  if(!columns.length || !task.startDate || !task.endDate) return null;
+  const startIdx = scheduleGanttColIndexForDate(columns, task.startDate);
+  const endIdx = scheduleGanttColIndexForDate(columns, task.endDate);
+  if(startIdx<0 || endIdx<0) return null;
+  return {leftPx: startIdx*colWidth, widthPx: Math.max(colWidth-4, (endIdx-startIdx+1)*colWidth-4)};
+}
+
 // Shared by renderProjectScheduleTable() (which also draws the S-curve overlay's underlying data via
 // updateScheduleChartOverlay()) so every part of this page uses the exact same tasks/budget/date-range/
 // column-set for a given render — computed once by pageFinProjectSchedule() and passed through, rather
@@ -6007,10 +6106,22 @@ function renderProjectScheduleTable(ctx){
   // but visually ending at the ACTUAL row's bottom) get the SAME border directly so the dashed line
   // reads as one continuous rule under the whole task, not just under the non-rowspan columns.
   const DIVIDER = 'border-bottom:1px dashed var(--border-strong);';
-  const savedRowHtml = (t, no) => {
-    const nameContent = t.sourceBoqItemId
+  // WBS indent/collapse decoration (Stage B item 4, Phase A) — depth/hasChildren come from
+  // scheduleBuildWbsRows()'s tree walk, not from the task itself. A leaf row still reserves the
+  // chevron's width (an empty spacer span) so every row's name text lines up at the same x position
+  // regardless of whether that particular row has a toggle button.
+  const savedRowHtml = (t, no, depth, hasChildren) => {
+    const isExpanded = !!(S.scheduleExpandedTaskIds && S.scheduleExpandedTaskIds.has(t.id));
+    const chevron = hasChildren
+      ? `<button type="button" class="btn btn-ghost btn-sm" data-act="toggle-schedule-task-expand" data-id="${t.id}" title="${isExpanded ? tr('fin_project_schedule.collapse_row') : tr('fin_project_schedule.expand_row')}" style="padding:2px; min-width:0; flex-shrink:0;">${isExpanded ? ICN.chevronDown : ICN.chevronRight}</button>`
+      : `<span style="display:inline-block; width:22px; flex-shrink:0;"></span>`;
+    const wbsCodeLabel = t.wbsCode ? `<span class="mono" style="color:var(--text-muted); font-size:11px; flex-shrink:0;">${esc(t.wbsCode)}</span>` : '';
+    const milestoneIcon = t.isMilestone ? `<span title="${tr('fin_project_schedule.milestone_badge')}" style="color:var(--navy); flex-shrink:0; display:inline-flex;">${ICN.milestoneDiamond}</span>` : '';
+    const criticalBadge = t.isCritical ? `<span class="badge badge-rejected" style="flex-shrink:0;">${tr('fin_project_schedule.critical_path_badge')}</span>` : '';
+    const nameInner = t.sourceBoqItemId
       ? esc(t.taskName)
       : `<input id="task-name-${t.id}" value="${esc(t.taskName)}" style="width:100%; box-sizing:border-box;" oninput="taskTableSetField(${t.id},'taskName',this.value);">`;
+    const nameContent = `<div style="display:flex; align-items:center; gap:4px; padding-left:${(depth||0)*16}px;">${chevron}${milestoneIcon}${wbsCodeLabel}<span style="flex:1; min-width:0;">${nameInner}</span>${criticalBadge}</div>`;
     const budgetAmount = Number(t.budgetAmount)||0;
     const budgetPercent = projectScheduleBudgetPercent(budgetAmount, totalBudget);
     const delCell = `<button class="btn btn-ghost btn-sm" data-act="delete-task" data-id="${t.id}" title="${tr('fin_project_schedule.delete_task')}">${ICN.trash}</button>`;
@@ -6146,8 +6257,13 @@ function renderProjectScheduleTable(ctx){
     </tr>`;
   };
 
-  const rows = tasks.map((t,i)=>savedRowHtml(t,i+1)).join('')
-    + newRows.map((r,idx)=>newRowHtml(r,idx,tasks.length+idx+1)).join('');
+  // WBS tree order + collapse/expand visibility (Stage B item 4, Phase A) — scheduleBuildWbsRows() walks
+  // parentTaskId/sortOrder depth-first; rows under a collapsed summary task are filtered out here rather
+  // than inside the table markup itself, so hidden rows never reach the DOM at all (consistent with how
+  // this table already only ever renders what's currently relevant, e.g. not-yet-saved rows separately).
+  const visibleWbsRows = scheduleBuildWbsRows(tasks, S.scheduleExpandedTaskIds || new Set()).filter(r=>r.isVisible);
+  const rows = visibleWbsRows.map((r,i)=>savedRowHtml(r.task,i+1,r.depth,r.hasChildren)).join('')
+    + newRows.map((r,idx)=>newRowHtml(r,idx,visibleWbsRows.length+idx+1)).join('');
 
   const dirty = taskTableHasUnsavedChanges();
   const periodsDirty = taskPeriodsHasUnsavedChanges();
@@ -6288,6 +6404,68 @@ function renderProjectScheduleTable(ctx){
     <div class="small-btn-row" style="margin-top:8px; justify-content:flex-end;">
       ${periodsDirty ? `<span class="badge badge-info">${tr('fin_project_schedule.unsaved_changes_indicator')}</span>` : ''}
       <button class="btn btn-primary btn-sm" data-act="save-task-periods" ${periodsDirty?'':'disabled'}>${tr('fin_project_schedule.save_periods')}</button>
+    </div>
+  </div>`;
+}
+
+// ---------------- Restored Gantt view (Stage B item 4, Phase B) ----------------
+// A SEPARATE card/section from #task-table-section above — NOT merged into that table. The %-grid table
+// renders 2 <tr> per task (PLAN+ACTUAL, rowspan'd No./name) and updateScheduleChartOverlay() measures its
+// .sched-task-row/.sched-grid-td markers to position the S-curve overlay; interleaving a 3rd "Gantt bar"
+// row type into that structure would break both the rowspan math and the overlay's row-counting. One
+// row per task here instead (view-only: no inline-editable fields — editing stays the %-grid table's job,
+// avoiding a second place with its own dirty-tracking for the same data). Uses the SAME ctx.columns/
+// ctx.colWidth the %-grid table was built from, so the two sections' time axes stay pixel-aligned when
+// S.scheduleViewMode==='both'. Deliberately `no-print` for now — print-engine integration (measuring this
+// section's real width/height into scheduleMeasurePrintFrame(), re-running this section's own geometry
+// refresh on beforeprint/afterprint) is Phase E, done only once this section's DOM shape is no longer
+// changing from Phase C/D work landing on top of it.
+function renderGanttSection(ctx){
+  const {tasks, columns, colWidth, todayColIdx} = ctx;
+  if(columns.length===0) return ''; // same "no date range yet" condition the %-grid table itself guards against
+  const wbsRows = scheduleBuildWbsRows(tasks, S.scheduleExpandedTaskIds || new Set()).filter(r=>r.isVisible);
+
+  const {groups, subLabels} = scheduleColumnGroupsAndSubLabels(columns, S.scheduleZoom);
+  const groupHeaderCells = groups.map(g=>`<th colspan="${g.colspan}" style="text-align:center; border-left:1px solid var(--border-strong);">${esc(g.label)}</th>`).join('');
+  const subHeaderCells = subLabels.map((lbl,i)=>`<th class="num-cell" style="width:${colWidth}px; padding:6px 2px; font-weight:500; ${i===0?'border-left:1px solid var(--border-strong);':''} ${scheduleTodayCellStyle(i, todayColIdx)}">${esc(lbl)}</th>`).join('');
+
+  const rowsHtml = wbsRows.map(({task:t, depth, hasChildren})=>{
+    const isExpanded = !!(S.scheduleExpandedTaskIds && S.scheduleExpandedTaskIds.has(t.id));
+    const chevron = hasChildren
+      ? `<button type="button" class="btn btn-ghost btn-sm" data-act="toggle-schedule-task-expand" data-id="${t.id}" title="${isExpanded ? tr('fin_project_schedule.collapse_row') : tr('fin_project_schedule.expand_row')}" style="padding:2px; min-width:0; flex-shrink:0;">${isExpanded ? ICN.chevronDown : ICN.chevronRight}</button>`
+      : `<span style="display:inline-block; width:22px; flex-shrink:0;"></span>`;
+    const wbsCodeLabel = t.wbsCode ? `<span class="mono" style="color:var(--text-muted); font-size:11px; flex-shrink:0;">${esc(t.wbsCode)}</span>` : '';
+    const nameCell = `<td class="sched-col-name"><div style="display:flex; align-items:center; gap:4px; padding-left:${depth*16}px;">${chevron}${wbsCodeLabel}<span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${esc(t.taskName)}">${esc(t.taskName)}</span></div></td>`;
+    const geom = scheduleGanttBarGeometry(t, columns, colWidth);
+    const barHtml = geom
+      ? `<div class="gantt-row-bar" data-gantt-bar="1" style="left:${geom.leftPx+2}px; width:${geom.widthPx}px;" title="${esc(t.taskName)} (${esc(t.startDate)} - ${esc(t.endDate)})"></div>`
+      : `<div class="gantt-row-noDates" title="${tr('fin_project_schedule.no_dates_placeholder')}"></div>`;
+    return `<tr class="gantt-row">
+      ${nameCell}
+      <td class="num-cell sched-col-duration">${t.durationDays}</td>
+      <td class="mono sched-col-date">${esc(t.startDate||'-')}</td>
+      <td class="mono sched-col-date">${esc(t.endDate||'-')}</td>
+      <td colspan="${columns.length}" style="position:relative; padding:0; width:${columns.length*colWidth}px; background-image:repeating-linear-gradient(to right, var(--border) 0, var(--border) 1px, transparent 1px, transparent ${colWidth}px);">${barHtml}</td>
+    </tr>`;
+  }).join('');
+
+  return `
+  <div id="gantt-section" class="card no-print" style="padding:26px 30px; margin-bottom:20px;">
+    <div class="section-title" style="margin-top:0;">${tr('fin_project_schedule.gantt_section_title')}</div>
+    <div class="table-wrap" style="overflow-x:auto;">
+      <table style="border-collapse:collapse;">
+        <thead>
+          <tr>
+            <th class="sched-col-name" rowspan="2">${tr('fin_project_schedule.col_task_name')}</th>
+            <th class="num-cell sched-col-duration" rowspan="2">${tr('fin_project_schedule.col_duration')}</th>
+            <th class="sched-col-date" rowspan="2">${tr('fin_project_schedule.col_start')}</th>
+            <th class="sched-col-date" rowspan="2">${tr('fin_project_schedule.col_end')}</th>
+            ${groupHeaderCells}
+          </tr>
+          <tr>${subHeaderCells}</tr>
+        </thead>
+        <tbody>${rowsHtml || `<tr><td colspan="4"><div class="empty">${tr('fin_project_schedule.no_tasks_empty')}</div></td></tr>`}</tbody>
+      </table>
     </div>
   </div>`;
 }
@@ -6803,7 +6981,12 @@ function pageFinProjectSchedule(){
       <button class="btn btn-ghost btn-sm no-print" data-act="nav" data-page="fin_project_detail" data-module="bidding" data-id="${p.id}" data-id-field="selectedProjectId" style="margin-bottom:8px;">${ICN.chevronLeft} ${tr('common.back')}</button>
       <h2>${tr('fin_project_schedule.title')}</h2><div class="sub">${esc(p.name)}${p.code?' · '+esc(p.code):''}</div>
     </div>
-    <div class="no-print">
+    <div class="no-print" style="display:flex; align-items:center; gap:10px;">
+      <div class="small-btn-row" style="margin:0;">
+        ${[['table','view_mode_table'],['gantt','view_mode_gantt'],['both','view_mode_both']].map(([mode,key])=>
+          `<button class="btn ${S.scheduleViewMode===mode?'btn-navy':'btn-ghost'} btn-sm" data-act="set-schedule-view-mode" data-mode="${mode}">${tr('fin_project_schedule.'+key)}</button>`
+        ).join('')}
+      </div>
       <button class="btn btn-ghost btn-sm" data-act="open-schedule-print-modal">${ICN.printer} ${tr('fin_project_schedule.print_button')}</button>
     </div>
   </div>`;
@@ -6830,7 +7013,9 @@ function pageFinProjectSchedule(){
     // #schedule-print-frame: plain, unstyled on screen — scheduleApplyPrintLayout()/scheduleResetPrintLayout()
     // (see the print-fit engine below) only ever touch its inline style between the native 'beforeprint'
     // and 'afterprint' events, so this wrapper is invisible to normal on-screen rendering.
-    return `<div id="schedule-print-frame">${pageHead}${renderProjectScheduleTable(ctx)}</div>`;
+    const showTable = S.scheduleViewMode!=='gantt';
+    const showGantt = S.scheduleViewMode!=='table';
+    return `<div id="schedule-print-frame">${pageHead}${showTable?renderProjectScheduleTable(ctx):''}${showGantt?renderGanttSection(ctx):''}</div>`;
   } catch(err){
     console.error('pageFinProjectSchedule render error:', err);
     return pageHead + `<div class="card" style="padding:20px 22px;">
@@ -14827,6 +15012,23 @@ async function handleAction(act, el){
       await apiCall('DELETE', `/api/customer/projects/${S.selectedProjectId}/tasks/${taskId}`);
       await loadProjectTasks(S.selectedProjectId);
     } catch(e){ toast(e.message, 'err'); }
+    return;
+  }
+  // Restored WBS view (Stage B item 4, Phase A) — pure client-side view state, no API call: the backend
+  // has no "is this row collapsed" column (collapse/expand is a per-viewer display preference, not
+  // project data), so nothing here is persisted or sent to the server.
+  if(act==='toggle-schedule-task-expand'){
+    const taskId = parseInt(el.dataset.id,10);
+    if(!S.scheduleExpandedTaskIds) S.scheduleExpandedTaskIds = new Set();
+    if(S.scheduleExpandedTaskIds.has(taskId)) S.scheduleExpandedTaskIds.delete(taskId);
+    else S.scheduleExpandedTaskIds.add(taskId);
+    render();
+    return;
+  }
+  // Restored Gantt view (Stage B item 4, Phase B) — pure client-side view state, no API call.
+  if(act==='set-schedule-view-mode'){
+    S.scheduleViewMode = el.dataset.mode;
+    render();
     return;
   }
 

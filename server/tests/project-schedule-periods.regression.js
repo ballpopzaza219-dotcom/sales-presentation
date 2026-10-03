@@ -218,10 +218,13 @@ function assert(cond, msg) {
     );
     assert(Number(unchangedAfterRejectedSave.rows[0].actual_percent) === 50, 'the rejected over-100% save did not partially write anything (still 50%, the earlier legit save)');
 
-    // ---- 9. Phase-2 UI sanity: zoom buttons + legend exist, and the old removed Gantt/S-curve chart
-    // UI still hasn't come back (Phase 1's own regression file covers this more thoroughly).
+    // ---- 9. Phase-2 UI sanity: zoom buttons + legend exist. The old Gantt bar UI this check used to
+    // confirm was "still gone" has since been deliberately restored (Stage B item 4, Phase B) as its own
+    // separate #gantt-section — see project-schedule-gantt-bars.regression.js for that coverage — so this
+    // now only confirms the %-grid table itself didn't regain one inside its own cells (see the same
+    // narrower scoping in project-schedule-scurve-table.regression.js).
     assert((await page.locator('[data-act="set-schedule-zoom"]').count()) === 3, 'exactly 3 zoom buttons (day/week/month)');
-    assert((await page.locator('[data-gantt-bar]').count()) === 0, 'still no Gantt bar elements');
+    assert((await page.locator('#task-table-section [data-gantt-bar]').count()) === 0, 'still no Gantt bar elements inside the %-grid table itself');
 
     const realErrors = consoleErrors.filter(e => !e.includes('Failed to load resource'));
     assert(!realErrors.length, `no unexpected console/page errors across the entire test (got: ${realErrors.join(' | ')})`);

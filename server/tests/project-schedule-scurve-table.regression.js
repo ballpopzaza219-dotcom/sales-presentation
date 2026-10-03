@@ -5,7 +5,17 @@
 // for the CRUD/CPM/pull-all coverage that still applies unchanged — this file covers only what's new:
 // the No./รายละเอียดงาน/ระยะเวลา/วันเริ่ม/วันเสร็จ/งบประมาณ(บาท+%) columns, the budget_amount SNAPSHOT
 // (not live-synced to later BOQ revisions — see schema.sql's comment on the column), and that the old
-// WBS/milestone/parent/total-float/critical-path/S-curve-chart UI is gone from this page).
+// WBS/milestone/parent/total-float/critical-path/S-curve-chart UI never regresses back INTO this
+// specific table's own structure.
+//
+// UPDATE 2026-10-03 (Stage B item 4, Phase A/B): the WBS/Gantt UI this file's header used to describe as
+// permanently "gone from this page" is being deliberately, explicitly restored — see
+// project-schedule-wbs-tree.regression.js / project-schedule-gantt-bars.regression.js (new files) for
+// that coverage. This file's own job narrows to: the %-grid table itself (#task-table-section) never
+// regains a WBS/Milestone/Parent/Total-Float COLUMN HEADER (the restored UI puts that decoration inline
+// in the name cell and in a separate #gantt-section instead, by design — see renderProjectScheduleTable()'s
+// savedRowHtml() and renderGanttSection() in pr-system.html), and no Gantt bar renders INSIDE this
+// table's own cells (bars live only in #gantt-section).
 //
 // Prerequisites: the dev server must already be running on http://localhost:3000, and Playwright's
 // chromium browser must be installed.
@@ -92,14 +102,16 @@ function assert(cond, msg) {
     await page.evaluate(async (pid) => { await loadProjectTasks(pid); }, projectId);
     await page.waitForTimeout(300);
 
-    // ---- 2. The old MS-Project-style UI is completely gone from this page: no WBS/Milestone/Parent/
-    // Total Float columns, no Gantt bars, no dependency/baseline sections, no zoom buttons.
+    // ---- 2. This table's OWN header never regains a WBS/Milestone/Parent/Total-Float COLUMN (Stage B
+    // item 4 restored that information as inline decoration in the name cell instead — see
+    // project-schedule-wbs-tree.regression.js), and no Gantt bar renders inside this table's own cells
+    // (bars live only in the separate #gantt-section — see project-schedule-gantt-bars.regression.js).
     const headerText = await page.locator('#task-table-section thead').innerText();
-    assert(!/WBS/i.test(headerText), 'no WBS column header (old hierarchy UI removed)');
+    assert(!/WBS/i.test(headerText), 'no WBS column header (decoration lives inline in the name cell instead)');
     assert(!/milestone/i.test(headerText), 'no Milestone column header');
     assert(!/parent/i.test(headerText), 'no Parent Task column header');
     assert(!/total float/i.test(headerText), 'no Total Float column header');
-    assert((await page.locator('[data-gantt-bar]').count()) === 0, 'no Gantt bar elements anywhere');
+    assert((await page.locator('#task-table-section [data-gantt-bar]').count()) === 0, 'no Gantt bar elements inside the %-grid table itself (they render in #gantt-section instead)');
     assert((await page.locator('[data-act="set-gantt-zoom"]').count()) === 0, 'no OLD Gantt-chart zoom buttons (superseded by set-schedule-zoom in Phase 2 — see project-schedule-periods.regression.js)');
     assert((await page.locator('[data-act="add-task-dependency"]').count()) === 0, 'no dependency-add UI');
     assert((await page.locator('[data-act="set-baseline"]').count()) === 0, 'no baseline UI');
