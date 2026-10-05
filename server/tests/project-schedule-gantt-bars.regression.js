@@ -117,9 +117,12 @@ function assert(cond, msg) {
     await page.waitForTimeout(150);
     assert((await page.locator('#task-table-section').count()) === 1 && (await page.locator('#gantt-section').count()) === 1, `view_mode='both': both sections render again`);
 
-    // ---- 6. #gantt-section is excluded from print (deliberately deferred to Phase E — see its own
-    // header comment in pr-system.html) — it must carry the .no-print class.
-    assert((await page.locator('#gantt-section.no-print').count()) === 1, '#gantt-section carries .no-print (print-engine integration deferred to Phase E)');
+    // ---- 6. #gantt-section now participates in print (Stage B item 4, Phase E integrated it into
+    // scheduleMeasurePrintFrame()/scheduleApplyPrintLayout() — see project-schedule-print.regression.js
+    // for that coverage) — the outer card itself no longer carries .no-print, only its own toolbar/legend
+    // sub-elements do (matching #task-table-section's own established pattern).
+    assert((await page.locator('#gantt-section.no-print').count()) === 0, '#gantt-section no longer carries .no-print on its outer card (Phase E print integration)');
+    assert((await page.locator('#gantt-section .section-title.no-print').count()) === 1, "#gantt-section's own toolbar still carries .no-print (buttons shouldn't print)");
 
     assert(!consoleErrors.length, `no unexpected console/page errors across the entire test (got: ${consoleErrors.join(' | ')})`);
     console.log(`\nALL ${passed} CHECKS PASSED`);

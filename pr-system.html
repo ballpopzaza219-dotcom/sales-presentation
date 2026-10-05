@@ -6486,10 +6486,10 @@ function renderProjectScheduleTable(ctx){
 // row per task here instead (view-only: no inline-editable fields — editing stays the %-grid table's job,
 // avoiding a second place with its own dirty-tracking for the same data). Uses the SAME ctx.columns/
 // ctx.colWidth the %-grid table was built from, so the two sections' time axes stay pixel-aligned when
-// S.scheduleViewMode==='both'. Deliberately `no-print` for now — print-engine integration (measuring this
-// section's real width/height into scheduleMeasurePrintFrame(), re-running this section's own geometry
-// refresh on beforeprint/afterprint) is Phase E, done only once this section's DOM shape is no longer
-// changing from Phase C/D work landing on top of it.
+// S.scheduleViewMode==='both'. Print-engine integration (measuring this section's real width/height into
+// scheduleMeasurePrintFrame(), re-running this section's own geometry refresh on beforeprint/afterprint)
+// landed in Phase E, once this section's DOM shape was no longer changing from Phase C/D work landing on
+// top of it — see scheduleMeasurePrintFrame()'s own Phase E comment.
 function renderGanttSection(ctx){
   const {tasks, columns, colWidth, todayColIdx} = ctx;
   if(columns.length===0) return ''; // same "no date range yet" condition the %-grid table itself guards against
@@ -6560,8 +6560,13 @@ function renderGanttSection(ctx){
       <span style="display:flex; align-items:center; gap:5px;"><span style="width:14px; height:9px; border:1.5px dashed var(--text-faint); border-radius:2px; display:inline-block; box-sizing:border-box;"></span>${tr('fin_project_schedule.baseline_legend_label')}</span>
     </div>`;
 
+  // Restored Gantt view (Stage B item 4, Phase E) — the outer card no longer carries .no-print: now that
+  // scheduleMeasurePrintFrame()/scheduleApplyPrintLayout() and updateGanttDependencyOverlay() all know
+  // about this section (see their own Phase E comments), it participates in print like #task-table-section
+  // already does. The toolbar (has a button) and legend stay .no-print individually, matching the EXACT
+  // same pattern #task-table-section's own section-title/legend already use just above in this file.
   return `
-  <div id="gantt-section" class="card no-print" style="padding:26px 30px; margin-bottom:20px;">
+  <div id="gantt-section" class="card" style="padding:26px 30px; margin-bottom:20px;">
     <div class="section-title no-print" style="margin-top:0; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
       <span>${tr('fin_project_schedule.gantt_section_title')}</span>
       <button class="btn btn-ghost btn-sm" data-act="open-set-baseline-confirm">${ICN.flag} ${tr('fin_project_schedule.set_baseline_button')}</button>
@@ -6881,9 +6886,19 @@ const SCHEDULE_PRINT_MARGIN_MM = { normal:15, narrow:6, wide:25 };
 // actually overflows (this table's global `table{width:100%}` rule can't compress it below its natural
 // per-column content width under table-layout:auto — confirmed live: table width stayed ~14000px real
 // content vs. frame's own fixed ~1122px box), so the table's OWN gBCR is what carries the real width.
+// Restored Gantt view (Stage B item 4, Phase E) — now that #gantt-section participates in print (its
+// own .no-print was removed from the outer card, see renderGanttSection()), the frame can contain TWO
+// <table>s (the %-grid table, then the Gantt table) when S.scheduleViewMode==='both'. `querySelector`
+// alone would only ever find the FIRST one (the %-grid table, since it renders first in DOM order) and
+// silently ignore the Gantt table's own width entirely. WIDTH takes the wider of the two (either one can
+// independently overflow — a day-zoom Gantt table can be just as wide as the %-grid table): HEIGHT still
+// just reads frame's own gBCR directly, unchanged from before — normal block-flow height already sums
+// every in-flow descendant's real height correctly regardless of how many tables are inside it (see the
+// original comment on this function, still accurate), so only WIDTH needed to generalize.
 function scheduleMeasurePrintFrame(frame){
-  const table = frame.querySelector('table');
-  const w = table ? table.getBoundingClientRect().width : frame.getBoundingClientRect().width;
+  const tables = frame.querySelectorAll('table');
+  let w = frame.getBoundingClientRect().width;
+  tables.forEach(t=>{ w = Math.max(w, t.getBoundingClientRect().width); });
   const h = frame.getBoundingClientRect().height;
   return { w, h };
 }
@@ -7084,6 +7099,11 @@ function scheduleApplyPrintLayout(){
   // final print-time layout — deliberately not a separate/duplicated print-only measurement path, so this
   // can't drift out of sync with the screen version again.
   updateScheduleChartOverlay();
+  // Restored Gantt view (Stage B item 4, Phase E) — same regression-fix reasoning applies identically to
+  // the dependency-arrow overlay: it's positioned via live getBoundingClientRect() measurements that are
+  // only valid in this FINAL print-zoomed DOM state, so it must be recomputed here too, not left showing
+  // stale screen-time geometry.
+  updateGanttDependencyOverlay();
 }
 function scheduleResetPrintLayout(){
   const frame = document.getElementById('schedule-print-frame');
@@ -7098,6 +7118,7 @@ function scheduleResetPrintLayout(){
   // otherwise it would keep showing the print-time geometry until the next unrelated render() happened to
   // run (e.g. the 45s poll), same reasoning as the fix above.
   updateScheduleChartOverlay();
+  updateGanttDependencyOverlay();
   if(S.schedulePrintLastOvershoot){
     S.schedulePrintLastOvershoot = null;
     toast(tr('fin_project_schedule.print_overshoot_warning'), 'warn');
