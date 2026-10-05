@@ -290,6 +290,9 @@ tr:hover td{background:var(--surface-alt);}
    height (all computed in real px against the task rows it sits over) scroll together with the table's
    horizontal overflow-x:auto content instead of staying pinned to the viewport. */
 #schedule-scroll-main{position:relative;}
+/* Same reasoning as #schedule-scroll-main above, for the restored Gantt view's own dependency-arrow
+   overlay (Stage B item 4, Phase C) — see updateGanttDependencyOverlay(). */
+#gantt-scroll-main{position:relative;}
 /* แผนงาน's synced top+bottom scrollbars for #schedule-scroll-main's wide time grid — custom-drawn
    (not the browser's native scrollbar) specifically so a visible thumb is guaranteed on every
    platform/browser, including ones that use fade-out "overlay" scrollbars that only appear during an
@@ -6002,6 +6005,64 @@ function scheduleGanttBarGeometry(task, columns, colWidth){
   return {leftPx: startIdx*colWidth, widthPx: Math.max(colWidth-4, (endIdx-startIdx+1)*colWidth-4)};
 }
 
+// Restored Gantt view (Stage B item 4, Phase C) — pure SVG-string builder for dependency arrows, mirroring
+// buildScheduleChartOverlaySvgContent()'s split from its own DOM-measuring driver
+// (updateGanttDependencyOverlay(), defined alongside updateScheduleChartOverlay()). No DOM access here at
+// all, only arithmetic + string building against a pre-measured coordinate map, so this stays independently
+// testable. barByTaskId: Map<taskId, {left,right,midY}> in the overlay svg's own coordinate space.
+// taskId/dependsOnTaskId reads as "taskId depends on dependsOnTaskId" (dependsOnTaskId is the
+// predecessor) — same convention as computeProjectSchedule() in server.js.
+function buildGanttDependencyArrowsSvgContent(deps, barByTaskId){
+  const defs = `<defs><marker id="gantt-arrow-head" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--text-muted)"/></marker></defs>`;
+  const paths = deps.map(d=>{
+    const pred = barByTaskId.get(d.dependsOnTaskId), succ = barByTaskId.get(d.taskId);
+    // Both endpoints must currently have a rendered bar/diamond — a dependency touching a task hidden
+    // behind a collapsed ancestor (or unscheduled, no bar at all) is silently skipped, not drawn as a
+    // "folded" edge to a collapsed summary row — an explicit, documented simplification for this pass.
+    if(!pred || !succ) return '';
+    const start = (d.dependencyType==='SS' || d.dependencyType==='SF') ? {x:pred.left, y:pred.midY} : {x:pred.right, y:pred.midY};
+    const end = (d.dependencyType==='FF' || d.dependencyType==='SF') ? {x:succ.right, y:succ.midY} : {x:succ.left, y:succ.midY};
+    // 3-segment orthogonal elbow connector (classic Gantt dependency-line style): step a fixed distance
+    // out from the start point before turning, so the line clears the bar's own rounded corner, then one
+    // vertical segment, then straight into the end point.
+    const dir = end.x>=start.x ? 1 : -1;
+    const elbowX = start.x + dir*10;
+    const path = `M ${start.x.toFixed(1)} ${start.y.toFixed(1)} L ${elbowX.toFixed(1)} ${start.y.toFixed(1)} L ${elbowX.toFixed(1)} ${end.y.toFixed(1)} L ${end.x.toFixed(1)} ${end.y.toFixed(1)}`;
+    return `<path d="${path}" fill="none" stroke="var(--text-muted)" stroke-width="1.5" marker-end="url(#gantt-arrow-head)"/>`;
+  }).join('');
+  return defs + paths;
+}
+
+// Restored Gantt view (Stage B item 4, Phase C) — native HTML5 drag-and-drop reorder, same pattern as
+// boqDragStart()/boqDrop() (BOQ items editor) but keyed by task id instead of array index, and calling the
+// real reorder endpoint immediately on drop (this view has no "unsaved changes, press save" state of its
+// own — it's a live reflection of server state, same as every other Gantt-section action). SIBLING-ONLY,
+// matching exactly what PUT .../tasks/reorder supports server-side (it has no field for a new parent at
+// all — see that route's own comment in server.js) — a drop onto a task under a DIFFERENT parent is
+// rejected with a hint instead of silently doing nothing or guessing an action; moving to a new parent is
+// always the explicit "ย้าย" (reparent) modal instead, never an accidental drag outcome.
+function scheduleWbsDragStart(e, taskId){ e.dataTransfer.setData('text/plain', String(taskId)); e.dataTransfer.effectAllowed = 'move'; }
+async function scheduleWbsDrop(e, targetTaskId){
+  e.preventDefault();
+  const sourceId = parseInt(e.dataTransfer.getData('text/plain'), 10);
+  if(Number.isNaN(sourceId) || sourceId===targetTaskId) return;
+  const source = S.projectTasks.find(t=>t.id===sourceId), target = S.projectTasks.find(t=>t.id===targetTaskId);
+  if(!source || !target) return;
+  if(source.parentTaskId !== target.parentTaskId){
+    toast(tr('fin_project_schedule.reorder_different_parent_hint'), 'err');
+    return;
+  }
+  const siblings = S.projectTasks.filter(t=>t.parentTaskId===source.parentTaskId).sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0));
+  const fromIdx = siblings.findIndex(t=>t.id===sourceId), toIdx = siblings.findIndex(t=>t.id===targetTaskId);
+  const [moved] = siblings.splice(fromIdx, 1);
+  siblings.splice(toIdx, 0, moved);
+  const order = siblings.map((t,i)=>({id:t.id, sortOrder:i}));
+  try{
+    await apiCall('PUT', `/api/customer/projects/${S.selectedProjectId}/tasks/reorder`, {order});
+    await loadProjectTasks(S.selectedProjectId);
+  } catch(e){ toast(e.message, 'err'); }
+}
+
 // Shared by renderProjectScheduleTable() (which also draws the S-curve overlay's underlying data via
 // updateScheduleChartOverlay()) so every part of this page uses the exact same tasks/budget/date-range/
 // column-set for a given render — computed once by pageFinProjectSchedule() and passed through, rather
@@ -6451,7 +6512,12 @@ function renderGanttSection(ctx){
       : `<span style="display:inline-block; width:22px; flex-shrink:0;"></span>`;
     const wbsCodeLabel = t.wbsCode ? `<span class="mono" style="color:var(--text-muted); font-size:11px; flex-shrink:0;">${esc(t.wbsCode)}</span>` : '';
     const criticalBadge = t.isCritical ? `<span class="badge badge-rejected" style="flex-shrink:0;">${tr('fin_project_schedule.critical_path_badge')}</span>` : '';
-    const nameCell = `<td class="sched-col-name"><div style="display:flex; align-items:center; gap:4px; padding-left:${depth*16}px;">${chevron}${wbsCodeLabel}<span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${esc(t.taskName)}">${esc(t.taskName)}</span>${criticalBadge}</div></td>`;
+    // Phase C — dependency list/add/remove + reparent entry points, link/move icon buttons co-located
+    // with the row that owns them (matches this section's "manage, don't just view" role vs. the %-grid
+    // table, which stays editing-free for structure/relationships per the Phase B design decision).
+    const depsButton = `<button type="button" class="btn btn-ghost btn-sm" data-act="open-task-dependencies" data-id="${t.id}" title="${tr('fin_project_schedule.dependencies_button')}" style="padding:2px; min-width:0; flex-shrink:0;">${ICN.link}</button>`;
+    const reparentButton = `<button type="button" class="btn btn-ghost btn-sm" data-act="open-task-reparent" data-id="${t.id}" title="${tr('fin_project_schedule.reparent_button')}" style="padding:2px; min-width:0; flex-shrink:0;">${ICN.move}</button>`;
+    const nameCell = `<td class="sched-col-name" draggable="true" ondragstart="scheduleWbsDragStart(event, ${t.id})" ondragover="event.preventDefault();" ondrop="scheduleWbsDrop(event, ${t.id})"><div style="display:flex; align-items:center; gap:4px; padding-left:${depth*16}px;">${chevron}${wbsCodeLabel}<span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${esc(t.taskName)}">${esc(t.taskName)}</span>${criticalBadge}${depsButton}${reparentButton}</div></td>`;
 
     // Baseline ghost — drawn FIRST (so it sits visually behind the real bar/diamond in DOM paint order),
     // using the exact same geometry function fed {startDate,endDate} = the baseline's own frozen dates
@@ -6472,9 +6538,9 @@ function renderGanttSection(ctx){
       // A milestone's geom has startIdx===endIdx (0 duration) — center the diamond within that single
       // column rather than reusing the bar's own left/width (which is sized for a bar, not a point marker).
       const diamondLeft = geom.leftPx + colWidth/2 - 7;
-      markerHtml = `<div class="gantt-milestone-marker${criticalClass}" data-gantt-bar="1" style="left:${diamondLeft}px;" title="${esc(t.taskName)} (${esc(t.startDate)})"></div>`;
+      markerHtml = `<div class="gantt-milestone-marker${criticalClass}" data-gantt-bar="1" data-task-id="${t.id}" style="left:${diamondLeft}px;" title="${esc(t.taskName)} (${esc(t.startDate)})"></div>`;
     } else {
-      markerHtml = `<div class="gantt-row-bar${criticalClass}" data-gantt-bar="1" style="left:${geom.leftPx+2}px; width:${geom.widthPx}px;" title="${esc(t.taskName)} (${esc(t.startDate)} - ${esc(t.endDate)})"></div>`;
+      markerHtml = `<div class="gantt-row-bar${criticalClass}" data-gantt-bar="1" data-task-id="${t.id}" style="left:${geom.leftPx+2}px; width:${geom.widthPx}px;" title="${esc(t.taskName)} (${esc(t.startDate)} - ${esc(t.endDate)})"></div>`;
     }
     return `<tr class="gantt-row">
       ${nameCell}
@@ -6501,7 +6567,7 @@ function renderGanttSection(ctx){
       <button class="btn btn-ghost btn-sm" data-act="open-set-baseline-confirm">${ICN.flag} ${tr('fin_project_schedule.set_baseline_button')}</button>
     </div>
     ${ganttLegend}
-    <div class="table-wrap" style="overflow-x:auto;">
+    <div class="table-wrap" id="gantt-scroll-main" style="overflow-x:auto;">
       <table style="border-collapse:collapse;">
         <thead>
           <tr>
@@ -6514,7 +6580,7 @@ function renderGanttSection(ctx){
           <tr>${subHeaderCells}</tr>
         </thead>
         <tbody>${rowsHtml || `<tr><td colspan="4"><div class="empty">${tr('fin_project_schedule.no_tasks_empty')}</div></td></tr>`}</tbody>
-      </table>
+      </table><svg id="gantt-dependency-overlay" style="position:absolute; pointer-events:none; display:none;"></svg>
     </div>
   </div>`;
 }
@@ -6730,6 +6796,46 @@ function updateScheduleChartOverlay(){
   svg.setAttribute('height', height);
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
   svg.innerHTML = buildScheduleChartOverlaySvgContent(ctx, width, height);
+}
+
+// Restored Gantt view (Stage B item 4, Phase C) — DOM-measuring driver for the dependency-arrow overlay,
+// mirroring updateScheduleChartOverlay() above. getBoundingClientRect() (not offsetLeft/offsetTop) is
+// used here specifically because each [data-gantt-bar] element's own offsetParent is ITS OWN <td
+// style="position:relative"> cell (set per-row in renderGanttSection, so each row's bar can be positioned
+// independently) — unlike #schedule-chart-overlay's single shared .table-wrap offsetParent, bars here do
+// NOT all share one common positioned ancestor, so offsetLeft/offsetTop are not directly comparable
+// across rows. getBoundingClientRect() always returns viewport-absolute coordinates regardless of each
+// element's own offsetParent chain, so subtracting the wrap's own rect gives a comparable coordinate
+// space for every bar — then adding back wrap.scrollLeft/scrollTop converts that viewport-relative,
+// scroll-position-DEPENDENT value into the same scroll-position-INDEPENDENT content-space coordinates
+// offsetLeft/offsetTop would have given directly, had a shared offsetParent been available.
+function updateGanttDependencyOverlay(){
+  const wrap = document.getElementById('gantt-scroll-main');
+  const svg = document.getElementById('gantt-dependency-overlay');
+  if(!wrap || !svg) return;
+  const deps = S.projectTaskDependencies || [];
+  const barEls = wrap.querySelectorAll('[data-gantt-bar]');
+  if(barEls.length===0 || deps.length===0){
+    svg.style.display = 'none';
+    return;
+  }
+  const wrapRect = wrap.getBoundingClientRect();
+  const barByTaskId = new Map();
+  barEls.forEach(el=>{
+    const id = parseInt(el.dataset.taskId, 10);
+    const r = el.getBoundingClientRect();
+    barByTaskId.set(id, {
+      left: (r.left - wrapRect.left) + wrap.scrollLeft,
+      right: (r.right - wrapRect.left) + wrap.scrollLeft,
+      midY: (r.top - wrapRect.top) + wrap.scrollTop + r.height/2,
+    });
+  });
+  const width = wrap.scrollWidth, height = wrap.scrollHeight;
+  svg.style.cssText = `position:absolute; pointer-events:none; left:0px; top:0px; width:${width}px; height:${height}px; display:block;`;
+  svg.setAttribute('width', width);
+  svg.setAttribute('height', height);
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.innerHTML = buildGanttDependencyArrowsSvgContent(deps, barByTaskId);
 }
 
 // ---------------- แผนงาน print engine (2026-07-27 rebuild — an ENTIRELY custom in-app print-settings
@@ -12426,6 +12532,70 @@ function renderModal(){
       </div>
     </div>`;
   }
+  // Restored Gantt view (Stage B item 4, Phase C) — view/add/remove dependencies for one task. Stays open
+  // after a successful add/remove (re-reads S.projectTaskDependencies/S.projectTasks fresh on every
+  // render, both already refreshed by loadProjectTasks() in the handler) so the list visibly updates in
+  // place rather than closing and forcing the user to reopen it to see the result.
+  if(S.modal.type==='task-dependencies'){
+    const m = S.modal;
+    const task = S.projectTasks.find(t=>t.id===m.taskId);
+    const myDeps = (S.projectTaskDependencies||[]).filter(d=>d.taskId===m.taskId);
+    const depRows = myDeps.map(d=>{
+      const pred = S.projectTasks.find(t=>t.id===d.dependsOnTaskId);
+      return `<div class="small-btn-row" style="justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--border);">
+        <span>${esc(pred ? pred.taskName : '#'+d.dependsOnTaskId)} — ${tr('fin_project_schedule.dependency_type_'+d.dependencyType.toLowerCase())}${d.lagDays ? ' (lag '+d.lagDays+'d)' : ''}</span>
+        <button class="btn btn-ghost btn-sm" data-act="remove-task-dependency" data-dep-id="${d.id}">${ICN.trash}</button>
+      </div>`;
+    }).join('') || `<div class="hint" style="margin-bottom:10px;">${tr('fin_project_schedule.dependency_none_yet')}</div>`;
+    // Excludes the task itself only — the server (wouldCreateCycle) is the sole authority on whether a
+    // given predecessor would actually close a cycle; this list doesn't try to pre-filter that client-side.
+    const candidateOptions = S.projectTasks.filter(t=>t.id!==m.taskId).map(t=>`<option value="${t.id}" ${String(m.newDependsOnTaskId)===String(t.id)?'selected':''}>${esc(t.taskName)}</option>`).join('');
+    return `<div class="modal-overlay" data-act="close-modal">
+      <div class="modal" data-stop="1">
+        <h3>${tr('fin_project_schedule.dependencies_modal_title')}${task?' — '+esc(task.taskName):''}</h3>
+        <div style="margin-bottom:14px;">${depRows}</div>
+        <div class="field"><label>${tr('fin_project_schedule.dependency_predecessor_label')}</label>
+          <select onchange="S.modal.newDependsOnTaskId=this.value;"><option value="">--</option>${candidateOptions}</select>
+        </div>
+        <div class="split">
+          <div class="field"><label>${tr('fin_project_schedule.dependency_type_label')}</label>
+            <select onchange="S.modal.newDependencyType=this.value;">
+              ${['FS','SS','FF','SF'].map(ty=>`<option value="${ty}" ${m.newDependencyType===ty?'selected':''}>${tr('fin_project_schedule.dependency_type_'+ty.toLowerCase())}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label>${tr('fin_project_schedule.dependency_lag_label')}</label>
+            <input type="number" value="${m.newLagDays||0}" oninput="S.modal.newLagDays=this.value;">
+          </div>
+        </div>
+        <div class="small-btn-row" style="justify-content:flex-end; margin-top:10px;">
+          <button class="btn btn-ghost" data-act="close-modal">${tr('common.cancel')}</button>
+          <button class="btn btn-primary" data-act="confirm-add-task-dependency">${tr('fin_project_schedule.dependency_add_button')}</button>
+        </div>
+      </div>
+    </div>`;
+  }
+  // Restored Gantt view (Stage B item 4, Phase C) — explicit reparent control (NOT drag-and-drop — see
+  // scheduleWbsDrop()'s own comment on why cross-parent moves are deliberately never a drag outcome).
+  if(S.modal.type==='task-reparent'){
+    const m = S.modal;
+    const task = S.projectTasks.find(t=>t.id===m.taskId);
+    const candidateOptions = S.projectTasks.filter(t=>t.id!==m.taskId).map(t=>`<option value="${t.id}" ${String(m.newParentTaskId)===String(t.id)?'selected':''}>${esc(t.taskName)}</option>`).join('');
+    return `<div class="modal-overlay" data-act="close-modal">
+      <div class="modal" data-stop="1">
+        <h3>${tr('fin_project_schedule.reparent_modal_title')}${task?' — '+esc(task.taskName):''}</h3>
+        <div class="field"><label>${tr('fin_project_schedule.reparent_new_parent_label')}</label>
+          <select onchange="S.modal.newParentTaskId=this.value;">
+            <option value="" ${!m.newParentTaskId?'selected':''}>${tr('fin_project_schedule.reparent_top_level_option')}</option>
+            ${candidateOptions}
+          </select>
+        </div>
+        <div class="small-btn-row" style="justify-content:flex-end;">
+          <button class="btn btn-ghost" data-act="close-modal">${tr('common.cancel')}</button>
+          <button class="btn btn-primary" data-act="confirm-task-reparent">${tr('fin_project_schedule.reparent_button')}</button>
+        </div>
+      </div>
+    </div>`;
+  }
   if(S.modal.type==='revise-budget'){
     const m = S.modal;
     return `<div class="modal-overlay" data-act="close-modal">
@@ -12703,6 +12873,7 @@ function attachHandlers(){
   document.querySelectorAll('.modal').forEach(m=>{ m.onclick = (e)=>e.stopPropagation(); });
   wireScheduleScrollSync();
   updateScheduleChartOverlay();
+  updateGanttDependencyOverlay();
   updateOtherVoucherSummary(); // no-op if the 'other' voucher form (VAT/WHT section) isn't on screen right now
   updateClearanceItemSummary(); // no-op (internally, via `if(!f) return`) if no advance-clearance form is open
 }
@@ -15109,6 +15280,61 @@ async function handleAction(act, el){
       await loadProjectTasks(S.selectedProjectId);
       toast(tr('fin_project_schedule.set_baseline_success_toast'));
     } catch(e){ toast(e.message, 'err'); }
+    return;
+  }
+  // Restored Gantt view (Stage B item 4, Phase C) — view/add/remove dependencies.
+  if(act==='open-task-dependencies'){
+    S.modal = {type:'task-dependencies', taskId:parseInt(el.dataset.id,10), newDependsOnTaskId:'', newDependencyType:'FS', newLagDays:0};
+    render();
+    return;
+  }
+  if(act==='confirm-add-task-dependency'){
+    const m = S.modal;
+    if(!m.newDependsOnTaskId){ toast(tr('fin_project_schedule.dependency_predecessor_required_err'), 'err'); return; }
+    try{
+      await apiCall('POST', `/api/customer/projects/${S.selectedProjectId}/tasks/dependencies`, {
+        taskId: m.taskId, dependsOnTaskId: parseInt(m.newDependsOnTaskId,10),
+        dependencyType: m.newDependencyType, lagDays: parseInt(m.newLagDays,10)||0,
+      });
+      S.modal.newDependsOnTaskId = ''; S.modal.newLagDays = 0;
+      await loadProjectTasks(S.selectedProjectId);
+      toast(tr('fin_project_schedule.dependency_add_success_toast'));
+    } catch(e){ toast(e.message, 'err'); } // server (wouldCreateCycle) is the sole authority on cycle-rejection — its message is shown as-is
+    return;
+  }
+  if(act==='remove-task-dependency'){
+    try{
+      await apiCall('DELETE', `/api/customer/projects/${S.selectedProjectId}/tasks/dependencies/${el.dataset.depId}`);
+      await loadProjectTasks(S.selectedProjectId);
+    } catch(e){ toast(e.message, 'err'); }
+    return;
+  }
+  // Restored Gantt view (Stage B item 4, Phase C) — explicit reparent (not drag-and-drop).
+  if(act==='open-task-reparent'){
+    const taskId = parseInt(el.dataset.id,10);
+    const task = S.projectTasks.find(t=>t.id===taskId);
+    S.modal = {type:'task-reparent', taskId, newParentTaskId: (task && task.parentTaskId!=null) ? String(task.parentTaskId) : ''};
+    render();
+    return;
+  }
+  if(act==='confirm-task-reparent'){
+    const m = S.modal;
+    const task = S.projectTasks.find(t=>t.id===m.taskId);
+    if(!task) return;
+    try{
+      // Resend every currently-editable field, not just parentTaskId — PUT .../tasks/:taskId has no
+      // "keep current" fallback for taskName (always required), and every OTHER field here is already
+      // its live current value anyway, so this is a no-op write for everything except parentTaskId.
+      await apiCall('PUT', `/api/customer/projects/${S.selectedProjectId}/tasks/${m.taskId}`, {
+        taskName: task.taskName, parentTaskId: m.newParentTaskId ? parseInt(m.newParentTaskId,10) : null,
+        durationDays: task.durationDays, startDate: task.startDate, percentComplete: task.percentComplete,
+        isMilestone: task.isMilestone, actualStartDate: task.actualStartDate, actualEndDate: task.actualEndDate,
+        actualAmount: task.actualAmount, actualPercent: task.actualPercent,
+      });
+      S.modal = null;
+      await loadProjectTasks(S.selectedProjectId);
+      toast(tr('fin_project_schedule.reparent_success_toast'));
+    } catch(e){ toast(e.message, 'err'); } // server (isTaskOrDescendant) is the sole authority on cycle-rejection here too
     return;
   }
 
