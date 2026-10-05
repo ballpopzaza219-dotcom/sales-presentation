@@ -85,6 +85,26 @@ function assert(cond, msg) {
     assert(!modalBody.includes('fin_project_schedule.'), `modal renders real translated text, not a raw locale key leak (got: ${modalBody.slice(0, 80)}...)`);
     assert(modalBody.includes('ไลน์ฐาน'), 'modal warning text mentions ไลน์ฐาน (baseline)');
 
+    // ---- 2b. Clicking Cancel actually closes the modal — this one modal gets its own dedicated
+    // cancel-set-schedule-baseline action instead of the app-wide close-modal convention, specifically
+    // BECAUSE close-modal has no handler anywhere (ข.14) and this modal's confirm button is a whole-
+    // project, no-undo overwrite — too risky to leave dependent on a known-broken shared action. Confirm
+    // both that the modal actually closes AND that no baseline was written by merely opening/cancelling.
+    // button[...] (not a bare attribute selector) — the overlay div shares this same data-act, and its
+    // own bounding-box center is geometrically covered by the modal card on top of it (same selector
+    // trap documented in project-schedule-print.regression.js's own close-modal check), so a bare
+    // selector would land the click on the card instead (data-stop="1" stops propagation there, so
+    // nothing would fire at all).
+    await page.click('button[data-act="cancel-set-schedule-baseline"]');
+    await page.waitForTimeout(150);
+    assert((await page.evaluate(() => S.modal)) === null, 'clicking Cancel on the set-baseline modal actually closes it (dedicated working cancel action, not the broken app-wide close-modal)');
+    const dbBaselineBeforeConfirm = await pool.query(`SELECT COUNT(*)::int AS n FROM client_project_task_baseline WHERE task_id=$1`, [task.id]);
+    assert(dbBaselineBeforeConfirm.rows[0].n === 0, 'cancelling did not write any baseline row — only confirm-set-schedule-baseline does that');
+
+    // Re-open for the real confirm flow below.
+    await page.click('[data-act="open-set-baseline-confirm"]');
+    await page.waitForSelector('.modal[data-stop="1"]');
+
     // ---- 3. Confirming calls the backend and reloads — a ghost bar now appears, matching the task's
     // CURRENT dates (baseline == current, since nothing has moved yet).
     await page.click('[data-act="confirm-set-schedule-baseline"]');

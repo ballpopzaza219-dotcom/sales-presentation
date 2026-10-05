@@ -12542,12 +12542,22 @@ function renderModal(){
   // UPSERTs over any existing baseline — see server.js's own comment on that route). The warning text
   // says so explicitly since this is a one-way, no-undo action from the UI's point of view.
   if(S.modal.type==='set-schedule-baseline'){
-    return `<div class="modal-overlay" data-act="close-modal">
+    // ข.14 (data-act="close-modal" has no handler anywhere in this app) makes the generic overlay-click/
+    // Cancel-button convention every other modal in renderModal() uses silently do nothing. Every other
+    // modal in this app is tolerant of that (worst case: stuck open, re-opens the next time, no data
+    // harm) — this ONE modal is not: its confirm button triggers POST .../tasks/set-baseline, a whole-
+    // project, no-undo OVERWRITE (see confirm-set-schedule-baseline's own comment). A user who thinks
+    // they clicked Cancel but actually triggered nothing, then clicks Cancel again, then eventually
+    // clicks the wrong button out of confusion, is a realistic path to an unwanted irreversible
+    // overwrite. So THIS modal alone gets its own real, working cancel action (same shallow pattern as
+    // cancel-customer-quick-add — a dedicated handler that sets state back to null) instead of relying on
+    // the broken shared one, on both the overlay AND the button.
+    return `<div class="modal-overlay" data-act="cancel-set-schedule-baseline">
       <div class="modal" data-stop="1">
         <h3>${tr('fin_project_schedule.set_baseline_confirm_title')}</h3>
         <div class="hint" style="margin-bottom:12px;">${tr('fin_project_schedule.set_baseline_confirm_body')}</div>
         <div class="small-btn-row" style="justify-content:flex-end;">
-          <button class="btn btn-ghost" data-act="close-modal">${tr('common.cancel')}</button>
+          <button class="btn btn-ghost" data-act="cancel-set-schedule-baseline">${tr('common.cancel')}</button>
           <button class="btn btn-primary" data-act="confirm-set-schedule-baseline">${tr('fin_project_schedule.set_baseline_button')}</button>
         </div>
       </div>
@@ -15291,6 +15301,14 @@ async function handleAction(act, el){
   // Restored Gantt view (Stage B item 4, Phase D) — whole-project baseline set/overwrite.
   if(act==='open-set-baseline-confirm'){
     S.modal = {type:'set-schedule-baseline'};
+    render();
+    return;
+  }
+  // Dedicated working cancel for this ONE modal only — see the modal's own comment in renderModal() for
+  // why it can't rely on the app-wide close-modal convention (ข.14, no handler exists for it anywhere)
+  // the way every other modal safely can.
+  if(act==='cancel-set-schedule-baseline'){
+    S.modal = null;
     render();
     return;
   }
