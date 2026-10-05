@@ -116,7 +116,21 @@ function assert(cond, msg) {
     assert(t3AfterRejected.sortOrder === t3Before.sortOrder && t3AfterRejected.parentTaskId === parent3.id, 't3 is completely untouched by the rejected cross-parent drag attempt');
 
     // ---- 3. Reparent t1 under parent3 via the explicit "ย้าย" modal (not drag) -> parentTaskId changes,
-    // wbs_code moves under parent3's branch.
+    // wbs_code moves under parent3's branch. confirm-task-reparent resends taskName/durationDays/
+    // startDate/percentComplete/isMilestone/actual_* alongside the new parentTaskId (see its own
+    // comment: PUT .../tasks/:taskId has no "keep current" fallback for taskName) — it deliberately does
+    // NOT send endDate at all, because the server NEVER reads endDate from the request body (confirmed
+    // by reading server.js directly: end_date is always recomputed server-side as
+    // addCalendarDays(start, duration-1), there is no `endDate` destructured from req.body anywhere on
+    // this route). Snapshot every one of those fields in the DB directly BEFORE the reparent and assert
+    // byte-identical values AFTER, to prove resending them this way is a true no-op for everything except
+    // parent_task_id/wbs_code.
+    const t1DbBefore = await pool.query(
+      `SELECT to_char(start_date,'YYYY-MM-DD') AS start_date, to_char(end_date,'YYYY-MM-DD') AS end_date,
+              percent_complete, to_char(actual_start_date,'YYYY-MM-DD') AS actual_start_date,
+              to_char(actual_end_date,'YYYY-MM-DD') AS actual_end_date, actual_amount, actual_percent
+       FROM client_project_tasks WHERE id=$1`, [t1.id]
+    );
     await page.click(`[data-act="open-task-reparent"][data-id="${t1.id}"]`);
     await page.waitForSelector('.modal[data-stop="1"]');
     await page.selectOption('.modal select', String(parent3.id));
@@ -127,6 +141,13 @@ function assert(cond, msg) {
     assert(t1AfterReparent.parentTaskId === parent3.id, `t1 reparented under parent3 via the modal (got parentTaskId=${t1AfterReparent.parentTaskId})`);
     const parent3AfterReparent = allTasks.find(t=>t.id===parent3.id);
     assert(t1AfterReparent.wbsCode.startsWith(parent3AfterReparent.wbsCode + '.'), `t1's wbs_code now sits under parent3's branch (parent3="${parent3AfterReparent.wbsCode}", t1="${t1AfterReparent.wbsCode}")`);
+    const t1DbAfter = await pool.query(
+      `SELECT to_char(start_date,'YYYY-MM-DD') AS start_date, to_char(end_date,'YYYY-MM-DD') AS end_date,
+              percent_complete, to_char(actual_start_date,'YYYY-MM-DD') AS actual_start_date,
+              to_char(actual_end_date,'YYYY-MM-DD') AS actual_end_date, actual_amount, actual_percent
+       FROM client_project_tasks WHERE id=$1`, [t1.id]
+    );
+    assert(JSON.stringify(t1DbBefore.rows[0]) === JSON.stringify(t1DbAfter.rows[0]), `reparenting t1 left start_date/end_date/percent_complete/actual_* completely unchanged in the DB (before=${JSON.stringify(t1DbBefore.rows[0])}, after=${JSON.stringify(t1DbAfter.rows[0])})`);
     // Modal closes itself on success (unlike the dependencies modal, which stays open) — matches a
     // single-field, single-outcome action rather than a list the user might keep editing.
     assert((await page.evaluate(() => S.modal)) === null, 'reparent modal closes itself after a successful move');

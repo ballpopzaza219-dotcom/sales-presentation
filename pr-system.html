@@ -6054,6 +6054,11 @@ async function scheduleWbsDrop(e, targetTaskId){
   }
   const siblings = S.projectTasks.filter(t=>t.parentTaskId===source.parentTaskId).sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0));
   const fromIdx = siblings.findIndex(t=>t.id===sourceId), toIdx = siblings.findIndex(t=>t.id===targetTaskId);
+  // Defensive: sourceId!==targetTaskId is already guaranteed above, and distinct ids map to distinct
+  // indices in `siblings` by construction, so fromIdx===toIdx shouldn't currently be reachable — but
+  // bailing on it explicitly costs nothing and avoids a no-op PUT + full reload if that invariant is ever
+  // broken by a future change to the lookup above.
+  if(fromIdx===toIdx) return;
   const [moved] = siblings.splice(fromIdx, 1);
   siblings.splice(toIdx, 0, moved);
   const order = siblings.map((t,i)=>({id:t.id, sortOrder:i}));
