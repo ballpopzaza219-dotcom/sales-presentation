@@ -118,9 +118,9 @@ function assert(cond, msg) {
     assert((await page.locator('#task-table-section').count()) === 1 && (await page.locator('#gantt-section').count()) === 1, `view_mode='both': both sections render again`);
 
     // ---- 6. #gantt-section now participates in print (Stage B item 4, Phase E integrated it into
-    // scheduleMeasurePrintFrame()/scheduleApplyPrintLayout() — see project-schedule-print.regression.js
-    // for that coverage) — the outer card itself no longer carries .no-print, only its own toolbar/legend
-    // sub-elements do (matching #task-table-section's own established pattern).
+    // scheduleMeasurePrintFrame()/scheduleApplyPrintLayout() — see project-schedule-print-gantt.
+    // regression.js for that coverage) — the outer card itself no longer carries .no-print, only its own
+    // toolbar/legend sub-elements do (matching #task-table-section's own established pattern).
     assert((await page.locator('#gantt-section.no-print').count()) === 0, '#gantt-section no longer carries .no-print on its outer card (Phase E print integration)');
     assert((await page.locator('#gantt-section .section-title.no-print').count()) === 1, "#gantt-section's own toolbar still carries .no-print (buttons shouldn't print)");
 
