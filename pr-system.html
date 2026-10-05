@@ -308,11 +308,17 @@ tr:hover td{background:var(--surface-alt);}
 .sched-plain-input:hover{border-color:var(--border);}
 .sched-plain-input:focus{outline:none; border-color:var(--navy); background:var(--surface);}
 /* Restored Gantt view (Stage B item 4, Phase B) — one bar/placeholder per task row, absolutely positioned
-   (via inline left/width, computed by scheduleGanttBarGeometry()) inside its row's single wide grid <td>.
-   Critical-path red fill, milestone diamond and baseline ghost-outline variants are added in Phase D —
-   this is deliberately just the plain default look for now. */
+   (via inline left/width, computed by scheduleGanttBarGeometry()) inside its row's single wide grid <td>. */
 .gantt-row-bar{position:absolute; top:6px; height:18px; background:var(--navy); border-radius:4px;}
 .gantt-row-noDates{position:absolute; top:14px; left:4px; right:4px; height:2px; background:var(--border-strong); border-radius:1px;}
+/* Phase D — critical path reuses --red (same token as .badge-rejected, no new color); milestone reuses
+   --navy (no purple token exists in this app's palette, see the design survey this feature was planned
+   against); baseline is a dashed ghost OUTLINE (not a fill) drawn behind the real bar/diamond so both are
+   visible at once when they differ. */
+.gantt-row-bar.critical{background:var(--red);}
+.gantt-milestone-marker{position:absolute; top:3px; width:14px; height:14px; background:var(--navy); border-radius:2px; transform:rotate(45deg);}
+.gantt-milestone-marker.critical{background:var(--red);}
+.gantt-baseline-ghost{position:absolute; top:3px; height:24px; border:1.5px dashed var(--text-faint); border-radius:5px; background:transparent; box-sizing:border-box;}
 /* Right-align numeric/money columns (convention: numbers align on their least-significant digit so
    magnitudes are easy to compare down a column). Named .num-cell rather than .num to avoid colliding
    with the pre-existing .stat-card .num (a big KPI figure, unrelated purpose). */
@@ -6147,9 +6153,12 @@ function renderProjectScheduleTable(ctx){
     const actualPercent = Number(t.actualPercent)||0;
     const actualPercentCell = `<input id="task-actual-percent-${t.id}" type="number" min="0" max="100" step="0.1" value="${actualPercent||''}" placeholder="0" class="sched-plain-input" style="width:100%; min-width:64px; box-sizing:border-box; text-align:right; ${ACTUAL_COLOR}" onchange="taskTableSetField(${t.id},'actualPercent',this.value); render();">`;
 
+    // Phase D — thin red left-border accent on the name cell doubles the badge as a scan-down-the-column
+    // critical-path cue (the badge text itself scrolls out of view sooner in a wide table than a border does).
+    const criticalBorder = t.isCritical ? 'border-left:3px solid var(--red);' : '';
     const sharedCellsRowspan = `
       <td class="num-cell mono sched-col-no" rowspan="2" style="vertical-align:middle; ${DIVIDER}">${no}</td>
-      <td class="sched-col-name" rowspan="2" style="vertical-align:middle; ${DIVIDER}">${nameContent}</td>`;
+      <td class="sched-col-name" rowspan="2" style="vertical-align:middle; ${criticalBorder} ${DIVIDER}">${nameContent}</td>`;
 
     if(columns.length===0){
       return `
@@ -6429,29 +6438,69 @@ function renderGanttSection(ctx){
   const groupHeaderCells = groups.map(g=>`<th colspan="${g.colspan}" style="text-align:center; border-left:1px solid var(--border-strong);">${esc(g.label)}</th>`).join('');
   const subHeaderCells = subLabels.map((lbl,i)=>`<th class="num-cell" style="width:${colWidth}px; padding:6px 2px; font-weight:500; ${i===0?'border-left:1px solid var(--border-strong);':''} ${scheduleTodayCellStyle(i, todayColIdx)}">${esc(lbl)}</th>`).join('');
 
+  // Phase D — baseline lookup by task id. S.projectTaskBaselines only has an entry for a task that's
+  // actually been baselined (POST .../tasks/set-baseline upserts one row per task, see
+  // confirm-set-schedule-baseline below) — a task with no entry here has never been baselined, not a
+  // baseline of zero width.
+  const baselineByTaskId = new Map((S.projectTaskBaselines||[]).map(b=>[b.taskId, b]));
+
   const rowsHtml = wbsRows.map(({task:t, depth, hasChildren})=>{
     const isExpanded = !!(S.scheduleExpandedTaskIds && S.scheduleExpandedTaskIds.has(t.id));
     const chevron = hasChildren
       ? `<button type="button" class="btn btn-ghost btn-sm" data-act="toggle-schedule-task-expand" data-id="${t.id}" title="${isExpanded ? tr('fin_project_schedule.collapse_row') : tr('fin_project_schedule.expand_row')}" style="padding:2px; min-width:0; flex-shrink:0;">${isExpanded ? ICN.chevronDown : ICN.chevronRight}</button>`
       : `<span style="display:inline-block; width:22px; flex-shrink:0;"></span>`;
     const wbsCodeLabel = t.wbsCode ? `<span class="mono" style="color:var(--text-muted); font-size:11px; flex-shrink:0;">${esc(t.wbsCode)}</span>` : '';
-    const nameCell = `<td class="sched-col-name"><div style="display:flex; align-items:center; gap:4px; padding-left:${depth*16}px;">${chevron}${wbsCodeLabel}<span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${esc(t.taskName)}">${esc(t.taskName)}</span></div></td>`;
+    const criticalBadge = t.isCritical ? `<span class="badge badge-rejected" style="flex-shrink:0;">${tr('fin_project_schedule.critical_path_badge')}</span>` : '';
+    const nameCell = `<td class="sched-col-name"><div style="display:flex; align-items:center; gap:4px; padding-left:${depth*16}px;">${chevron}${wbsCodeLabel}<span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${esc(t.taskName)}">${esc(t.taskName)}</span>${criticalBadge}</div></td>`;
+
+    // Baseline ghost — drawn FIRST (so it sits visually behind the real bar/diamond in DOM paint order),
+    // using the exact same geometry function fed {startDate,endDate} = the baseline's own frozen dates
+    // rather than the task's current ones — this is what makes it a genuine "where this task WAS
+    // scheduled when the baseline was taken" comparison, not a live-recomputed value.
+    const baseline = baselineByTaskId.get(t.id);
+    const baselineGeom = baseline ? scheduleGanttBarGeometry({startDate:baseline.baselineStart, endDate:baseline.baselineEnd}, columns, colWidth) : null;
+    const baselineHtml = baselineGeom
+      ? `<div class="gantt-baseline-ghost" style="left:${baselineGeom.leftPx}px; width:${baselineGeom.widthPx+4}px;" title="${tr('fin_project_schedule.baseline_legend_label')}: ${esc(baseline.baselineStart)} - ${esc(baseline.baselineEnd)}"></div>`
+      : '';
+
     const geom = scheduleGanttBarGeometry(t, columns, colWidth);
-    const barHtml = geom
-      ? `<div class="gantt-row-bar" data-gantt-bar="1" style="left:${geom.leftPx+2}px; width:${geom.widthPx}px;" title="${esc(t.taskName)} (${esc(t.startDate)} - ${esc(t.endDate)})"></div>`
-      : `<div class="gantt-row-noDates" title="${tr('fin_project_schedule.no_dates_placeholder')}"></div>`;
+    const criticalClass = t.isCritical ? ' critical' : '';
+    let markerHtml;
+    if(!geom){
+      markerHtml = `<div class="gantt-row-noDates" title="${tr('fin_project_schedule.no_dates_placeholder')}"></div>`;
+    } else if(t.isMilestone){
+      // A milestone's geom has startIdx===endIdx (0 duration) — center the diamond within that single
+      // column rather than reusing the bar's own left/width (which is sized for a bar, not a point marker).
+      const diamondLeft = geom.leftPx + colWidth/2 - 7;
+      markerHtml = `<div class="gantt-milestone-marker${criticalClass}" data-gantt-bar="1" style="left:${diamondLeft}px;" title="${esc(t.taskName)} (${esc(t.startDate)})"></div>`;
+    } else {
+      markerHtml = `<div class="gantt-row-bar${criticalClass}" data-gantt-bar="1" style="left:${geom.leftPx+2}px; width:${geom.widthPx}px;" title="${esc(t.taskName)} (${esc(t.startDate)} - ${esc(t.endDate)})"></div>`;
+    }
     return `<tr class="gantt-row">
       ${nameCell}
       <td class="num-cell sched-col-duration">${t.durationDays}</td>
       <td class="mono sched-col-date">${esc(t.startDate||'-')}</td>
       <td class="mono sched-col-date">${esc(t.endDate||'-')}</td>
-      <td colspan="${columns.length}" style="position:relative; padding:0; width:${columns.length*colWidth}px; background-image:repeating-linear-gradient(to right, var(--border) 0, var(--border) 1px, transparent 1px, transparent ${colWidth}px);">${barHtml}</td>
+      <td colspan="${columns.length}" style="position:relative; padding:0; width:${columns.length*colWidth}px; background-image:repeating-linear-gradient(to right, var(--border) 0, var(--border) 1px, transparent 1px, transparent ${colWidth}px);">${baselineHtml}${markerHtml}</td>
     </tr>`;
   }).join('');
 
+  // Phase D legend — critical/milestone/baseline swatches, same small-text convention as the %-grid
+  // table's own legend() above (reusing --red/--navy/--text-faint tokens, no new colors introduced).
+  const ganttLegend = `
+    <div class="no-print" style="display:flex; flex-wrap:wrap; gap:14px; font-size:11.5px; color:var(--text-muted); margin-bottom:10px;">
+      <span style="display:flex; align-items:center; gap:5px;"><span style="width:14px; height:9px; background:var(--red); border-radius:2px; display:inline-block;"></span>${tr('fin_project_schedule.critical_path_badge')}</span>
+      <span style="display:flex; align-items:center; gap:5px;"><span style="width:9px; height:9px; background:var(--navy); border-radius:2px; display:inline-block; transform:rotate(45deg);"></span>${tr('fin_project_schedule.milestone_badge')}</span>
+      <span style="display:flex; align-items:center; gap:5px;"><span style="width:14px; height:9px; border:1.5px dashed var(--text-faint); border-radius:2px; display:inline-block; box-sizing:border-box;"></span>${tr('fin_project_schedule.baseline_legend_label')}</span>
+    </div>`;
+
   return `
   <div id="gantt-section" class="card no-print" style="padding:26px 30px; margin-bottom:20px;">
-    <div class="section-title" style="margin-top:0;">${tr('fin_project_schedule.gantt_section_title')}</div>
+    <div class="section-title no-print" style="margin-top:0; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+      <span>${tr('fin_project_schedule.gantt_section_title')}</span>
+      <button class="btn btn-ghost btn-sm" data-act="open-set-baseline-confirm">${ICN.flag} ${tr('fin_project_schedule.set_baseline_button')}</button>
+    </div>
+    ${ganttLegend}
     <div class="table-wrap" style="overflow-x:auto;">
       <table style="border-collapse:collapse;">
         <thead>
@@ -12361,6 +12410,22 @@ function renderModal(){
       </div>
     </div>`;
   }
+  // Restored Gantt view (Stage B item 4, Phase D) — whole-project, overwrite-only baseline per the
+  // backend's actual semantics (POST .../tasks/set-baseline has no body, no per-task selection, and
+  // UPSERTs over any existing baseline — see server.js's own comment on that route). The warning text
+  // says so explicitly since this is a one-way, no-undo action from the UI's point of view.
+  if(S.modal.type==='set-schedule-baseline'){
+    return `<div class="modal-overlay" data-act="close-modal">
+      <div class="modal" data-stop="1">
+        <h3>${tr('fin_project_schedule.set_baseline_confirm_title')}</h3>
+        <div class="hint" style="margin-bottom:12px;">${tr('fin_project_schedule.set_baseline_confirm_body')}</div>
+        <div class="small-btn-row" style="justify-content:flex-end;">
+          <button class="btn btn-ghost" data-act="close-modal">${tr('common.cancel')}</button>
+          <button class="btn btn-primary" data-act="confirm-set-schedule-baseline">${tr('fin_project_schedule.set_baseline_button')}</button>
+        </div>
+      </div>
+    </div>`;
+  }
   if(S.modal.type==='revise-budget'){
     const m = S.modal;
     return `<div class="modal-overlay" data-act="close-modal">
@@ -15029,6 +15094,21 @@ async function handleAction(act, el){
   if(act==='set-schedule-view-mode'){
     S.scheduleViewMode = el.dataset.mode;
     render();
+    return;
+  }
+  // Restored Gantt view (Stage B item 4, Phase D) — whole-project baseline set/overwrite.
+  if(act==='open-set-baseline-confirm'){
+    S.modal = {type:'set-schedule-baseline'};
+    render();
+    return;
+  }
+  if(act==='confirm-set-schedule-baseline'){
+    try{
+      await apiCall('POST', `/api/customer/projects/${S.selectedProjectId}/tasks/set-baseline`);
+      S.modal = null;
+      await loadProjectTasks(S.selectedProjectId);
+      toast(tr('fin_project_schedule.set_baseline_success_toast'));
+    } catch(e){ toast(e.message, 'err'); }
     return;
   }
 
