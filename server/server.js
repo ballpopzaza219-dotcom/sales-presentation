@@ -12435,12 +12435,37 @@ function exceedsDecimalPlaces(raw, maxDecimals) {
   return !!m && m[1].length > maxDecimals;
 }
 
+// NUMERIC(18,2) เก็บเลขนัยสำคัญได้ 18 หลักรวม = 16 หลักก่อนจุดทศนิยม (2 หลังจุดตาม scale) — ค่าที่เกินนี้
+// (เช่น 17 หลักก่อนจุด) ทำให้ Postgres โยน "numeric field overflow" ตอน INSERT ถ้าไม่เช็คก่อนที่ชั้น
+// validation จะหลุดเป็น 500 ไม่ใช่ 400 ตรวจเฉพาะจำนวนหลักก่อนจุดทศนิยม ไม่นับเครื่องหมายลบ (ใบ R ติดลบได้)
+function exceedsIntegerDigits(raw, maxIntegerDigits) {
+  const str = typeof raw === 'number' ? raw.toString() : (typeof raw === 'string' ? raw.trim() : '');
+  const unsigned = str.startsWith('-') ? str.slice(1) : str;
+  const intPart = unsigned.split('.')[0];
+  return intPart.length > maxIntegerDigits;
+}
+
+// ตรวจว่า YYYY-MM-DD เป็นวันที่จริงตามปฏิทินหรือไม่ (เช่น 2026-02-31 ไม่มีจริงแม้รูปร่างจะถูก) เป็น pure
+// function ล้วนๆ ไม่แตะ DB เลย — รุ่นก่อนหน้าใช้ Postgres ::date cast ผ่าน pool.query แต่นั่นเสี่ยง pool
+// starvation จริง: ถ้าคำขอพร้อมกันจำนวนมากพอจนทุก connection ในพูลถูกทรานแซกชันของคำขอเหล่านั้นถือครองไว้
+// หมดพอดี (รอ client จาก pool.connect() ของตัวเอง) แล้วแต่ละคำขอยังพยายาม pool.query() แยกอีกครั้งเพื่อเช็ค
+// วันที่ จะกลายเป็นรอ connection ที่สองจากพูลเดียวกันที่ไม่มีใครว่างให้แล้ว (self-deadlock) ใช้ Date.UTC
+// (ไม่ใช่ local time) แล้วเทียบค่าปี/เดือน/วันที่ normalize กลับมาว่าตรงกับค่าที่ป้อนหรือไม่แทน — JS Date
+// normalize วันที่เกินจริงอัตโนมัติ (เช่น 2026-02-31 → 2026-03-03) จึงจับไม่ตรงกันได้ทันทีโดยไม่ต้องเขียน
+// ตรรกะปีอธิกสุรทินเอง
+function isRealCalendarDate(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
 // customerId ต้องถูก resolve มาจากแถว client_projects โดยผู้เรียกเสมอ (ไม่ query ที่นี่) — เพราะ POST กับ
 // PUT ต้องการความหมาย "ไม่พบ" ต่างกัน: POST รับ projectId จาก URL เหมือน GET list (ควรเป็น 404 ตามกฎข้อ
 // 10) ส่วน PUT ได้ project_id มาจากแถวสัญญาที่ตรวจสอบแล้วว่ามีอยู่จริง (ไม่ใช่ input จาก client ตรงๆ) จึง
 // ไม่มีเคส "ไม่พบโครงการ" ที่เป็นไปได้จริงให้ต้องดีไซน์ response แยก — การรวม logic ไว้ในนี้ที่เดียวจะบังคับ
 // ให้ response code เดียวกันทั้งสองเส้นทางทั้งที่ควรต่างกัน
-async function validateContractInput({ customerId, contractName, contractValue, depositPercent, retentionPercent, paymentTerms, startDate, endDate }) {
+function validateContractInput({ customerId, contractName, contractValue, depositPercent, retentionPercent, paymentTerms, startDate, endDate }) {
+  if (exceedsIntegerDigits(contractValue, 16)) return { error: 'มูลค่าสัญญาเกินช่วงที่รองรับ (ไม่เกิน 16 หลักก่อนจุดทศนิยม)' };
   if (exceedsDecimalPlaces(contractValue, 2)) return { error: 'มูลค่าสัญญาระบุทศนิยมได้ไม่เกิน 2 ตำแหน่ง' };
   const safeContractValue = parsePositiveNumericValue(contractValue);
   if (safeContractValue === null) return { error: 'กรุณาระบุมูลค่าสัญญาให้ถูกต้อง (ต้องมากกว่า 0)' };
@@ -12459,25 +12484,15 @@ async function validateContractInput({ customerId, contractName, contractValue, 
   const safePaymentTerms = String(paymentTerms || '').trim();
   if (!safePaymentTerms) return { error: 'กรุณาระบุเงื่อนไขการชำระเงิน' };
 
-  // regex ตรวจแค่ "รูปร่าง" YYYY-MM-DD เท่านั้น — ไม่จับวันที่ที่ไม่มีจริงอย่าง 2026-02-31 (รูปร่างถูกแต่
-  // ปฏิทินไม่มีวันนี้) ใช้ Postgres ::date cast เป็นตัวตัดสินแทนการเขียนตรรกะปีอธิกสุรทินเองใน JS — cast
-  // ล้มเหลว = ไม่ใช่วันที่จริง ไม่ใช่ server error จึง catch เฉพาะเจาะจงแล้วแปลเป็น 400 ไม่ปล่อยหลุดเป็น 500
-  // ใช้ pool เสมอ (ไม่ใช่ client ของทรานแซกชันที่อาจเปิดอยู่) เพราะเป็นแค่ sanity check ของรูปแบบข้อมูล
-  // ไม่มีความเกี่ยวพันกับความถูกต้องของทรานแซกชันที่กำลังทำอยู่เลย — ถ้าใช้ client ของทรานแซกชันแล้ว cast
-  // ล้มเหลว จะทำให้ทรานแซกชันทั้งก้อน "aborted" ไปเปล่าๆ ทั้งที่แค่ตรวจรูปแบบข้อมูลเฉยๆ
+  // regex ตรวจแค่ "รูปร่าง" YYYY-MM-DD ก่อน แล้วค่อยตรวจว่าเป็นวันที่จริงตามปฏิทินด้วย isRealCalendarDate
+  // (pure function ล้วน ไม่แตะ DB — ดูคอมเมนต์เหนือฟังก์ชันนั้น)
   const dateRe = /^\d{4}-\d{2}-\d{2}$/;
   if (startDate && !dateRe.test(startDate)) return { error: 'รูปแบบวันที่เริ่มสัญญาไม่ถูกต้อง' };
   if (endDate && !dateRe.test(endDate)) return { error: 'รูปแบบวันที่สิ้นสุดสัญญาไม่ถูกต้อง' };
+  if (startDate && !isRealCalendarDate(startDate)) return { error: 'วันที่เริ่มสัญญาไม่ใช่วันที่จริงตามปฏิทิน' };
+  if (endDate && !isRealCalendarDate(endDate)) return { error: 'วันที่สิ้นสุดสัญญาไม่ใช่วันที่จริงตามปฏิทิน' };
   const safeStartDate = startDate || null;
   const safeEndDate = endDate || null;
-  for (const [label, val] of [['เริ่มสัญญา', safeStartDate], ['สิ้นสุดสัญญา', safeEndDate]]) {
-    if (val === null) continue;
-    try {
-      await pool.query('SELECT $1::date', [val]);
-    } catch (e) {
-      return { error: `วันที่${label}ไม่ใช่วันที่จริงตามปฏิทิน` };
-    }
-  }
   if (safeStartDate && safeEndDate && safeEndDate < safeStartDate) return { error: 'วันที่สิ้นสุดสัญญาต้องไม่ก่อนวันที่เริ่มสัญญา' };
 
   const safeContractName = String(contractName || '').trim();
@@ -12522,7 +12537,7 @@ app.post('/api/customer/projects/:projectId/contracts', requireCustomerAuth, req
 
   await withIdempotency(req, res, `contracts-create:${projectId}`, async (client) => {
     const { contractName, contractValue, depositPercent, retentionPercent, paymentTerms, startDate, endDate, note } = req.body || {};
-    const v = await validateContractInput({ customerId: projectCustomerId, contractName, contractValue, depositPercent, retentionPercent, paymentTerms, startDate, endDate });
+    const v = validateContractInput({ customerId: projectCustomerId, contractName, contractValue, depositPercent, retentionPercent, paymentTerms, startDate, endDate });
     if (v.error) return { status: 400, body: { error: v.error } };
 
     let insert;
@@ -12552,9 +12567,9 @@ app.post('/api/customer/projects/:projectId/contracts', requireCustomerAuth, req
   });
 });
 
-// แก้ไขได้เฉพาะ draft เท่านั้น และเฉพาะสัญญาหลัก (parent_contract_id IS NULL) ในเฟสนี้ — ใบ R มีกติกา
-// nullable-override เฉพาะตัว (ดู migration 0035) ที่ validateContractInput นี้ยังไม่รองรับ จะเพิ่ม
-// validation แยกตอนทำ endpoint สร้าง/แก้ใบ R ใน phase 2 ไม่ใช้ร่วมกับ endpoint นี้
+// แก้ไขได้เฉพาะ draft เท่านั้น ทั้งสัญญาหลักและใบ R (แยก validation คนละชุดตาม parent_contract_id ของ
+// แถวที่ล็อกไว้) — ไม่แตะ revision_no/contract_no/parent_contract_id/project_id เลยไม่ว่ากรณีไหน (ออก/
+// ผูกตอนสร้าง/submit เท่านั้น)
 app.put('/api/customer/contracts/:id', requireCustomerAuth, requireCanManageContracts, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const companyId = req.customer.company_id;
@@ -12565,16 +12580,33 @@ app.put('/api/customer/contracts/:id', requireCustomerAuth, requireCanManageCont
     const cRes = await client.query('SELECT parent_contract_id, project_id, status FROM client_contracts WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
     if (cRes.rowCount === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'ไม่พบสัญญานี้' }); }
     const row = cRes.rows[0];
-    if (row.parent_contract_id !== null) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'แก้ไขใบแก้ไขสัญญา (R) ต้องใช้ endpoint อื่น' }); }
     if (row.status !== 'draft') { await client.query('ROLLBACK'); return res.status(409).json({ error: 'แก้ไขได้เฉพาะสถานะร่างเท่านั้น' }); }
 
-    // ลูกค้าของโครงการอาจถูกเปลี่ยนหลังจากสร้าง draft นี้ไว้แล้ว — อ่านค่าปัจจุบันใหม่ทุกครั้งที่ PUT แทนที่
-    // จะเชื่อค่า customer_id เดิมที่บันทึกไว้ตอนสร้าง (ซึ่งอาจเก่าไปแล้ว) draft ควรสะท้อนลูกค้าปัจจุบันของ
-    // โครงการเสมอจนกว่าจะ submit (ค่อย snapshot ค่าจริงตอนนั้น)
+    if (row.parent_contract_id !== null) {
+      // ใบ R: contractValue เป็นส่วนต่าง ฟิลด์อื่นเป็น override เฉพาะถ้าแตะ (ว่าง/ไม่ส่ง = NULL) เหมือนตอน
+      // สร้าง — ไม่ query โครงการใดๆ เพิ่ม (project_id/customer_id ของ R มาจากสัญญาหลักเสมอ ไม่เคยแก้ไข)
+      const v = validateContractRevisionInput({ contractValue, depositPercent, retentionPercent, paymentTerms, startDate, endDate });
+      if (v.error) { await client.query('ROLLBACK'); return res.status(400).json({ error: v.error }); }
+      await client.query(
+        `UPDATE client_contracts SET
+           contract_value=$1::numeric, deposit_percent=$2::numeric, retention_percent=$3::numeric,
+           payment_terms=$4, start_date=$5, end_date=$6, note=$7
+         WHERE id=$8 AND company_id=$9`,
+        [v.safeContractValue, v.safeDepositPercent, v.safeRetentionPercent,
+         v.safePaymentTerms, v.safeStartDate, v.safeEndDate, (note || '').trim(), id, companyId]
+      );
+      await client.query('COMMIT');
+      const r = await pool.query(`${CLIENT_CONTRACT_SELECT} WHERE c.id=$1 AND c.company_id=$2`, [id, companyId]);
+      return res.json({ contract: serializeContract(r.rows[0]) });
+    }
+
+    // สัญญาหลัก: ลูกค้าของโครงการอาจถูกเปลี่ยนหลังจากสร้าง draft นี้ไว้แล้ว — อ่านค่าปัจจุบันใหม่ทุกครั้งที่
+    // PUT แทนที่จะเชื่อค่า customer_id เดิมที่บันทึกไว้ตอนสร้าง (ซึ่งอาจเก่าไปแล้ว) draft ควรสะท้อนลูกค้า
+    // ปัจจุบันของโครงการเสมอจนกว่าจะ submit (ค่อย snapshot ค่าจริงตอนนั้น)
     const projRes = await client.query('SELECT customer_id FROM client_projects WHERE id=$1 AND company_id=$2', [row.project_id, companyId]);
     const currentProjectCustomerId = projRes.rows[0].customer_id;
 
-    const v = await validateContractInput({ customerId: currentProjectCustomerId, contractName, contractValue, depositPercent, retentionPercent, paymentTerms, startDate, endDate });
+    const v = validateContractInput({ customerId: currentProjectCustomerId, contractName, contractValue, depositPercent, retentionPercent, paymentTerms, startDate, endDate });
     if (v.error) { await client.query('ROLLBACK'); return res.status(400).json({ error: v.error }); }
 
     await client.query(
@@ -12611,6 +12643,320 @@ app.post('/api/customer/contracts/:id/cancel', requireCustomerAuth, requireCanMa
     await writeAuditLog(client, {
       companyId, docType: 'contract', docId: id, action: 'cancel',
       fromStatus, toStatus: 'cancelled', performedBy: req.customer.id,
+    });
+    const full = await client.query(`${CLIENT_CONTRACT_SELECT} WHERE c.id=$1 AND c.company_id=$2`, [id, companyId]);
+    return { status: 200, body: { contract: serializeContract(full.rows[0]) } };
+  });
+});
+
+// ---------------- Contract Phase 2: submit (ออกเลขที่) + สร้างใบแก้ไขสัญญา (R) ----------------
+async function generateClientContractNumber(client, companyId) {
+  const year = getBangkokYear() + 543;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const seq = await nextDocumentSeq(client, companyId, 'contract', year);
+    const no = `CT-${year}-` + String(seq).padStart(4, '0');
+    const exists = await client.query('SELECT 1 FROM client_contracts WHERE company_id=$1 AND contract_no=$2', [companyId, no]);
+    if (exists.rowCount === 0) return no;
+  }
+  throw new Error('ไม่สามารถสร้างเลขที่สัญญาได้');
+}
+
+// ใบ R (migration 0035): contractValue คือ "ส่วนต่าง" ที่เพิ่ม/ลดจากยอดปัจจุบัน (ติดลบได้ ห้ามเป็น 0 —
+// client_contracts_value_check บังคับใน DB อยู่แล้ว แต่ validate ซ้ำที่นี่ให้ error message อ่านง่าย ไม่ใช่
+// โยน raw constraint ออกไป) parsePositiveNumericValue/parseNonNegativeNumericValue ที่ใช้กับสัญญาหลักไม่
+// รองรับค่าติดลบ จึง parse เองตรงนี้แยกต่างหาก — ฟิลด์ที่เหลือทั้งหมด (deposit/retention percent,
+// payment terms, start/end date) เป็น "override เฉพาะถ้าแตะ": ไม่ส่งมา/ส่งมาว่างเปล่า = NULL (ไม่เปลี่ยน
+// จากค่าปัจจุบัน) ตามกฎระดับแอปข้อ 6 ในคอมเมนต์ของ migration 0035 (ฟอร์ม R ต้องแปลงค่าว่างเป็น NULL เอง
+// ไม่ส่ง '' ตรงๆ) — ทำ normalize ตรงนี้ชั้น backend ให้เลย กัน client ทุกตัวต้องทำซ้ำเอง
+function validateContractRevisionInput({ contractValue, depositPercent, retentionPercent, paymentTerms, startDate, endDate }) {
+  if (contractValue === undefined || contractValue === null || contractValue === '') {
+    return { error: 'กรุณาระบุส่วนต่างมูลค่าสัญญา' };
+  }
+  if (exceedsIntegerDigits(contractValue, 16)) return { error: 'ส่วนต่างมูลค่าสัญญาเกินช่วงที่รองรับ (ไม่เกิน 16 หลักก่อนจุดทศนิยม)' };
+  if (exceedsDecimalPlaces(contractValue, 2)) return { error: 'ส่วนต่างมูลค่าสัญญาระบุทศนิยมได้ไม่เกิน 2 ตำแหน่ง' };
+  const rawValueStr = typeof contractValue === 'number' ? contractValue.toString() : String(contractValue).trim();
+  if (!/^-?\d+(\.\d+)?$/.test(rawValueStr) || !Number.isFinite(Number(rawValueStr)) || Number(rawValueStr) === 0) {
+    return { error: 'กรุณาระบุส่วนต่างมูลค่าสัญญาให้ถูกต้อง (ตัวเลข ไม่เท่ากับ 0)' };
+  }
+  const safeContractValue = rawValueStr; // เก็บเป็น string ดั้งเดิมเสมอ ส่งเข้า SQL เป็น $N::numeric ตรงๆ (ข้อ 3)
+
+  let safeDepositPercent = null;
+  if (depositPercent !== undefined && depositPercent !== null && depositPercent !== '') {
+    if (exceedsDecimalPlaces(depositPercent, 2)) return { error: 'เปอร์เซ็นต์เงินมัดจำระบุทศนิยมได้ไม่เกิน 2 ตำแหน่ง' };
+    safeDepositPercent = parseNonNegativeNumericValue(depositPercent);
+    if (safeDepositPercent === null || Number(safeDepositPercent) > 100) return { error: 'ระบุเปอร์เซ็นต์เงินมัดจำไม่ถูกต้อง (0-100)' };
+  }
+
+  let safeRetentionPercent = null;
+  if (retentionPercent !== undefined && retentionPercent !== null && retentionPercent !== '') {
+    if (exceedsDecimalPlaces(retentionPercent, 2)) return { error: 'เปอร์เซ็นต์เงินประกันผลงานระบุทศนิยมได้ไม่เกิน 2 ตำแหน่ง' };
+    safeRetentionPercent = parseNonNegativeNumericValue(retentionPercent);
+    if (safeRetentionPercent === null || Number(safeRetentionPercent) > 100) return { error: 'ระบุเปอร์เซ็นต์เงินประกันผลงานไม่ถูกต้อง (0-100)' };
+  }
+
+  // payment_terms ว่างเปล่า = ไม่ override (NULL) ไม่ใช่ error — DB เองก็บังคับห้าม '' สำหรับ R อยู่แล้ว
+  // (client_contracts_payment_terms_not_blank_check) การ normalize เป็น NULL ให้ที่นี่เลยกันพลาด
+  let safePaymentTerms = null;
+  if (paymentTerms !== undefined && paymentTerms !== null) {
+    const trimmed = String(paymentTerms).trim();
+    safePaymentTerms = trimmed === '' ? null : trimmed;
+  }
+
+  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+  let safeStartDate = null, safeEndDate = null;
+  if (startDate) {
+    if (!dateRe.test(startDate)) return { error: 'รูปแบบวันที่เริ่มสัญญาไม่ถูกต้อง' };
+    if (!isRealCalendarDate(startDate)) return { error: 'วันที่เริ่มสัญญาไม่ใช่วันที่จริงตามปฏิทิน' };
+    safeStartDate = startDate;
+  }
+  if (endDate) {
+    if (!dateRe.test(endDate)) return { error: 'รูปแบบวันที่สิ้นสุดสัญญาไม่ถูกต้อง' };
+    if (!isRealCalendarDate(endDate)) return { error: 'วันที่สิ้นสุดสัญญาไม่ใช่วันที่จริงตามปฏิทิน' };
+    safeEndDate = endDate;
+  }
+  if (safeStartDate && safeEndDate && safeEndDate < safeStartDate) return { error: 'วันที่สิ้นสุดสัญญาต้องไม่ก่อนวันที่เริ่มสัญญา' };
+
+  return { safeContractValue, safeDepositPercent, safeRetentionPercent, safePaymentTerms, safeStartDate, safeEndDate };
+}
+
+app.post('/api/customer/contracts/:parentId/revisions', requireCustomerAuth, requireCanManageContracts, async (req, res) => {
+  await withIdempotency(req, res, `contracts-revisions-create:${req.params.parentId}`, async (client) => {
+    const parentId = parseInt(req.params.parentId, 10);
+    const companyId = req.customer.company_id;
+    // ล็อกสัญญาหลักเป็นคำสั่งแรกสุดที่แตะ client_contracts ในทรานแซกชันนี้เสมอ (กฎข้อ 6)
+    const parentRes = await client.query('SELECT * FROM client_contracts WHERE id=$1 AND company_id=$2 FOR UPDATE', [parentId, companyId]);
+    if (parentRes.rowCount === 0) return { status: 404, body: { error: 'ไม่พบสัญญานี้' } };
+    const parent = parentRes.rows[0];
+    if (parent.parent_contract_id !== null) {
+      return { status: 400, body: { error: 'สร้างใบแก้ไขสัญญาได้เฉพาะจากสัญญาหลักเท่านั้น (ห้ามสร้างใบแก้ไขซ้อนใบแก้ไข)' } };
+    }
+    if (parent.status !== 'approved' || parent.contract_status !== 'active') {
+      return { status: 409, body: { error: 'สร้างใบแก้ไขสัญญาได้เฉพาะเมื่อสัญญาหลักอนุมัติแล้วและยังดำเนินอยู่ (active) เท่านั้น' } };
+    }
+
+    const { contractValue, depositPercent, retentionPercent, paymentTerms, startDate, endDate, note } = req.body || {};
+    const v = validateContractRevisionInput({ contractValue, depositPercent, retentionPercent, paymentTerms, startDate, endDate });
+    if (v.error) return { status: 400, body: { error: v.error } };
+
+    let insert;
+    try {
+      insert = await client.query(
+        `INSERT INTO client_contracts
+           (company_id, project_id, customer_id, parent_contract_id, revision_no,
+            contract_value, deposit_percent, retention_percent, payment_terms, start_date, end_date, note, created_by)
+         VALUES ($1,$2,$3,$4,NULL,$5::numeric,$6::numeric,$7::numeric,$8,$9,$10,$11,$12) RETURNING id`,
+        [companyId, parent.project_id, parent.customer_id, parentId, v.safeContractValue,
+         v.safeDepositPercent, v.safeRetentionPercent, v.safePaymentTerms, v.safeStartDate, v.safeEndDate, (note || '').trim(), req.customer.id]
+      );
+    } catch (e) {
+      if (e.constraint === 'uq_client_contracts_one_open_revision') {
+        return { status: 409, body: { error: 'สัญญานี้มีใบแก้ไขที่ยังไม่เสร็จสิ้น (ร่าง/ยื่นแล้ว) อยู่แล้ว ต้องอนุมัติ/ปฏิเสธ/ยกเลิกใบนั้นก่อนจึงเปิดใบใหม่ได้' } };
+      }
+      throw e;
+    }
+    const revisionId = insert.rows[0].id;
+    const r = await client.query(`${CLIENT_CONTRACT_SELECT} WHERE c.id=$1 AND c.company_id=$2`, [revisionId, companyId]);
+    return { status: 200, body: { contract: serializeContract(r.rows[0]) } };
+  });
+});
+
+// submit ใช้ endpoint เดียวกันทั้งสัญญาหลักและใบ R (แยกตาม parent_contract_id ของแถวเอง) — ออกเลขที่
+// (contract_no ของสัญญาหลัก, revision_no+contract_no ของใบ R) ตอนนี้เท่านั้น ไม่ใช่ตอนสร้าง draft
+// (CLAUDE.md ข้อ 11)
+app.post('/api/customer/contracts/:id/submit', requireCustomerAuth, requireCanManageContracts, async (req, res) => {
+  await withIdempotency(req, res, `contracts-submit:${req.params.id}`, async (client) => {
+    const id = parseInt(req.params.id, 10);
+    const companyId = req.customer.company_id;
+
+    // อ่าน parent_contract_id แบบยังไม่ล็อก เพื่อรู้ว่าต้องล็อกสัญญาหลักตัวไหนก่อน (กฎข้อ 6: ล็อกสัญญา
+    // หลักก่อนเสมอไม่ว่าจะ submit ตัวมันเองหรือ submit ใบ R ของมันก็ตาม) — อ่านแบบไม่ล็อกตรงนี้ปลอดภัย
+    // เพราะ parent_contract_id เป็นค่าที่ไม่มี endpointไหนแก้ไขหลัง INSERT เลย (immutable ตลอดอายุแถว)
+    const peek = await client.query('SELECT parent_contract_id FROM client_contracts WHERE id=$1 AND company_id=$2', [id, companyId]);
+    if (peek.rowCount === 0) return { status: 404, body: { error: 'ไม่พบสัญญานี้' } };
+    const rootId = peek.rows[0].parent_contract_id || id;
+
+    const rootRes = await client.query('SELECT * FROM client_contracts WHERE id=$1 AND company_id=$2 FOR UPDATE', [rootId, companyId]);
+    const root = rootRes.rows[0];
+
+    if (rootId === id) {
+      // submit สัญญาหลักเอง — root ที่ล็อกไว้ข้างบนคือแถวเป้าหมายอยู่แล้ว ไม่ต้องล็อกซ้ำ
+      if (root.status !== 'draft') return { status: 409, body: { error: 'ยื่นได้เฉพาะสถานะร่างเท่านั้น' } };
+      const contractNo = await generateClientContractNumber(client, companyId);
+      await client.query(
+        `UPDATE client_contracts SET contract_no=$1, status='submitted', submitted_by=$2, submitted_at=now() WHERE id=$3 AND company_id=$4`,
+        [contractNo, req.customer.id, id, companyId]
+      );
+      await writeAuditLog(client, {
+        companyId, docType: 'contract', docId: id, action: 'submit',
+        fromStatus: 'draft', toStatus: 'submitted', performedBy: req.customer.id,
+      });
+      const full = await client.query(`${CLIENT_CONTRACT_SELECT} WHERE c.id=$1 AND c.company_id=$2`, [id, companyId]);
+      return { status: 200, body: { contract: serializeContract(full.rows[0]) } };
+    }
+
+    // submit ใบ R — ต้อง re-check สัญญาหลัก (ที่ล็อกไว้แล้วข้างบน) ว่ายัง approved+active อยู่จริง ณ
+    // ขณะนี้ (กันกรณี R ถูกสร้างไว้ตอนสัญญาหลัก active แต่สัญญาหลักถูกเลิก/จบสัญญาไปก่อนจะมา submit ใบนี้)
+    if (root.status !== 'approved' || root.contract_status !== 'active') {
+      return { status: 409, body: { error: 'ยื่นใบแก้ไขสัญญาไม่ได้ เพราะสัญญาหลักไม่ได้อยู่ในสถานะอนุมัติแล้วและดำเนินอยู่ (active) แล้ว ณ ขณะนี้' } };
+    }
+    const childRes = await client.query('SELECT * FROM client_contracts WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (childRes.rowCount === 0) return { status: 404, body: { error: 'ไม่พบสัญญานี้' } };
+    const rev = childRes.rows[0];
+    if (rev.status !== 'draft') return { status: 409, body: { error: 'ยื่นได้เฉพาะสถานะร่างเท่านั้น' } };
+
+    const revisionNo = root.next_revision_seq;
+    const revContractNo = `${root.contract_no}-R${revisionNo}`;
+    await client.query('UPDATE client_contracts SET next_revision_seq = next_revision_seq + 1 WHERE id=$1 AND company_id=$2', [rootId, companyId]);
+    await client.query(
+      `UPDATE client_contracts SET revision_no=$1, contract_no=$2, status='submitted', submitted_by=$3, submitted_at=now() WHERE id=$4 AND company_id=$5`,
+      [revisionNo, revContractNo, req.customer.id, id, companyId]
+    );
+    await writeAuditLog(client, {
+      companyId, docType: 'contract', docId: id, action: 'submit',
+      fromStatus: 'draft', toStatus: 'submitted', performedBy: req.customer.id,
+    });
+    const full = await client.query(`${CLIENT_CONTRACT_SELECT} WHERE c.id=$1 AND c.company_id=$2`, [id, companyId]);
+    return { status: 200, body: { contract: serializeContract(full.rows[0]) } };
+  });
+});
+
+// ---------------- Contract Phase 3: approve + reject ----------------
+// ห้ามอนุมัติ/ปฏิเสธเอกสารที่ตัวเองสร้างหรือยื่น (ยกเว้น super_user) — originators มาจาก "แถวที่กำลัง
+// ตัดสินใจเอง" เสมอ (ถ้าเป็น R ใช้ created_by/submitted_by ของ R นั้นตรงๆ ไม่ใช่ของสัญญาหลัก) — ไม่เรียก
+// canApprove() ของโมดูล PR ตรงๆ เพราะฟังก์ชันนั้น (ตามคอมเมนต์ของมันเอง) ไม่มีข้อยกเว้นให้ super_user เลย
+// สักกรณี (เข้มกว่าที่เจ้าของระบบตัดสินใจไว้สำหรับสัญญา) และผูกกับระบบ amount-tier/client_pr_approval_rules
+// ที่สัญญาไม่ได้ใช้เลย (สัญญาใช้ flag ตรงๆ ไม่ใช่ tier ตามวงเงิน) — ยืมแค่รูปแบบ originators array มา
+function isSelfApprovalBlocked(customer, { createdBy, submittedBy }) {
+  if (customer.role === 'super_user') return false;
+  const originators = [createdBy, submittedBy].filter(v => v != null);
+  return originators.includes(customer.id);
+}
+
+app.post('/api/customer/contracts/:id/approve', requireCustomerAuth, requireCanApproveContracts, async (req, res) => {
+  await withIdempotency(req, res, `contracts-approve:${req.params.id}`, async (client) => {
+    const id = parseInt(req.params.id, 10);
+    const companyId = req.customer.company_id;
+
+    // ล็อกสัญญาหลักก่อนเสมอ (กฎข้อ 6) เหมือน submit ทุกประการ
+    const peek = await client.query('SELECT parent_contract_id FROM client_contracts WHERE id=$1 AND company_id=$2', [id, companyId]);
+    if (peek.rowCount === 0) return { status: 404, body: { error: 'ไม่พบสัญญานี้' } };
+    const rootId = peek.rows[0].parent_contract_id || id;
+
+    const rootRes = await client.query('SELECT * FROM client_contracts WHERE id=$1 AND company_id=$2 FOR UPDATE', [rootId, companyId]);
+    const root = rootRes.rows[0];
+
+    if (rootId === id) {
+      // อนุมัติสัญญาหลักเอง
+      if (root.status !== 'submitted') return { status: 409, body: { error: 'อนุมัติได้เฉพาะสถานะยื่นแล้วเท่านั้น' } };
+      if (isSelfApprovalBlocked(req.customer, { createdBy: root.created_by, submittedBy: root.submitted_by })) {
+        return { status: 403, body: { error: 'ผู้สร้าง/ผู้ยื่นสัญญาอนุมัติสัญญาของตัวเองไม่ได้', code: 'self_approval_blocked' } };
+      }
+      await client.query(
+        `UPDATE client_contracts SET status='approved', contract_status='active', approved_by=$1, approved_at=now() WHERE id=$2 AND company_id=$3`,
+        [req.customer.id, id, companyId]
+      );
+      // writeAuditLog บังคับต้องมี reason เสมอสำหรับ action='approve' (ทุก doc_type ไม่ใช่แค่ PR — ดู
+      // คอมเมนต์ของมันเอง) — สัญญาใช้ flag ตรงๆ ไม่มีระบบ rule/เพดานแบบ canApprove() ของโมดูล PR จึงไม่มี
+      // ruleId/maxAmount มาอ้างอิงเหมือน WO แต่ยังต้องระบุว่าอนุมัติผ่านช่องทางไหน (flag ปกติ หรือ
+      // super_user) เพื่อให้ตรวจสอบย้อนหลังได้เหมือนกัน
+      const approveReason = req.customer.role === 'super_user' ? 'อนุมัติโดย super_user' : 'อนุมัติผ่านสิทธิ์ can_approve_contracts';
+      await writeAuditLog(client, {
+        companyId, docType: 'contract', docId: id, action: 'approve',
+        fromStatus: 'submitted', toStatus: 'approved', performedBy: req.customer.id, reason: approveReason,
+      });
+      const full = await client.query(`${CLIENT_CONTRACT_SELECT} WHERE c.id=$1 AND c.company_id=$2`, [id, companyId]);
+      return { status: 200, body: { contract: serializeContract(full.rows[0]) } };
+    }
+
+    // อนุมัติใบ R — ต้อง re-check สัญญาหลัก (ที่ล็อกไว้แล้ว) ว่ายัง approved+active อยู่จริง ณ ขณะนี้
+    if (root.status !== 'approved' || root.contract_status !== 'active') {
+      return { status: 409, body: { error: 'อนุมัติใบแก้ไขสัญญาไม่ได้ เพราะสัญญาหลักไม่ได้อยู่ในสถานะอนุมัติแล้วและดำเนินอยู่ (active) แล้ว ณ ขณะนี้' } };
+    }
+    const childRes = await client.query('SELECT * FROM client_contracts WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (childRes.rowCount === 0) return { status: 404, body: { error: 'ไม่พบสัญญานี้' } };
+    const rev = childRes.rows[0];
+    if (rev.status !== 'submitted') return { status: 409, body: { error: 'อนุมัติได้เฉพาะสถานะยื่นแล้วเท่านั้น' } };
+    if (isSelfApprovalBlocked(req.customer, { createdBy: rev.created_by, submittedBy: rev.submitted_by })) {
+      return { status: 403, body: { error: 'ผู้สร้าง/ผู้ยื่นใบแก้ไขสัญญาอนุมัติใบของตัวเองไม่ได้', code: 'self_approval_blocked' } };
+    }
+
+    // ยอดรวมหลังอนุมัติต้อง > 0 — client_contract_current_value นับเฉพาะ R ที่ approved แล้ว (ใบนี้ยังไม่
+    // ถูกนับ) บวกส่วนต่างของใบนี้เองเข้าไปในคำนวณฝั่ง SQL ตรงๆ (ไม่แปลงเป็น JS Number ตัดสินใจ — ข้อ 3)
+    // เป็น query แยกต่างหากหลังล็อกเสร็จแล้ว ไม่รวมกับ SELECT...FOR UPDATE เดียวกัน (ข้อ 7)
+    const sumCheck = await client.query(
+      `SELECT (cv.current_value + $1::numeric) AS new_total, (cv.current_value + $1::numeric > 0) AS positive
+       FROM client_contract_current_value cv WHERE cv.company_id=$2 AND cv.contract_id=$3`,
+      [rev.contract_value, companyId, rootId]
+    );
+    if (!sumCheck.rows[0].positive) {
+      return { status: 409, body: { error: `อนุมัติไม่ได้ เพราะยอดสัญญารวมหลังอนุมัติจะเหลือไม่เกินศูนย์ (ยอดใหม่จะเป็น ${sumCheck.rows[0].new_total})` } };
+    }
+
+    // วันที่ effective หลังอนุมัติใบนี้ต้องไม่ขัดกัน — effective_end/start ใหม่ = COALESCE(ค่าของ R ใบนี้,
+    // ค่า effective ปัจจุบันจาก view ก่อนนับใบนี้) ทั้งสองด้าน คำนวณในฝั่ง SQL ล้วน ไม่ใช่ JS Date เลย
+    const dateCheck = await client.query(
+      `SELECT
+         COALESCE($1::date, et.effective_end_date) AS new_end,
+         COALESCE($2::date, et.effective_start_date) AS new_start,
+         (COALESCE($1::date, et.effective_end_date) IS NOT NULL
+          AND COALESCE($2::date, et.effective_start_date) IS NOT NULL
+          AND COALESCE($1::date, et.effective_end_date) < COALESCE($2::date, et.effective_start_date)) AS conflict
+       FROM client_contract_effective_terms et WHERE et.company_id=$3 AND et.contract_id=$4`,
+      [rev.end_date, rev.start_date, companyId, rootId]
+    );
+    if (dateCheck.rows[0].conflict) {
+      return { status: 409, body: { error: 'อนุมัติไม่ได้ เพราะวันที่สิ้นสุดสัญญาที่จะมีผลหลังอนุมัติใบนี้ ก่อนวันที่เริ่มสัญญาที่จะมีผล' } };
+    }
+
+    await client.query(
+      `UPDATE client_contracts SET status='approved', approved_by=$1, approved_at=now() WHERE id=$2 AND company_id=$3`,
+      [req.customer.id, id, companyId]
+    );
+    const revApproveReason = req.customer.role === 'super_user'
+      ? 'อนุมัติโดย super_user'
+      : `อนุมัติผ่านสิทธิ์ can_approve_contracts (ยอดรวมหลังอนุมัติ ${sumCheck.rows[0].new_total} บาท)`;
+    await writeAuditLog(client, {
+      companyId, docType: 'contract', docId: id, action: 'approve',
+      fromStatus: 'submitted', toStatus: 'approved', performedBy: req.customer.id, reason: revApproveReason,
+    });
+    const full = await client.query(`${CLIENT_CONTRACT_SELECT} WHERE c.id=$1 AND c.company_id=$2`, [id, companyId]);
+    return { status: 200, body: { contract: serializeContract(full.rows[0]) } };
+  });
+});
+
+app.post('/api/customer/contracts/:id/reject', requireCustomerAuth, requireCanApproveContracts, async (req, res) => {
+  const { reason } = req.body || {};
+  const safeReason = String(reason || '').trim();
+  if (!safeReason) return res.status(400).json({ error: 'กรุณาระบุเหตุผลการปฏิเสธ' });
+
+  await withIdempotency(req, res, `contracts-reject:${req.params.id}`, async (client) => {
+    const id = parseInt(req.params.id, 10);
+    const companyId = req.customer.company_id;
+
+    const peek = await client.query('SELECT parent_contract_id FROM client_contracts WHERE id=$1 AND company_id=$2', [id, companyId]);
+    if (peek.rowCount === 0) return { status: 404, body: { error: 'ไม่พบสัญญานี้' } };
+    const rootId = peek.rows[0].parent_contract_id || id;
+
+    // ล็อกสัญญาหลักก่อนเสมอ (กฎข้อ 6) แม้ reject ของใบ R จะไม่ต้องอ่านค่าจากสัญญาหลักไปตัดสินใจอะไรเลยก็ตาม
+    // — ลำดับการล็อกต้องคงที่เหมือนกันทุก endpoint ของเอกสารประเภทเดียวกันเสมอ ไม่พึ่งว่า business logic
+    // จุดนี้ "ไม่จำเป็นต้องล็อกจริงๆ" หรือเปล่า (ดู CLAUDE.md ข้อ 6)
+    await client.query('SELECT id FROM client_contracts WHERE id=$1 AND company_id=$2 FOR UPDATE', [rootId, companyId]);
+
+    const targetRes = rootId === id
+      ? await client.query('SELECT * FROM client_contracts WHERE id=$1 AND company_id=$2', [id, companyId])
+      : await client.query('SELECT * FROM client_contracts WHERE id=$1 AND company_id=$2 FOR UPDATE', [id, companyId]);
+    if (targetRes.rowCount === 0) return { status: 404, body: { error: 'ไม่พบสัญญานี้' } };
+    const target = targetRes.rows[0];
+    if (target.status !== 'submitted') return { status: 409, body: { error: 'ปฏิเสธได้เฉพาะสถานะยื่นแล้วเท่านั้น' } };
+    if (isSelfApprovalBlocked(req.customer, { createdBy: target.created_by, submittedBy: target.submitted_by })) {
+      return { status: 403, body: { error: 'ผู้สร้าง/ผู้ยื่นเอกสารปฏิเสธเอกสารของตัวเองไม่ได้', code: 'self_approval_blocked' } };
+    }
+
+    // reject ของใบ R ไม่กระทบสัญญาหลักเลย (ไม่แตะ status/contract_status ของ root) — แก้แค่แถวเป้าหมาย
+    await client.query(`UPDATE client_contracts SET status='rejected', rejected_reason=$1 WHERE id=$2 AND company_id=$3`, [safeReason, id, companyId]);
+    await writeAuditLog(client, {
+      companyId, docType: 'contract', docId: id, action: 'reject',
+      fromStatus: 'submitted', toStatus: 'rejected', performedBy: req.customer.id, reason: safeReason,
     });
     const full = await client.query(`${CLIENT_CONTRACT_SELECT} WHERE c.id=$1 AND c.company_id=$2`, [id, companyId]);
     return { status: 200, body: { contract: serializeContract(full.rows[0]) } };
