@@ -12,12 +12,25 @@
 // Prerequisites: the dev server must already be running on http://localhost:3000, and server/.env
 // must point at a reachable Postgres instance.
 // Run: cd server && node tests/tender-no-sequence.regression.js
+//
+// Fixture hygiene (fixed 2026-10-07, see ข.16 in server/docs/pr-module-known-limitations.md): this file
+// used to hardcode FIXTURE_COMPANY_ID=13 (a real, shared company) and a fixed username
+// ('_tender_noseq_') instead of creating its own throwaway customer_companies row like every other test
+// in this suite. Since 2026-10-02 (commit 10e3577, when customerId became mandatory on tenders and this
+// test started calling POST /api/customer/clients) that call wrote a client_document_audit_log row
+// (doc_type='customer') against the test user — and the old cleanup deleted `customers` BEFORE deleting
+// that audit log row, so every single run failed on the FK and silently left the user row behind
+// (caught by a try/catch that only printed a warning, never failing the test). The next run then hit
+// `duplicate key value violates unique constraint "customers_username_key"` on the fixed username.
+// Fixed by: (1) creating a dedicated company per run, (2) a timestamped username so even a missed
+// cleanup can never collide with a future run, (3) deleting audit log rows before the user row, in the
+// order audit log -> tender -> client_customers -> user -> company, and (4) a cleanup failure now sets
+// process.exitCode=1 instead of being swallowed.
 
 const bcrypt = require('bcryptjs');
 const pool = require('../db');
 
 const BASE = process.env.BOQ_TEST_BASE_URL || 'http://localhost:3000';
-const FIXTURE_COMPANY_ID = 13;
 
 let cookie = '';
 async function call(method, urlPath, body) {
@@ -39,20 +52,25 @@ function assert(cond, msg) {
 function seqOf(tenderNo) { return parseInt(tenderNo.match(/(\d+)$/)[1], 10); }
 
 (async () => {
-  let testCustomerId = null, clientCustomerId = null;
+  let companyId = null, testCustomerId = null, clientCustomerId = null;
   const createdTenderIds = [];
   try {
-    const companyRes = await pool.query('SELECT id, code FROM customer_companies WHERE id=$1', [FIXTURE_COMPANY_ID]);
-    const company = companyRes.rows[0];
-    if (!company) throw new Error(`Fixture company id=${FIXTURE_COMPANY_ID} not found — adjust FIXTURE_COMPANY_ID for this database.`);
+    const code = 'TNOSEQ' + Date.now();
+    const username = '_tender_noseq_' + Date.now() + '_';
+    const companyIns = await pool.query(
+      `INSERT INTO customer_companies (name, code, status) VALUES ($1,$2,'active') RETURNING id, code`,
+      ['Tender No-Sequence Test Co', code]
+    );
+    const company = companyIns.rows[0];
+    companyId = company.id;
     const hash = await bcrypt.hash('TestPass123!', 10);
     const custIns = await pool.query(
       `INSERT INTO customers (company_id, name, email, username, password_hash, status, can_approve_budget)
-       VALUES ($1,'Tender No-Sequence Test','tender-no-sequence@example.com','_tender_noseq_', $2, 'active', true) RETURNING id`,
-      [company.id, hash]
+       VALUES ($1,'Tender No-Sequence Test',$2,$3,$4,'active',true) RETURNING id`,
+      [company.id, `tender-no-sequence-${Date.now()}@example.com`, username, hash]
     );
     testCustomerId = custIns.rows[0].id;
-    await call('POST', '/api/customer-login', { companyCode: company.code, username: '_tender_noseq_', password: 'TestPass123!' });
+    await call('POST', '/api/customer-login', { companyCode: company.code, username, password: 'TestPass123!' });
     // Customer Master (migration 0025/0034) — customerId is mandatory now; one throwaway customer
     // covers every tender this test creates.
     const custForTenders = await call('POST', '/api/customer/clients', { name: 'ลูกค้าทดสอบ no-sequence' });
@@ -97,10 +115,20 @@ function seqOf(tenderNo) { return parseInt(tenderNo.match(/(\d+)$/)[1], 10); }
     process.exitCode = 1;
   } finally {
     try {
+      // Order matters: client_document_audit_log.performed_by has a FK onto customers(id), so it must
+      // be deleted BEFORE the customers row itself, not after (this exact ordering bug is what left
+      // fixture rows behind on every run since 2026-10-02 — see the comment at the top of this file).
+      if (testCustomerId) await pool.query('DELETE FROM client_document_audit_log WHERE performed_by=$1', [testCustomerId]);
       if (createdTenderIds.length) await pool.query('DELETE FROM client_tenders WHERE id = ANY($1)', [createdTenderIds]);
       if (clientCustomerId) await pool.query('DELETE FROM client_customers WHERE id=$1', [clientCustomerId]);
       if (testCustomerId) await pool.query('DELETE FROM customers WHERE id=$1', [testCustomerId]);
-    } catch (cleanupErr) { console.error('CLEANUP FAILED (manual cleanup needed):', cleanupErr.message); }
+      if (companyId) await pool.query('DELETE FROM customer_companies WHERE id=$1', [companyId]);
+    } catch (cleanupErr) {
+      // A swallowed cleanup failure is exactly how this file polluted the database silently for days —
+      // a failed cleanup must fail the test run, not just print a warning nobody reads in a 34-script log.
+      console.error('CLEANUP FAILED (leftover fixture rows may remain):', cleanupErr.message);
+      process.exitCode = 1;
+    }
     await pool.end();
   }
 })();
