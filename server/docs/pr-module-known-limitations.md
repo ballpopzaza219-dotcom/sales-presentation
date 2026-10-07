@@ -433,6 +433,53 @@ sandbox ได้ผลครบทุกไฟล์
 แปลกๆ ตอนรันกับ sandbox (เพราะแอบชน production ที่ยังรันโค้ดเก่าอยู่ ดูรายละเอียดด้านบน) ตอนนี้กลับมา
 ผ่าน 27/27 สะอาดเหมือนก่อนเกิดเหตุการณ์นี้เป๊ะ ยืนยันว่า root cause คือจุดนี้จริง
 
+### ข.16 `tender-no-sequence.regression.js` ทิ้งแถว fixture ค้างไว้ถ้ารันซ้ำ — hardcode `company_id=13` (บริษัทจริง) แทนที่จะสร้างบริษัททดสอบของตัวเอง + cleanup ไม่ลบ audit log ก่อนลบ user
+
+**พบ 2026-10-06** ระหว่างรัน `npm run test:regression-all` เต็มชุดรอบสุดท้ายก่อน push งาน Stage B ข้อ 5
+(Contract entity, migration `0035_client_contracts`) — ล้มที่สคริปต์ที่ 25/34 ด้วย
+`duplicate key value violates unique constraint "customers_username_key"`
+
+**Root cause มี 2 ส่วนรวมกัน** (ไล่จากโค้ดจริงของ `tests/tender-no-sequence.regression.js`):
+1. **`const FIXTURE_COMPANY_ID = 13;`** (บรรทัด 20) — ไฟล์นี้ **ไม่สร้าง `customer_companies` ของตัวเอง
+   เหมือนไฟล์เทสอื่นเกือบทุกไฟล์ในระบบ** แต่ผูกกับ company id=13 ตรงๆ (บริษัทจริงที่มีข้อมูลที่เจ้าของระบบ
+   กรอกเองปนอยู่ ไม่ใช่บริษัททดสอบชั่วคราว) แล้ว insert ผู้ใช้ชื่อคงที่ `_tender_noseq_` ลงไป
+2. **`finally` block (บรรทัด 98-104) ลบ `customers` โดยไม่ลบ `client_document_audit_log
+   WHERE performed_by=testCustomerId` ก่อน** — ถ้าการกระทำระหว่างเทส (เช่น `POST
+   /api/customer/clients` สร้าง `client_customers` ซึ่งน่าจะเรียก `writeAuditLog` ด้วย
+   `doc_type='customer'`) ทิ้งแถว audit log ที่ `performed_by` ชี้มาที่ user นี้ไว้ `DELETE FROM customers
+   WHERE id=testCustomerId` จะล้มด้วย FK `client_document_audit_log_performed_by_fkey` — error ถูกจับ
+   ด้วย `try/catch` ที่ครอบ cleanup ไว้ (บรรทัด 103: `catch (cleanupErr) { console.error('CLEANUP FAILED
+   (manual cleanup needed):', cleanupErr.message); }`) **พิมพ์แค่ข้อความเตือนลง console เฉยๆ ไม่ได้ตั้ง
+   `process.exitCode=1`** ทำให้เทสยังรายงาน "ALL N CHECKS PASSED" ตามปกติทั้งที่ cleanup ล้มเงียบๆ ข้อความ
+   เตือนนี้จมหายไปในลอการยาวของ `test:regression-all` ทั้ง 34 สคริปต์ได้ง่ายมาก
+
+**ผลกระทบจริง**: รันเทสนี้ 2 ครั้งติดกัน (หรือครั้งที่ 2 ห่างจากครั้งแรกกี่วันก็ได้ ถ้าไม่มีใคร cleanup มือ
+ระหว่างนั้น) จะล้มด้วย `duplicate key value violates unique constraint "customers_username_key"` ทันที
+ตั้งแต่ขั้นตอนแรกสุด (insert user) ก่อนแม้แต่จะเริ่ม assert อะไรเลย — ไม่ใช่ false-negative ของเทสเอง แต่
+เป็นผลพลอยได้จากแถว fixture ของรอบก่อนหน้าที่ยังไม่ถูกลบออกจาก **บริษัทจริง id=13**
+
+**ยืนยันแล้วว่าไม่เกี่ยวกับงาน Contract entity (migration 0035) เลย** — ตรวจผ่าน `pg_constraint` หา FK
+ทุกตัวที่อ้างอิง `customers.id` ทั้งระบบ (71 constraint) แล้วเช็คทีละตารางว่ามีแถวไหนผูกกับ user ที่ค้างอยู่
+(id=23614) บ้าง — พบแค่ `client_document_audit_log.performed_by` (1 แถว) เท่านั้น ไม่มีเอกสารอื่นใดผูกอยู่
+เลย ตรงกับสมมติฐานข้อ 2 ข้างต้นเป๊ะ และ `created_at` ของแถวนี้ (2026-10-05T09:09:36Z) **เก่ากว่า**
+`schema_migrations.applied_at` ของ `0035_client_contracts` (2026-10-06T09:21:14Z) ยืนยันว่าแถวนี้มาจาก
+การรันเทสรอบก่อนหน้า (ไม่ใช่จากการทดสอบ migration สัญญา) จริง
+
+**ยังไม่แก้** — ตามที่เจ้าของระบบตัดสินใจแยกเป็นงานเล็กต่างหากทีหลัง ไม่รวมเข้ากับงาน Contract entity
+วิธีแก้ที่ตรงไปตรงมาที่สุด (ยังไม่ทำ): (1) ให้ไฟล์นี้สร้าง `customer_companies` ทดสอบของตัวเองเหมือนไฟล์
+อื่นแทนการ hardcode id=13 ตรงๆ และ (2) เพิ่ม `DELETE FROM client_document_audit_log WHERE
+performed_by=$1` ก่อน `DELETE FROM customers WHERE id=$1` ใน cleanup (pattern เดียวกับที่ใช้แก้ปัญหา
+คล้ายกันนี้มาแล้วหลายครั้งในเซสชันก่อนๆ)
+
+**หมายเหตุสำคัญที่ยังไม่มีคำอธิบายครบ (เจ้าของระบบชี้ไว้ 2026-10-07)**: ถ้า cleanup ล้มเงียบทุกครั้งที่รัน
+เทสนี้จริง การรัน `test:regression-all` เต็มชุด 2 รอบติดกันควร**ล้มทุกครั้งไม่มีข้อยกเว้น** — แต่ในทางปฏิบัติ
+ที่ผ่านมาชุดเต็มรันผ่านต่อเนื่องได้หลายรอบโดยไม่ชนกัน (เช่น ตอนปิดงาน Stage B ข้อ 4) แล้วเพิ่งมาล้มจริงครั้ง
+นี้ แปลว่า**การลบ `client_document_audit_log` ต้องสำเร็จเงียบๆ ในบางรอบ** (เช่น เฉพาะรอบที่ `POST
+/api/customer/clients` ไม่ได้เขียน audit log จริงด้วยเหตุผลบางอย่าง หรือมีเงื่อนไขอื่นที่ยังไม่ทราบ) — ยังไม่
+ได้สืบสาเหตุที่แน่ชัดว่าเงื่อนไขอะไรตัดสินว่ารอบไหน cleanup สำเร็จ/ล้ม **ยังไม่ต้องแก้ตอนนี้** แต่เมื่อแก้ไฟล์
+นี้ในงานแยกอนาคต ให้ใช้เกณฑ์ผ่านเป็น "รันไฟล์นี้ 2 ครั้งติดกันตรงๆ (ไม่ใช่แค่ครั้งเดียว) แล้วตรวจว่าไม่มีแถว
+`customers`/`client_document_audit_log` ของ fixture นี้ค้างอยู่เลย" ไม่ใช่แค่เช็คว่า exit code เป็น 0
+
 ---
 
 ## ตารางสรุปด่วน
@@ -460,3 +507,4 @@ sandbox ได้ผลครบทุกไฟล์
 | ข.13 | down.sql migration 0024 guard แยกข้อมูล backfill เป็น heuristic (`code NOT LIKE 'DEPT-%'`) ยืนยันด้วยมือแล้วว่าถูกต้อง | ไม่บล็อก (ครอบคลุมสถานการณ์จริงถูก 100% ตอนนี้) |
 | ข.14 | `data-act="close-modal"` ไม่มี handler เลย — ปุ่มยกเลิก/คลิกนอก modal ของ `S.modal` ทุกตัวไม่ปิด (พบ 2026-10-01 ระหว่างงาน Customer Master picker, ยืนยันกระทบ `project-schedule-print.regression.js` ด้วย 2026-10-03) | ไม่บล็อก (ไม่กระทบความถูกต้องข้อมูล แค่ UX ค้างใน modal) |
 | ~~ข.15~~ | ~~เทส 12 ไฟล์ hardcode `BASE=localhost:3000` ไม่อ่าน `BOQ_TEST_BASE_URL`~~ — ✅ แก้ root cause แล้ว (2026-10-02, เปลี่ยนทั้ง 12 ไฟล์เป็น pattern เดียวกับไฟล์อื่น ยืนยันผ่านหมดทีละไฟล์ + full suite) | ปิดแล้ว |
+| ข.16 | `tender-no-sequence.regression.js` hardcode `company_id=13` (บริษัทจริง ไม่สร้างบริษัททดสอบเอง) + cleanup ไม่ลบ audit log ก่อนลบ user ทำให้รันซ้ำแล้วชนกันเอง (พบ 2026-10-06 ระหว่างงาน Contract entity, ยืนยันไม่เกี่ยวกับงานนั้นเลย) | ไม่บล็อก (แก้ด้วยมือ 1 ครั้งแล้ว ยังไม่แก้ root cause ของเทส — แยกเป็นงานย่อยทีหลัง) |
