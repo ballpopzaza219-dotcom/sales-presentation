@@ -433,7 +433,7 @@ sandbox ได้ผลครบทุกไฟล์
 แปลกๆ ตอนรันกับ sandbox (เพราะแอบชน production ที่ยังรันโค้ดเก่าอยู่ ดูรายละเอียดด้านบน) ตอนนี้กลับมา
 ผ่าน 27/27 สะอาดเหมือนก่อนเกิดเหตุการณ์นี้เป๊ะ ยืนยันว่า root cause คือจุดนี้จริง
 
-### ข.16 `tender-no-sequence.regression.js` ทิ้งแถว fixture ค้างไว้ถ้ารันซ้ำ — hardcode `company_id=13` (บริษัทจริง) แทนที่จะสร้างบริษัททดสอบของตัวเอง + cleanup ไม่ลบ audit log ก่อนลบ user
+### ~~ข.16~~ `tender-no-sequence.regression.js` ทิ้งแถว fixture ค้างไว้ถ้ารันซ้ำ — hardcode `company_id=13` (บริษัทจริง) แทนที่จะสร้างบริษัททดสอบของตัวเอง + cleanup ไม่ลบ audit log ก่อนลบ user — ✅ แก้แล้ว (2026-10-07, commit `8c4111d`)
 
 **พบ 2026-10-06** ระหว่างรัน `npm run test:regression-all` เต็มชุดรอบสุดท้ายก่อน push งาน Stage B ข้อ 5
 (Contract entity, migration `0035_client_contracts`) — ล้มที่สคริปต์ที่ 25/34 ด้วย
@@ -471,14 +471,50 @@ sandbox ได้ผลครบทุกไฟล์
 performed_by=$1` ก่อน `DELETE FROM customers WHERE id=$1` ใน cleanup (pattern เดียวกับที่ใช้แก้ปัญหา
 คล้ายกันนี้มาแล้วหลายครั้งในเซสชันก่อนๆ)
 
-**หมายเหตุสำคัญที่ยังไม่มีคำอธิบายครบ (เจ้าของระบบชี้ไว้ 2026-10-07)**: ถ้า cleanup ล้มเงียบทุกครั้งที่รัน
-เทสนี้จริง การรัน `test:regression-all` เต็มชุด 2 รอบติดกันควร**ล้มทุกครั้งไม่มีข้อยกเว้น** — แต่ในทางปฏิบัติ
-ที่ผ่านมาชุดเต็มรันผ่านต่อเนื่องได้หลายรอบโดยไม่ชนกัน (เช่น ตอนปิดงาน Stage B ข้อ 4) แล้วเพิ่งมาล้มจริงครั้ง
-นี้ แปลว่า**การลบ `client_document_audit_log` ต้องสำเร็จเงียบๆ ในบางรอบ** (เช่น เฉพาะรอบที่ `POST
-/api/customer/clients` ไม่ได้เขียน audit log จริงด้วยเหตุผลบางอย่าง หรือมีเงื่อนไขอื่นที่ยังไม่ทราบ) — ยังไม่
-ได้สืบสาเหตุที่แน่ชัดว่าเงื่อนไขอะไรตัดสินว่ารอบไหน cleanup สำเร็จ/ล้ม **ยังไม่ต้องแก้ตอนนี้** แต่เมื่อแก้ไฟล์
-นี้ในงานแยกอนาคต ให้ใช้เกณฑ์ผ่านเป็น "รันไฟล์นี้ 2 ครั้งติดกันตรงๆ (ไม่ใช่แค่ครั้งเดียว) แล้วตรวจว่าไม่มีแถว
-`customers`/`client_document_audit_log` ของ fixture นี้ค้างอยู่เลย" ไม่ใช่แค่เช็คว่า exit code เป็น 0
+**อัปเดต "ล้มทุกรอบ" — สืบสาเหตุจบแล้วด้วย `git log -p`**: ข้อสงสัยก่อนหน้านี้ที่ว่า "ชุดเต็มเคยผ่านต่อเนื่อง
+หลายรอบได้ยังไงถ้า cleanup ล้มทุกครั้ง" มีคำตอบตรงไปตรงมา — `git log -p -- server/tests/tender-no-
+sequence.regression.js` แสดงว่า `POST /api/customer/clients` (บรรทัดที่ทำให้เกิด audit log แล้วชน FK)
+ถูกเพิ่มเข้าไฟล์นี้ **ใน commit `10e3577` (2026-10-02, "Customer Master: migration 0034 — DROP legacy
+client_name/project_owner columns")** เท่านั้น — **ก่อนวันที่ 2026-10-02 ไฟล์นี้ไม่เคยเรียก endpoint ที่
+เขียน audit log เลย** จึง `DELETE FROM customers` สำเร็จทุกครั้งแบบไม่มีปัญหา (รวมถึงตอนรัน
+`test:regression-all` ผ่านต่อเนื่องหลายรอบที่บันทึกไว้ก่อน 2 ต.ค.) — **หลัง 2026-10-02 เป็นต้นมา cleanup
+ล้มทุกรอบจริง 100% ไม่มีข้อยกเว้นเลย** เพียงแต่ไม่มีใครรัน `test:regression-all` ติดกันสองรอบพอดีจนเห็นผล
+จนกระทั่งงาน Contract entity (migration 0035) ที่ต้องรันยืนยันซ้ำหลายรอบติดกันจึงไปชนเข้า
+
+**แก้แล้ว (2026-10-07, commit `8c4111d`)**: (1) สร้าง `customer_companies` ทดสอบของตัวเองทุกครั้งที่รัน
+แทนการ hardcode id=13 (2) username มี timestamp กำกับ (`_tender_noseq_<ts>_`) กันชนกันเองแม้ cleanup
+จะพลาดอีกในอนาคต (3) ลบ `client_document_audit_log WHERE performed_by=$1` **ก่อน** ลบ `customers`
+เสมอ เรียงลำดับเต็ม: audit log → tender → `client_customers` → user → company (4) cleanup ที่ล้มตอนนี้
+ตั้ง `process.exitCode=1` แทนการ print เฉยๆ แล้วปล่อยผ่าน — ยืนยันผ่านแล้วด้วยเกณฑ์ที่ตั้งไว้: รันไฟล์นี้
+2 ครั้งติดกันผ่านทั้งคู่ไม่มีแถวค้าง และรัน `npm run test:regression-all` เต็มชุด 2 ครั้งติดกัน (962
+checks/35 สคริปต์ รวมเทสสัญญาใหม่) ผ่านทั้งคู่ EXIT 0 ไม่มีแถวค้างเหลือใน DB
+
+**รายการเฝ้าระวัง (ยังไม่แก้ ไม่ใช่บั๊กที่ยืนยันแล้ว แค่มีเงื่อนไขตั้งต้นเดียวกัน)**: ระหว่างสำรวจเพื่อแก้ ข.16
+พบว่ามีไฟล์เทสอื่นอีก **8 ไฟล์** ที่ hardcode `const FIXTURE_COMPANY_ID = 13;` (หรือเทียบเท่า) ตรงๆ
+เหมือนไฟล์นี้ก่อนแก้ทุกประการ (ไม่ผ่านระบบ fixture กลางที่ idempotent อย่าง
+`tests/fixtures/setup-approval-fixtures.js` — ดูหมายเหตุแยกด้านล่าง) แล้ว `INSERT INTO customers`
+แบบ throwaway ของตัวเอง ซึ่งเป็นเงื่อนไขตั้งต้นเดียวกับบั๊กนี้เป๊ะ:
+```
+boq-import.regression.js
+boq-scroll.regression.js
+permission-flags.regression.js        (ประกาศ COMPANY_A_ID=13 ซ้ำเองแยกจาก fixture กลาง)
+project-detail-fields.regression.js
+project-menu-move.regression.js
+tender-detail-fields.regression.js
+tender-double-submit.regression.js
+tender-initial-retention.regression.js
+```
+**ยังไม่ยืนยันว่าแต่ละไฟล์มีบั๊ก cleanup แบบเดียวกันจริงหรือไม่** (ขึ้นกับว่า flow ของแต่ละไฟล์เขียน audit
+log ก่อน cleanup หรือเปล่า — ยังไม่ได้ตรวจทีละไฟล์) — `npm run test:regression-all` เต็มชุดรันติดกัน 2
+รอบผ่านสะอาดทั้งคู่ (962/962 ทั้งสองรอบ) ถือเป็นหลักฐานว่า ณ ตอนนี้ยังไม่มีไฟล์ไหนใน 8 ไฟล์นี้ชนกันเองจริง
+แต่ไม่ได้แปลว่าไม่มีความเสี่ยงแฝง (รูปแบบเดียวกับที่ ข.16 เองก็ "ดูเหมือนผ่านได้หลายรอบ" มาก่อนจะเจอจริง)
+ควรตรวจทีละไฟล์เป็นงานแยกถ้ามีเวลา ไม่บล็อกอะไรตอนนี้
+
+**หมายเหตุแยก — กลุ่มไฟล์ที่ไม่ใช่ปัญหาเดียวกัน**: มีอีก 29 ไฟล์ import `tests/fixtures/setup-approval-
+fixtures.js` ร่วมกัน ซึ่งก็ hardcode `COMPANY_A_ID=13`/`COMPANY_B_ID=19` เหมือนกัน แต่เป็นการออกแบบตั้งใจ
+แบบ **idempotent (upsert ตาม username ไม่ใช่ insert-then-delete)** มีคอมเมนต์อธิบายเหตุผลในไฟล์เอง (กัน
+DB ถูกล้างแล้วเทสทั้ง suite พังพร้อมกัน ตามที่เคยเกิดขึ้นจริง 2026-08-17) — **ไม่ใช่ความเสี่ยงคลาสเดียวกับ
+ข.16 เลย ไม่ต้องอยู่ในรายการเฝ้าระวังนี้**
 
 ---
 
@@ -507,4 +543,4 @@ performed_by=$1` ก่อน `DELETE FROM customers WHERE id=$1` ใน cleanup
 | ข.13 | down.sql migration 0024 guard แยกข้อมูล backfill เป็น heuristic (`code NOT LIKE 'DEPT-%'`) ยืนยันด้วยมือแล้วว่าถูกต้อง | ไม่บล็อก (ครอบคลุมสถานการณ์จริงถูก 100% ตอนนี้) |
 | ข.14 | `data-act="close-modal"` ไม่มี handler เลย — ปุ่มยกเลิก/คลิกนอก modal ของ `S.modal` ทุกตัวไม่ปิด (พบ 2026-10-01 ระหว่างงาน Customer Master picker, ยืนยันกระทบ `project-schedule-print.regression.js` ด้วย 2026-10-03) | ไม่บล็อก (ไม่กระทบความถูกต้องข้อมูล แค่ UX ค้างใน modal) |
 | ~~ข.15~~ | ~~เทส 12 ไฟล์ hardcode `BASE=localhost:3000` ไม่อ่าน `BOQ_TEST_BASE_URL`~~ — ✅ แก้ root cause แล้ว (2026-10-02, เปลี่ยนทั้ง 12 ไฟล์เป็น pattern เดียวกับไฟล์อื่น ยืนยันผ่านหมดทีละไฟล์ + full suite) | ปิดแล้ว |
-| ข.16 | `tender-no-sequence.regression.js` hardcode `company_id=13` (บริษัทจริง ไม่สร้างบริษัททดสอบเอง) + cleanup ไม่ลบ audit log ก่อนลบ user ทำให้รันซ้ำแล้วชนกันเอง (พบ 2026-10-06 ระหว่างงาน Contract entity, ยืนยันไม่เกี่ยวกับงานนั้นเลย) | ไม่บล็อก (แก้ด้วยมือ 1 ครั้งแล้ว ยังไม่แก้ root cause ของเทส — แยกเป็นงานย่อยทีหลัง) |
+| ~~ข.16~~ | ~~tender-no-sequence.regression.js hardcode company_id=13 + cleanup ไม่ลบ audit log ก่อนลบ user~~ — ✅ แก้แล้ว (2026-10-07, commit `8c4111d` — ยืนยัน root cause ด้วย `git log -p`: เกิดจาก commit `10e3577` 2026-10-02 เพิ่มเรียก `POST /clients` ที่เขียน audit log, ล้มทุกรอบตั้งแต่นั้น ไม่ใช่บางรอบ) — เหลือ 8 ไฟล์รูปแบบเดียวกันเป็นรายการเฝ้าระวัง (ดูรายละเอียดด้านบน) ยังไม่ยืนยัน/ไม่แก้ | ปิดแล้ว (มีรายการเฝ้าระวังแยก) |
