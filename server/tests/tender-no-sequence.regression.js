@@ -16,12 +16,15 @@
 // Fixture hygiene (fixed 2026-10-07, see ข.16 in server/docs/pr-module-known-limitations.md): this file
 // used to hardcode FIXTURE_COMPANY_ID=13 (a real, shared company) and a fixed username
 // ('_tender_noseq_') instead of creating its own throwaway customer_companies row like every other test
-// in this suite. Since 2026-10-02 (commit 10e3577, when customerId became mandatory on tenders and this
-// test started calling POST /api/customer/clients) that call wrote a client_document_audit_log row
+// in this suite. Since 2026-10-02 (commit 10e3577, when customerId became mandatory on tenders) this
+// test started calling POST /api/customer/clients, which wrote a client_document_audit_log row
 // (doc_type='customer') against the test user — and the old cleanup deleted `customers` BEFORE deleting
-// that audit log row, so every single run failed on the FK and silently left the user row behind
-// (caught by a try/catch that only printed a warning, never failing the test). The next run then hit
-// `duplicate key value violates unique constraint "customers_username_key"` on the fixed username.
+// that audit log row. Confirmed failing this way on the 2026-10-05 and 2026-10-06 runs (leftover rows
+// found and removed both times); from commit 10e3577 onward, cleanup was ordered wrong every time that
+// audit log write actually occurred, whether or not every single run in between was individually
+// observed to fail (caught by a try/catch that only printed a warning, never failing the test). The
+// next run that collided then hit `duplicate key value violates unique constraint
+// "customers_username_key"` on the fixed username.
 // Fixed by: (1) creating a dedicated company per run, (2) a timestamped username so even a missed
 // cleanup can never collide with a future run, (3) deleting audit log rows before the user row, in the
 // order audit log -> tender -> client_customers -> user -> company, and (4) a cleanup failure now sets
