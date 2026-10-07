@@ -9138,8 +9138,8 @@ function pageApprovalPermissions(){
           <th rowspan="2">${tr('common.col_position')}</th>
           <th rowspan="2">${tr('common.col_role')}</th>
           <th colspan="2">${tr('approval_permissions.group_other')}</th>
-          <th colspan="8">${tr('approval_permissions.group_doc_approval')}</th>
-          <th colspan="7">${tr('approval_permissions.group_execution')}</th>
+          <th colspan="9">${tr('approval_permissions.group_doc_approval')}</th>
+          <th colspan="8">${tr('approval_permissions.group_execution')}</th>
         </tr>
         <tr>
           <th>${tr('approval_permissions.col_permission')}</th>
@@ -9152,6 +9152,7 @@ function pageApprovalPermissions(){
           <th>${tr('approval_permissions.col_certify_progress')}</th>
           <th>${tr('approval_permissions.col_approve_progress')}</th>
           <th>${tr('approval_permissions.col_approve_subcontract_billing')}</th>
+          <th>${tr('approval_permissions.col_approve_contracts')}</th>
           <th>${tr('approval_permissions.col_manage_po')}</th>
           <th>${tr('approval_permissions.col_manage_petty_cash_fund')}</th>
           <th>${tr('approval_permissions.col_settle_cash')}</th>
@@ -9159,10 +9160,11 @@ function pageApprovalPermissions(){
           <th>${tr('approval_permissions.col_submit_site_expense')}</th>
           <th>${tr('approval_permissions.col_manage_customer_records')}</th>
           <th>${tr('approval_permissions.col_manage_bidding')}</th>
+          <th>${tr('approval_permissions.col_manage_contracts')}</th>
         </tr>
       </thead>
       <tbody>
-        ${rows.length===0 ? `<tr><td colspan="20"><div class="empty" style="padding:20px 0;">${tr('users.no_users_yet')}</div></td></tr>` : rows.map(cu=>{
+        ${rows.length===0 ? `<tr><td colspan="22"><div class="empty" style="padding:20px 0;">${tr('users.no_users_yet')}</div></td></tr>` : rows.map(cu=>{
           // ห้าม self-grant/self-revoke (ตรงกับ backend) — ซ่อนปุ่มบนแถวของตัวเอง แม้จะเป็น super_user
           const canManageThisRow = canManage && S.currentUser.id !== cu.id;
           return `
@@ -9180,6 +9182,7 @@ function pageApprovalPermissions(){
             ${permFlagCell(cu, 'can_certify_progress', canManageThisRow)}
             ${permFlagCell(cu, 'can_approve_progress', canManageThisRow)}
             ${permFlagCell(cu, 'can_approve_subcontract_billing', canManageThisRow)}
+            ${permFlagCell(cu, 'can_approve_contracts', canManageThisRow)}
             ${permFlagCell(cu, 'can_manage_po', canManageThisRow)}
             ${permFlagCell(cu, 'can_manage_petty_cash_fund', canManageThisRow)}
             ${permFlagCell(cu, 'can_settle_cash', canManageThisRow)}
@@ -9187,6 +9190,7 @@ function pageApprovalPermissions(){
             ${permFlagCell(cu, 'can_submit_site_expense', canManageThisRow)}
             ${permFlagCell(cu, 'can_manage_customer_records', canManageThisRow)}
             ${permFlagCell(cu, 'can_manage_bidding', canManageThisRow)}
+            ${permFlagCell(cu, 'can_manage_contracts', canManageThisRow)}
           </tr>`;}).join('')}
       </tbody>
     </table></div>
@@ -13275,6 +13279,8 @@ async function handleAction(act, el){
         canSubmitSiteExpense: !!data.customer.can_submit_site_expense,
         canManageCustomerRecords: !!data.customer.can_manage_customer_records,
         canManageBidding: !!data.customer.can_manage_bidding,
+        canManageContracts: !!data.customer.can_manage_contracts,
+        canApproveContracts: !!data.customer.can_approve_contracts,
       };
       S.view='dashboard';
       await goToPage('overview');

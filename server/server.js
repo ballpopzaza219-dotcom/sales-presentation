@@ -1698,6 +1698,30 @@ function requireCanManageBidding(req, res, next) {
   next();
 }
 
+// Contract module (client_contracts, migration 0035/0036) — สองสิทธิ์แยกกันเจตนา ไม่ใช่ flag เดียวทำทั้ง
+// สองหน้าที่ (เหมือน can_approve_budget ที่แยกจาก can_manage_bidding อยู่แล้ว ไม่ใช่ pattern ใหม่):
+//   canManageContracts  — สร้าง/แก้ไข draft, submit, cancel, สร้างใบ R
+//   canApproveContracts — approve/reject/terminate/complete
+// ทั้งสองมี super_user shortcut เหมือนกันทุกประการ (super_user ทำได้ทุกอย่างเสมอ, flag เป็นตัวเสริมให้คนอื่น)
+function canManageContracts(customer) {
+  return customer.role === 'super_user' || customer.can_manage_contracts === true;
+}
+function requireCanManageContracts(req, res, next) {
+  if (!canManageContracts(req.customer)) {
+    return res.status(403).json({ error: 'เฉพาะผู้ที่ได้รับสิทธิ์จัดการสัญญาเท่านั้นที่ทำรายการนี้ได้' });
+  }
+  next();
+}
+function canApproveContracts(customer) {
+  return customer.role === 'super_user' || customer.can_approve_contracts === true;
+}
+function requireCanApproveContracts(req, res, next) {
+  if (!canApproveContracts(req.customer)) {
+    return res.status(403).json({ error: 'เฉพาะผู้ที่ได้รับสิทธิ์อนุมัติสัญญาเท่านั้นที่ทำรายการนี้ได้' });
+  }
+  next();
+}
+
 // Lazily built once — createTransport itself doesn't touch the network, so this is cheap to defer
 // until the first notification actually needs sending, and it lets the server boot fine even when
 // GMAIL_USER/GMAIL_APP_PASSWORD aren't set (email just gets skipped, in-app notifications still work).
@@ -2829,11 +2853,15 @@ app.put('/api/customer/users/:id/budget-approval-permission', requireCustomerAut
 // can_manage_customer_records (migration 0032) เพิ่มเข้ามาทีหลัง — คุมสิทธิ์จัดการ Customer Master
 // (hasCustomerManagePermission() ด้านล่าง, POST+PUT /api/customer/clients) ตาม pattern เดียวกับ
 // can_manage_po/can_manage_petty_cash_fund/can_settle_cash ข้างบนทุกประการ
+// can_manage_contracts/can_approve_contracts (migration 0036) เพิ่มเข้ามาทีหลัง — คุมสิทธิ์โมดูล Contract
+// (client_contracts) แยกสองสิทธิ์ตั้งใจ (จัดการ vs อนุมัติ) ตาม CLAUDE.md ข้อ 14 ดูเหตุผลเต็มที่
+// canManageContracts()/canApproveContracts() ด้านบน
 const MANAGE_PERMISSION_FLAG_COLUMNS = new Set([
   'can_manage_po', 'can_manage_petty_cash_fund', 'can_settle_cash', 'can_manage_customer_records', 'can_manage_bidding',
   'can_approve_budget', 'can_approve_pr', 'can_approve_po_wo', 'can_approve_petty_cash', 'can_approve_advance', 'can_approve_other',
   'can_certify_progress', 'can_approve_progress', 'can_approve_subcontract_billing',
   'can_submit_goods_receipt', 'can_submit_site_expense',
+  'can_manage_contracts', 'can_approve_contracts',
 ]);
 app.put('/api/customer/users/:id/permission-flags', requireCustomerAuth, async (req, res) => {
   const targetId = parseInt(req.params.id, 10);

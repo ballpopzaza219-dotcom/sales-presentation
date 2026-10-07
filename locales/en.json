@@ -1210,6 +1210,8 @@
   "approval_permissions.col_submit_site_expense": "Site Expense Submission Access (site)",
   "approval_permissions.col_manage_customer_records": "Manage Customer Records (Customer Master) Access",
   "approval_permissions.col_manage_bidding": "Manage Bidding (Project/Tender/Quotation) Access",
+  "approval_permissions.col_manage_contracts": "Manage Contracts Access",
+  "approval_permissions.col_approve_contracts": "Approve Contracts Access",
   "approval_permissions.has_permission": "Has Access",
   "approval_permissions.no_permission": "No Access",
   "approval_permissions.revoke": "Revoke",

@@ -1210,6 +1210,8 @@
   "approval_permissions.col_submit_site_expense": "สิทธิ์ส่งบิลค่าใช้จ่าย (หน้างาน)",
   "approval_permissions.col_manage_customer_records": "สิทธิ์จัดการข้อมูลลูกค้า (Customer Master)",
   "approval_permissions.col_manage_bidding": "สิทธิ์จัดการงานประมูล/โครงการ (Project/Tender/Quotation)",
+  "approval_permissions.col_manage_contracts": "สิทธิ์จัดการสัญญา",
+  "approval_permissions.col_approve_contracts": "สิทธิ์อนุมัติสัญญา",
   "approval_permissions.has_permission": "มีสิทธิ์",
   "approval_permissions.no_permission": "ไม่มีสิทธิ์",
   "approval_permissions.revoke": "ถอนสิทธิ์",
