@@ -12893,16 +12893,22 @@ app.post('/api/customer/contracts/:id/approve', requireCustomerAuth, requireCanA
     }
 
     // วันที่ effective หลังอนุมัติใบนี้ต้องไม่ขัดกัน — effective_end/start ใหม่ = COALESCE(ค่าของ R ใบนี้,
-    // ค่า effective ปัจจุบันจาก view ก่อนนับใบนี้) ทั้งสองด้าน คำนวณในฝั่ง SQL ล้วน ไม่ใช่ JS Date เลย
+    // ค่า effective ปัจจุบันจาก view ก่อนนับใบนี้) ทั้งสองด้าน คำนวณในฝั่ง SQL ล้วน — เดิมเคยอ่าน
+    // rev.end_date/rev.start_date (pg parse คอลัมน์ DATE เป็น JS Date ที่ตีความเที่ยงคืนตาม timezone
+    // เครื่อง server) แล้วส่งกลับเข้า query นี้เป็นพารามิเตอร์ ผ่านบน localhost เพราะ round-trip ใน
+    // timezone เดียวกันพอดี แต่เป็นบั๊กคลาสเดียวกับ CLAUDE.md ข้อ 22 (ผสม JS Date เข้ากับค่า DATE ข้าม
+    // ขอบเขตระบบ) จะเพี้ยนทันทีถ้าย้ายไปรันบนเครื่องคนละ timezone — เปลี่ยนมา JOIN แถว R เข้ากับ view
+    // ตรงๆ ใน SQL เดียวกันแทน ส่งแค่ id (integer) ไม่ส่งวันที่ผ่าน JS เลย (แถวถูกล็อกไว้แล้วจาก
+    // childRes ด้านบน จึงไม่ต้อง FOR UPDATE ซ้ำ)
     const dateCheck = await client.query(
       `SELECT
-         COALESCE($1::date, et.effective_end_date) AS new_end,
-         COALESCE($2::date, et.effective_start_date) AS new_start,
-         (COALESCE($1::date, et.effective_end_date) IS NOT NULL
-          AND COALESCE($2::date, et.effective_start_date) IS NOT NULL
-          AND COALESCE($1::date, et.effective_end_date) < COALESCE($2::date, et.effective_start_date)) AS conflict
-       FROM client_contract_effective_terms et WHERE et.company_id=$3 AND et.contract_id=$4`,
-      [rev.end_date, rev.start_date, companyId, rootId]
+         (COALESCE(r.end_date, et.effective_end_date) IS NOT NULL
+          AND COALESCE(r.start_date, et.effective_start_date) IS NOT NULL
+          AND COALESCE(r.end_date, et.effective_end_date) < COALESCE(r.start_date, et.effective_start_date)) AS conflict
+       FROM client_contracts r
+       JOIN client_contract_effective_terms et ON et.company_id = r.company_id AND et.contract_id = $2
+       WHERE r.id = $1 AND r.company_id = $3`,
+      [id, rootId, companyId]
     );
     if (dateCheck.rows[0].conflict) {
       return { status: 409, body: { error: 'อนุมัติไม่ได้ เพราะวันที่สิ้นสุดสัญญาที่จะมีผลหลังอนุมัติใบนี้ ก่อนวันที่เริ่มสัญญาที่จะมีผล' } };
